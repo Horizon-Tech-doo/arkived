@@ -234,3 +234,6 @@ pub use sign_in::SignIn;
 
 pub mod subscription;
 pub use subscription::Subscription;
+
+pub mod storage_account;
+pub use storage_account::StorageAccount;
