@@ -214,3 +214,6 @@ mod tests {
         assert_eq!(count, 0, "policy_memory must be truncated on every open");
     }
 }
+
+pub mod sign_in;
+pub use sign_in::SignIn;
