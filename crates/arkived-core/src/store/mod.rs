@@ -217,3 +217,6 @@ mod tests {
 
 pub mod sign_in;
 pub use sign_in::SignIn;
+
+pub mod subscription;
+pub use subscription::Subscription;
