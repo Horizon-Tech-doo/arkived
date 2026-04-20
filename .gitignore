@@ -20,3 +20,6 @@ desktop.ini
 
 # Local Claude Code settings
 /.claude/
+
+# Design prototype working copy (ported to app/src)
+/.design-source/

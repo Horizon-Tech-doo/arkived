@@ -1,0 +1,188 @@
+/* Arkived — design tokens + base styles */
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap');
+
+:root {
+  /* Accent (rust orange by default; tweakable) */
+  --accent: #e06c3a;
+  --accent-dim: #a4502b;
+  --accent-ghost: rgba(224, 108, 58, 0.12);
+  --accent-ghost-strong: rgba(224, 108, 58, 0.22);
+
+  /* Background tiers (dark) */
+  --bg-0: #0a0a0c;      /* page / window behind everything */
+  --bg-1: #101013;      /* main panel */
+  --bg-2: #15151a;      /* raised panel */
+  --bg-3: #1c1c22;      /* card */
+  --bg-4: #23232b;      /* hover */
+  --bg-5: #2e2e38;      /* selection */
+
+  /* Borders */
+  --border-0: #1f1f26;  /* subtle */
+  --border-1: #2a2a33;  /* default */
+  --border-2: #3a3a46;  /* prominent */
+
+  /* Text */
+  --fg-0: #f3f3f5;      /* primary */
+  --fg-1: #c6c6cd;      /* secondary */
+  --fg-2: #8a8a95;      /* tertiary / labels */
+  --fg-3: #5a5a65;      /* disabled / dividers */
+  --fg-4: #3a3a44;      /* barely visible */
+
+  /* Status colors (muted, syntax-adjacent) */
+  --green: #7ec687;
+  --green-dim: rgba(126, 198, 135, 0.15);
+  --yellow: #d8b860;
+  --yellow-dim: rgba(216, 184, 96, 0.15);
+  --red: #e0716e;
+  --red-dim: rgba(224, 113, 110, 0.15);
+  --blue: #6fa8d0;
+  --blue-dim: rgba(111, 168, 208, 0.15);
+  --purple: #b48fd0;
+  --purple-dim: rgba(180, 143, 208, 0.15);
+  --cyan: #6fc0c8;
+  --cyan-dim: rgba(111, 192, 200, 0.15);
+
+  /* Font stacks */
+  --mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  --sans: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+
+  --radius-sm: 3px;
+  --radius: 5px;
+  --radius-lg: 8px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: #000;
+  color: var(--fg-0);
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow: hidden;
+  height: 100vh;
+}
+
+#root {
+  height: 100vh;
+}
+
+/* Scrollbars */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-1);
+  border-radius: 10px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--border-2);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+/* Selection */
+::selection {
+  background: var(--accent-ghost-strong);
+  color: var(--fg-0);
+}
+
+/* Focus ring for kbd users */
+:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+button {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+}
+
+input, textarea {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  outline: none;
+}
+
+/* Utility: mono */
+.mono { font-family: var(--mono); }
+.sans { font-family: var(--sans); }
+
+/* Utility: no-select */
+.no-select { user-select: none; }
+
+/* ── KEYFRAMES ── */
+@keyframes arkived-spin {
+  to { transform: rotate(360deg); }
+}
+@keyframes arkived-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+@keyframes arkived-shimmer {
+  0% { background-position: -200px 0; }
+  100% { background-position: 200px 0; }
+}
+@keyframes arkived-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes arkived-scale-in {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
+}
+@keyframes arkived-slide-in-right {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+@keyframes arkived-progress-indeterminate {
+  0% { left: -30%; width: 30%; }
+  50% { left: 40%; width: 40%; }
+  100% { left: 100%; width: 30%; }
+}
+
+/* ── GLOBAL COMPONENT STYLES ── */
+
+.kbd {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 500;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--bg-3);
+  border: 1px solid var(--border-1);
+  border-bottom-width: 2px;
+  color: var(--fg-1);
+  display: inline-flex;
+  align-items: center;
+  min-height: 16px;
+  line-height: 1;
+}
+
+/* Titlebar draggy look */
+.titlebar {
+  -webkit-app-region: drag;
+}
+.titlebar button, .titlebar input {
+  -webkit-app-region: no-drag;
+}
