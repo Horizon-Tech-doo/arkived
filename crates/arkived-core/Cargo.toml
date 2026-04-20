@@ -18,12 +18,23 @@ async-trait = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+toml = { workspace = true }
 tracing = { workspace = true }
+rusqlite = { workspace = true }
+keyring = { workspace = true }
+uuid = { workspace = true }
+secrecy = { workspace = true }
+chrono = { workspace = true }
 
 # Azure — uncomment in Stage 1 as you wire up AzureBackend:
 # azure_core = { workspace = true }
 # azure_identity = { workspace = true }
 # azure_storage = { workspace = true }
 # azure_storage_blobs = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros", "test-util"] }

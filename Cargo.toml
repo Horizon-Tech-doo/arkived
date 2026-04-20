@@ -49,6 +49,14 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Data
 bytes = "1"
 
+# Store + crypto + identifiers
+rusqlite = { version = "0.31", features = ["bundled"] }
+keyring = "2"
+uuid = { version = "1", features = ["v4", "serde"] }
+secrecy = { version = "0.8", features = ["serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+tempfile = "3"
+
 [profile.release]
 opt-level = 3
 lto = "thin"
