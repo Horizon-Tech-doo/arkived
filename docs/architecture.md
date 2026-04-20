@@ -63,13 +63,5 @@ This is what makes Arkived safe for agents. Even if an LLM decides to "clean up 
 
 ## Roadmap
 
-See the main [README](../README.md) and [CHANGELOG](../CHANGELOG.md) for status.
-
-| Stage | Milestone | Target |
-|---|---|---|
-| 0 | Name reservation + scaffolding | ✅ Done (0.0.1) |
-| 1 | `arkived-core` + CLI with Blob ops | v0.1.0 |
-| 2 | MCP server | v0.2.0 |
-| 3 | Tauri desktop GUI | v0.3.0 |
-| 4 | ACP host | v0.4.0 |
-| 5 | Second backend (likely S3) | v0.5.0 |
+See [`ROADMAP.md`](../ROADMAP.md) for current status and exit criteria per
+milestone, and the [`CHANGELOG`](../CHANGELOG.md) for shipped work.

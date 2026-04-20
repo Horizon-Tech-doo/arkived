@@ -54,6 +54,11 @@ arkived cp ./report.pdf mycontainer/reports/
 arkived mcp
 ```
 
+## Roadmap
+
+See [`ROADMAP.md`](./ROADMAP.md) for what's shipped, what's next, and the exit
+criteria per milestone.
+
 ## Architecture
 
 See [`docs/architecture.md`](./docs/architecture.md) for the full design.
