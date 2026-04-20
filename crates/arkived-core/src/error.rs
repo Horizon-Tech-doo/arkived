@@ -26,15 +26,26 @@ pub enum Error {
 
     /// Resource not found.
     #[error("not found: {resource}")]
-    NotFound { resource: String },
+    NotFound {
+        /// The canonical path or identifier of the missing resource.
+        resource: String,
+    },
 
     /// A conflict (ETag mismatch, lease held, etc.).
     #[error("conflict{}: {detail}", etag.as_deref().map(|e| format!(" (etag {e})")).unwrap_or_default())]
-    Conflict { detail: String, etag: Option<String> },
+    Conflict {
+        /// Human-readable description of the conflict.
+        detail: String,
+        /// The ETag returned by the server, if available.
+        etag: Option<String>,
+    },
 
     /// Server throttled; caller may retry after the given duration.
     #[error("throttled by server (retry after {}s)", retry_after.as_secs())]
-    Throttled { retry_after: std::time::Duration },
+    Throttled {
+        /// Server-recommended backoff before retry.
+        retry_after: std::time::Duration,
+    },
 
     /// Transient network error.
     #[error("network transient: {0}")]
