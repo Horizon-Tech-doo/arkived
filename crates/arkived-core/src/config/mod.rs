@@ -1,6 +1,8 @@
 //! Preferences-only TOML config. Zero credentials or connection metadata.
 
 use serde::{Deserialize, Serialize};
+use crate::Error;
+use std::path::Path;
 
 /// User/project-level preferences. Connection metadata lives in the
 /// [`Store`](crate::store::Store), never here.
@@ -61,6 +63,28 @@ impl ArkivedConfig {
     }
 }
 
+impl ArkivedConfig {
+    /// Discovery order: project (`<project>/.arkived.toml`) → user (`<user>/config.toml`) → defaults.
+    /// Missing files are silently skipped.
+    pub fn discover(project_dir: Option<&Path>, user_dir: Option<&Path>) -> Result<Self, Error> {
+        if let Some(p) = project_dir {
+            let path = p.join(".arkived.toml");
+            if path.exists() {
+                let s = std::fs::read_to_string(&path)?;
+                return Self::from_toml_str(&s).map_err(|e| Error::Other(e.into()));
+            }
+        }
+        if let Some(u) = user_dir {
+            let path = u.join("config.toml");
+            if path.exists() {
+                let s = std::fs::read_to_string(&path)?;
+                return Self::from_toml_str(&s).map_err(|e| Error::Other(e.into()));
+            }
+        }
+        Ok(Self::default())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -100,5 +124,35 @@ default_confirm = "auto"
         assert_eq!(c.default_log_level, "debug");
         assert_eq!(c.default_environment, "china");
         assert_eq!(c.default_confirm, ConfirmMode::Auto);
+    }
+
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn discover_finds_project_file_first() {
+        let project = tempdir().unwrap();
+        let user = tempdir().unwrap();
+        fs::write(project.path().join(".arkived.toml"), r#"default_format = "json""#).unwrap();
+        fs::write(
+            user.path().join("config.toml"),
+            r#"default_format = "tsv""#,
+        ).unwrap();
+
+        let c = ArkivedConfig::discover(Some(project.path()), Some(user.path())).unwrap();
+        assert_eq!(c.default_format, OutputFormat::Json);
+    }
+
+    #[test]
+    fn discover_falls_back_to_user_then_defaults() {
+        let user = tempdir().unwrap();
+        fs::write(user.path().join("config.toml"), r#"default_log_level = "trace""#).unwrap();
+
+        let c = ArkivedConfig::discover(None, Some(user.path())).unwrap();
+        assert_eq!(c.default_log_level, "trace");
+        assert_eq!(c.default_format, OutputFormat::Table);
+
+        let c = ArkivedConfig::discover(None, None).unwrap();
+        assert_eq!(c, ArkivedConfig::default());
     }
 }
