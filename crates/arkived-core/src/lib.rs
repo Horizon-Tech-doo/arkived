@@ -19,10 +19,12 @@
 #![deny(rust_2018_idioms, unsafe_code, missing_docs)]
 #![warn(clippy::all)]
 
+pub mod config;
 pub mod error;
 pub mod policy;
 
 pub(crate) mod backend;
 
+pub use config::{ArkivedConfig, ConfirmMode, OutputFormat};
 pub use error::{Error, Result};
 pub use policy::{Action, ActionContext, Policy, PolicyDecision};
