@@ -10,4 +10,4 @@ Pre-release. This crate name is reserved while the initial implementation is bei
 
 ## License
 
-Licensed under the MIT License.
+Licensed under the Apache License, Version 2.0. See [`LICENSE-APACHE`](./LICENSE-APACHE).

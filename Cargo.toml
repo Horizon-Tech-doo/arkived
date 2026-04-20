@@ -2,9 +2,11 @@
 name = "arkived"
 version = "0.0.1"
 edition = "2021"
+authors = ["Hamza Abdagić <hamza.abdagic@horizon-tech.io>", "Horizon Tech d.o.o. <info@horizon-tech.io>"]
 description = "A fast, Rust-native storage client for Microsoft Azure. Under active development."
-license = "MIT"
-repository = "https://github.com/arkived-app/arkived"
+license = "Apache-2.0"
+homepage = "https://arkived.app"
+repository = "https://github.com/Horizon-Tech-doo/arkived"
 readme = "README.md"
 keywords = ["azure", "storage", "cloud", "cli"]
 categories = ["command-line-utilities", "filesystem"]
