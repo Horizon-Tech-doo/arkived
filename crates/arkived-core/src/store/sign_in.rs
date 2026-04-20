@@ -1,7 +1,7 @@
 //! CRUD for the `sign_in` table.
 
-use crate::Error;
 use crate::store::Store;
+use crate::Error;
 use chrono::{DateTime, Utc};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -44,19 +44,23 @@ impl Store {
                  FROM sign_in WHERE id = ?1",
                 params![id],
                 row_to_sign_in,
-            ).optional()
-             .map_err(|e| Error::Other(anyhow::anyhow!("sign_in get: {e}")))
+            )
+            .optional()
+            .map_err(|e| Error::Other(anyhow::anyhow!("sign_in get: {e}")))
         })
     }
 
     /// List all sign-ins ordered by `added_at` ascending.
     pub fn sign_in_list(&self) -> Result<Vec<SignIn>, Error> {
         self.with_conn(|c| {
-            let mut stmt = c.prepare(
-                "SELECT id, display_name, tenant_id, environment, user_principal, added_at
-                 FROM sign_in ORDER BY added_at"
-            ).map_err(|e| Error::Other(anyhow::anyhow!("sign_in list prepare: {e}")))?;
-            let rows = stmt.query_map([], row_to_sign_in)
+            let mut stmt = c
+                .prepare(
+                    "SELECT id, display_name, tenant_id, environment, user_principal, added_at
+                 FROM sign_in ORDER BY added_at",
+                )
+                .map_err(|e| Error::Other(anyhow::anyhow!("sign_in list prepare: {e}")))?;
+            let rows = stmt
+                .query_map([], row_to_sign_in)
                 .map_err(|e| Error::Other(anyhow::anyhow!("sign_in list query: {e}")))?;
             let mut out = Vec::new();
             for r in rows {
@@ -86,7 +90,13 @@ fn row_to_sign_in(row: &rusqlite::Row<'_>) -> rusqlite::Result<SignIn> {
         user_principal: row.get(4)?,
         added_at: DateTime::parse_from_rfc3339(&added_at)
             .map(|d| d.with_timezone(&Utc))
-            .map_err(|e| rusqlite::Error::FromSqlConversionFailure(5, rusqlite::types::Type::Text, Box::new(e)))?,
+            .map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    5,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })?,
     })
 }
 

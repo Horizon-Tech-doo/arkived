@@ -1,9 +1,9 @@
 //! CRUD for the `attached_resource` table — resources attached directly via
 //! SAS or connection string, outside a sign-in.
 
-use crate::Error;
 use crate::store::Store;
 use crate::types::{AuthKind, ResourceKind};
+use crate::Error;
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
@@ -52,22 +52,31 @@ impl Store {
                  FROM attached_resource WHERE id = ?1",
                 params![id],
                 row_to_attached,
-            ).optional().map_err(|e| Error::Other(anyhow::anyhow!("attached_resource get: {e}")))
+            )
+            .optional()
+            .map_err(|e| Error::Other(anyhow::anyhow!("attached_resource get: {e}")))
         })
     }
 
     /// List all attached resources, ordered by display name.
     pub fn attached_resource_list(&self) -> Result<Vec<AttachedResource>, Error> {
         self.with_conn(|c| {
-            let mut stmt = c.prepare(
-                "SELECT id, display_name, resource_kind, endpoint, auth_kind, keychain_ref
-                 FROM attached_resource ORDER BY display_name"
-            ).map_err(|e| Error::Other(anyhow::anyhow!("attached_resource list prepare: {e}")))?;
-            let rows = stmt.query_map([], row_to_attached)
+            let mut stmt = c
+                .prepare(
+                    "SELECT id, display_name, resource_kind, endpoint, auth_kind, keychain_ref
+                 FROM attached_resource ORDER BY display_name",
+                )
+                .map_err(|e| {
+                    Error::Other(anyhow::anyhow!("attached_resource list prepare: {e}"))
+                })?;
+            let rows = stmt
+                .query_map([], row_to_attached)
                 .map_err(|e| Error::Other(anyhow::anyhow!("attached_resource list query: {e}")))?;
             let mut out = Vec::new();
             for r in rows {
-                out.push(r.map_err(|e| Error::Other(anyhow::anyhow!("attached_resource list row: {e}")))?);
+                out.push(r.map_err(|e| {
+                    Error::Other(anyhow::anyhow!("attached_resource list row: {e}"))
+                })?);
             }
             Ok(out)
         })
@@ -89,11 +98,13 @@ fn row_to_attached(row: &rusqlite::Row<'_>) -> rusqlite::Result<AttachedResource
     Ok(AttachedResource {
         id: row.get(0)?,
         display_name: row.get(1)?,
-        resource_kind: serde_json::from_str(&rk)
-            .map_err(|e| rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, Box::new(e)))?,
+        resource_kind: serde_json::from_str(&rk).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, Box::new(e))
+        })?,
         endpoint: row.get(3)?,
-        auth_kind: serde_json::from_str(&ak)
-            .map_err(|e| rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(e)))?,
+        auth_kind: serde_json::from_str(&ak).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(e))
+        })?,
         keychain_ref: row.get(5)?,
     })
 }

@@ -32,7 +32,7 @@ pub(crate) mod backend;
 
 pub use auth::{AuthProvider, Credential};
 pub use config::{ArkivedConfig, ConfirmMode, OutputFormat};
-pub use ctx::{Ctx, CancellationToken};
+pub use ctx::{CancellationToken, Ctx};
 pub use error::{Error, Result};
 pub use policy::{Action, ActionContext, Policy, PolicyDecision};
 pub use store::Store;

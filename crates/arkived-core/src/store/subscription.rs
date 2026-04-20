@@ -1,7 +1,7 @@
 //! CRUD for the `subscription` table.
 
-use crate::Error;
 use crate::store::Store;
+use crate::Error;
 use chrono::{DateTime, Utc};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -33,8 +33,15 @@ impl Store {
                     name = excluded.name,
                     tenant_id = excluded.tenant_id,
                     discovered_at = excluded.discovered_at",
-                params![s.id, s.sign_in_id, s.name, s.tenant_id, s.discovered_at.to_rfc3339()],
-            ).map_err(|e| Error::Other(anyhow::anyhow!("subscription upsert: {e}")))?;
+                params![
+                    s.id,
+                    s.sign_in_id,
+                    s.name,
+                    s.tenant_id,
+                    s.discovered_at.to_rfc3339()
+                ],
+            )
+            .map_err(|e| Error::Other(anyhow::anyhow!("subscription upsert: {e}")))?;
             Ok(())
         })
     }
@@ -51,17 +58,25 @@ impl Store {
     }
 
     /// List all subscriptions under a specific sign-in, ordered by name.
-    pub fn subscription_list_for_sign_in(&self, sign_in_id: &str) -> Result<Vec<Subscription>, Error> {
+    pub fn subscription_list_for_sign_in(
+        &self,
+        sign_in_id: &str,
+    ) -> Result<Vec<Subscription>, Error> {
         self.with_conn(|c| {
-            let mut stmt = c.prepare(
-                "SELECT id, sign_in_id, name, tenant_id, discovered_at FROM subscription
-                 WHERE sign_in_id = ?1 ORDER BY name"
-            ).map_err(|e| Error::Other(anyhow::anyhow!("subscription list prepare: {e}")))?;
-            let rows = stmt.query_map(params![sign_in_id], row_to_sub)
+            let mut stmt = c
+                .prepare(
+                    "SELECT id, sign_in_id, name, tenant_id, discovered_at FROM subscription
+                 WHERE sign_in_id = ?1 ORDER BY name",
+                )
+                .map_err(|e| Error::Other(anyhow::anyhow!("subscription list prepare: {e}")))?;
+            let rows = stmt
+                .query_map(params![sign_in_id], row_to_sub)
                 .map_err(|e| Error::Other(anyhow::anyhow!("subscription list query: {e}")))?;
             let mut out = Vec::new();
             for r in rows {
-                out.push(r.map_err(|e| Error::Other(anyhow::anyhow!("subscription list row: {e}")))?);
+                out.push(
+                    r.map_err(|e| Error::Other(anyhow::anyhow!("subscription list row: {e}")))?,
+                );
             }
             Ok(out)
         })
@@ -77,14 +92,20 @@ fn row_to_sub(row: &rusqlite::Row<'_>) -> rusqlite::Result<Subscription> {
         tenant_id: row.get(3)?,
         discovered_at: DateTime::parse_from_rfc3339(&discovered_at)
             .map(|d| d.with_timezone(&Utc))
-            .map_err(|e| rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(e)))?,
+            .map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    4,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })?,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::{Store, SignIn};
+    use crate::store::{SignIn, Store};
 
     fn parent_sign_in() -> SignIn {
         SignIn {
@@ -149,7 +170,11 @@ mod tests {
         s.sign_in_insert(&parent_sign_in()).unwrap();
         s.subscription_upsert(&child_sub()).unwrap();
         // Enable FK pragma locally for this test (Task 14 will make it default).
-        s.with_conn(|c| { c.pragma_update(None, "foreign_keys", "ON").map_err(|e| Error::Other(anyhow::anyhow!(e))) }).unwrap();
+        s.with_conn(|c| {
+            c.pragma_update(None, "foreign_keys", "ON")
+                .map_err(|e| Error::Other(anyhow::anyhow!(e)))
+        })
+        .unwrap();
         s.sign_in_delete("si-1").unwrap();
         assert!(s.subscription_get("sub-1").unwrap().is_none());
     }

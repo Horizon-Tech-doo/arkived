@@ -24,7 +24,9 @@ pub struct OsKeyring {
 impl OsKeyring {
     /// Create a new keyring scoped to `service`. All keys are namespaced by this.
     pub fn new(service: impl Into<String>) -> Self {
-        Self { service: service.into() }
+        Self {
+            service: service.into(),
+        }
     }
 
     fn entry(&self, key: &str) -> Result<keyring::Entry, Error> {
@@ -45,7 +47,9 @@ impl CredentialStore for OsKeyring {
             .get_password()
             .map(SecretString::new)
             .map_err(|e| match e {
-                keyring::Error::NoEntry => Error::NotFound { resource: format!("keychain:{key}") },
+                keyring::Error::NoEntry => Error::NotFound {
+                    resource: format!("keychain:{key}"),
+                },
                 other => Error::AuthFailed(format!("keyring get: {other}")),
             })
     }

@@ -25,11 +25,13 @@ pub struct Store {
 impl Store {
     /// Open (or create) a store at the given path, applying migrations.
     pub fn open(path: &Path) -> Result<Self, Error> {
-        let conn = Connection::open(path)
-            .map_err(|e| Error::Other(anyhow::anyhow!("open store: {e}")))?;
+        let conn =
+            Connection::open(path).map_err(|e| Error::Other(anyhow::anyhow!("open store: {e}")))?;
         conn.pragma_update(None, "foreign_keys", "ON")
             .map_err(|e| Error::Other(anyhow::anyhow!("enable foreign_keys: {e}")))?;
-        let store = Self { conn: Mutex::new(conn) };
+        let store = Self {
+            conn: Mutex::new(conn),
+        };
         store.migrate()?;
         Ok(store)
     }
@@ -40,7 +42,9 @@ impl Store {
             .map_err(|e| Error::Other(anyhow::anyhow!("open in-memory store: {e}")))?;
         conn.pragma_update(None, "foreign_keys", "ON")
             .map_err(|e| Error::Other(anyhow::anyhow!("enable foreign_keys: {e}")))?;
-        let store = Self { conn: Mutex::new(conn) };
+        let store = Self {
+            conn: Mutex::new(conn),
+        };
         store.migrate()?;
         Ok(store)
     }
@@ -54,13 +58,16 @@ impl Store {
                 value TEXT NOT NULL
             );
             "#,
-        ).map_err(|e| Error::Other(anyhow::anyhow!("migrate schema_meta: {e}")))?;
+        )
+        .map_err(|e| Error::Other(anyhow::anyhow!("migrate schema_meta: {e}")))?;
 
-        let current: Option<i32> = conn.query_row(
-            "SELECT value FROM schema_meta WHERE key = 'version'",
-            [],
-            |r| r.get::<_, String>(0).map(|s| s.parse::<i32>().unwrap_or(0)),
-        ).ok();
+        let current: Option<i32> = conn
+            .query_row(
+                "SELECT value FROM schema_meta WHERE key = 'version'",
+                [],
+                |r| r.get::<_, String>(0).map(|s| s.parse::<i32>().unwrap_or(0)),
+            )
+            .ok();
 
         if current.unwrap_or(0) < 1 {
             conn.execute_batch(MIGRATION_V1)
@@ -68,7 +75,8 @@ impl Store {
             conn.execute(
                 "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', ?1)",
                 rusqlite::params![SCHEMA_VERSION.to_string()],
-            ).map_err(|e| Error::Other(anyhow::anyhow!("record schema version: {e}")))?;
+            )
+            .map_err(|e| Error::Other(anyhow::anyhow!("record schema version: {e}")))?;
         }
 
         conn.execute("DELETE FROM policy_memory", [])
@@ -96,8 +104,10 @@ impl Store {
                     let s: String = r.get(0)?;
                     Ok(s.parse::<i32>().unwrap_or(0))
                 },
-            ).map_err(|e| Error::Other(anyhow::anyhow!("read schema version: {e}")))
-        }).unwrap_or(0)
+            )
+            .map_err(|e| Error::Other(anyhow::anyhow!("read schema version: {e}")))
+        })
+        .unwrap_or(0)
     }
 }
 
@@ -203,28 +213,34 @@ mod tests {
                 Ok(())
             }).unwrap();
 
-            let count: i64 = store.with_conn(|c| {
-                c.query_row("SELECT COUNT(*) FROM policy_memory", [], |r| r.get(0))
-                    .map_err(|e| Error::Other(anyhow::anyhow!(e)))
-            }).unwrap();
+            let count: i64 = store
+                .with_conn(|c| {
+                    c.query_row("SELECT COUNT(*) FROM policy_memory", [], |r| r.get(0))
+                        .map_err(|e| Error::Other(anyhow::anyhow!(e)))
+                })
+                .unwrap();
             assert_eq!(count, 1);
         }
 
         let store = Store::open(&path).unwrap();
-        let count: i64 = store.with_conn(|c| {
-            c.query_row("SELECT COUNT(*) FROM policy_memory", [], |r| r.get(0))
-                .map_err(|e| Error::Other(anyhow::anyhow!(e)))
-        }).unwrap();
+        let count: i64 = store
+            .with_conn(|c| {
+                c.query_row("SELECT COUNT(*) FROM policy_memory", [], |r| r.get(0))
+                    .map_err(|e| Error::Other(anyhow::anyhow!(e)))
+            })
+            .unwrap();
         assert_eq!(count, 0, "policy_memory must be truncated on every open");
     }
 
     #[test]
     fn foreign_keys_enforced_by_default() {
         let s = Store::open_in_memory().unwrap();
-        let enabled: i32 = s.with_conn(|c| {
-            c.query_row("PRAGMA foreign_keys", [], |r| r.get(0))
-                .map_err(|e| Error::Other(anyhow::anyhow!(e)))
-        }).unwrap();
+        let enabled: i32 = s
+            .with_conn(|c| {
+                c.query_row("PRAGMA foreign_keys", [], |r| r.get(0))
+                    .map_err(|e| Error::Other(anyhow::anyhow!(e)))
+            })
+            .unwrap();
         assert_eq!(enabled, 1, "foreign_keys pragma must default to ON");
     }
 }

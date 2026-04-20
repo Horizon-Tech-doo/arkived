@@ -1,8 +1,8 @@
 //! Session-scoped allow-list used by `Policy` impls to remember
 //! "always allow X for this session" decisions. Truncated on Store::open.
 
-use crate::Error;
 use crate::store::Store;
+use crate::Error;
 use chrono::{DateTime, Utc};
 use rusqlite::params;
 
@@ -20,27 +20,38 @@ pub struct PolicyAllowEntry {
 impl Store {
     /// Record an allow for the given action kind. If `target` is `None`, the
     /// allow applies to any target.
-    pub fn policy_memory_allow(&self, action_kind: &str, target: Option<&str>) -> Result<(), Error> {
+    pub fn policy_memory_allow(
+        &self,
+        action_kind: &str,
+        target: Option<&str>,
+    ) -> Result<(), Error> {
         self.with_conn(|c| {
             c.execute(
                 "INSERT INTO policy_memory (action_kind, target, allowed_at) VALUES (?1, ?2, ?3)",
                 params![action_kind, target, Utc::now().to_rfc3339()],
-            ).map_err(|e| Error::Other(anyhow::anyhow!("policy_memory allow: {e}")))?;
+            )
+            .map_err(|e| Error::Other(anyhow::anyhow!("policy_memory allow: {e}")))?;
             Ok(())
         })
     }
 
     /// Check whether an action is allowed for this session. Matches a prior
     /// allow either with identical (action_kind, target) or with target = NULL.
-    pub fn policy_memory_is_allowed(&self, action_kind: &str, target: Option<&str>) -> Result<bool, Error> {
+    pub fn policy_memory_is_allowed(
+        &self,
+        action_kind: &str,
+        target: Option<&str>,
+    ) -> Result<bool, Error> {
         self.with_conn(|c| {
-            let count: i64 = c.query_row(
-                "SELECT COUNT(*) FROM policy_memory
+            let count: i64 = c
+                .query_row(
+                    "SELECT COUNT(*) FROM policy_memory
                  WHERE action_kind = ?1
                    AND (target IS ?2 OR target IS NULL)",
-                params![action_kind, target],
-                |r| r.get(0),
-            ).map_err(|e| Error::Other(anyhow::anyhow!("policy_memory check: {e}")))?;
+                    params![action_kind, target],
+                    |r| r.get(0),
+                )
+                .map_err(|e| Error::Other(anyhow::anyhow!("policy_memory check: {e}")))?;
             Ok(count > 0)
         })
     }
@@ -48,24 +59,34 @@ impl Store {
     /// List all session-scope allow entries in chronological order.
     pub fn policy_memory_list(&self) -> Result<Vec<PolicyAllowEntry>, Error> {
         self.with_conn(|c| {
-            let mut stmt = c.prepare(
-                "SELECT action_kind, target, allowed_at FROM policy_memory ORDER BY allowed_at"
-            ).map_err(|e| Error::Other(anyhow::anyhow!("policy_memory list prepare: {e}")))?;
-            let rows = stmt.query_map([], |row| {
-                let at: String = row.get(2)?;
-                Ok(PolicyAllowEntry {
-                    action_kind: row.get(0)?,
-                    target: row.get(1)?,
-                    allowed_at: DateTime::parse_from_rfc3339(&at)
-                        .map(|d| d.with_timezone(&Utc))
-                        .map_err(|e| rusqlite::Error::FromSqlConversionFailure(
-                            2, rusqlite::types::Type::Text, Box::new(e),
-                        ))?,
+            let mut stmt = c
+                .prepare(
+                    "SELECT action_kind, target, allowed_at FROM policy_memory ORDER BY allowed_at",
+                )
+                .map_err(|e| Error::Other(anyhow::anyhow!("policy_memory list prepare: {e}")))?;
+            let rows = stmt
+                .query_map([], |row| {
+                    let at: String = row.get(2)?;
+                    Ok(PolicyAllowEntry {
+                        action_kind: row.get(0)?,
+                        target: row.get(1)?,
+                        allowed_at: DateTime::parse_from_rfc3339(&at)
+                            .map(|d| d.with_timezone(&Utc))
+                            .map_err(|e| {
+                                rusqlite::Error::FromSqlConversionFailure(
+                                    2,
+                                    rusqlite::types::Type::Text,
+                                    Box::new(e),
+                                )
+                            })?,
+                    })
                 })
-            }).map_err(|e| Error::Other(anyhow::anyhow!("policy_memory list query: {e}")))?;
+                .map_err(|e| Error::Other(anyhow::anyhow!("policy_memory list query: {e}")))?;
             let mut out = Vec::new();
             for r in rows {
-                out.push(r.map_err(|e| Error::Other(anyhow::anyhow!("policy_memory list row: {e}")))?);
+                out.push(
+                    r.map_err(|e| Error::Other(anyhow::anyhow!("policy_memory list row: {e}")))?,
+                );
             }
             Ok(out)
         })
@@ -79,10 +100,17 @@ mod tests {
     #[test]
     fn allow_then_check_exact_target() {
         let s = Store::open_in_memory().unwrap();
-        s.policy_memory_allow("delete_blob", Some("acmeprod")).unwrap();
-        assert!(s.policy_memory_is_allowed("delete_blob", Some("acmeprod")).unwrap());
-        assert!(!s.policy_memory_is_allowed("delete_blob", Some("other")).unwrap());
-        assert!(!s.policy_memory_is_allowed("set_tier", Some("acmeprod")).unwrap());
+        s.policy_memory_allow("delete_blob", Some("acmeprod"))
+            .unwrap();
+        assert!(s
+            .policy_memory_is_allowed("delete_blob", Some("acmeprod"))
+            .unwrap());
+        assert!(!s
+            .policy_memory_is_allowed("delete_blob", Some("other"))
+            .unwrap());
+        assert!(!s
+            .policy_memory_is_allowed("set_tier", Some("acmeprod"))
+            .unwrap());
     }
 
     #[test]

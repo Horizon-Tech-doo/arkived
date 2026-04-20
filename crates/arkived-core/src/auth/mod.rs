@@ -40,18 +40,29 @@ mod tests {
 
     #[derive(Debug)]
     struct FakeCredential;
-    impl Credential for FakeCredential { fn kind(&self) -> AuthKind { AuthKind::Anonymous } }
+    impl Credential for FakeCredential {
+        fn kind(&self) -> AuthKind {
+            AuthKind::Anonymous
+        }
+    }
 
     struct FakeProvider;
     #[async_trait]
     impl AuthProvider for FakeProvider {
-        fn kind(&self) -> AuthKind { AuthKind::Anonymous }
-        fn display_name(&self) -> &str { "fake" }
+        fn kind(&self) -> AuthKind {
+            AuthKind::Anonymous
+        }
+        fn display_name(&self) -> &str {
+            "fake"
+        }
         async fn credential(&self) -> Result<Arc<dyn Credential>, Error> {
             Ok(Arc::new(FakeCredential))
         }
         fn supports(&self, resource: ResourceKind) -> bool {
-            matches!(resource, ResourceKind::BlobContainer | ResourceKind::AdlsContainer)
+            matches!(
+                resource,
+                ResourceKind::BlobContainer | ResourceKind::AdlsContainer
+            )
         }
     }
 

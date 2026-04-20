@@ -1,7 +1,7 @@
 //! Preferences-only TOML config. Zero credentials or connection metadata.
 
-use serde::{Deserialize, Serialize};
 use crate::Error;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// User/project-level preferences. Connection metadata lives in the
@@ -133,11 +133,12 @@ default_confirm = "auto"
     fn discover_finds_project_file_first() {
         let project = tempdir().unwrap();
         let user = tempdir().unwrap();
-        fs::write(project.path().join(".arkived.toml"), r#"default_format = "json""#).unwrap();
         fs::write(
-            user.path().join("config.toml"),
-            r#"default_format = "tsv""#,
-        ).unwrap();
+            project.path().join(".arkived.toml"),
+            r#"default_format = "json""#,
+        )
+        .unwrap();
+        fs::write(user.path().join("config.toml"), r#"default_format = "tsv""#).unwrap();
 
         let c = ArkivedConfig::discover(Some(project.path()), Some(user.path())).unwrap();
         assert_eq!(c.default_format, OutputFormat::Json);
@@ -146,7 +147,11 @@ default_confirm = "auto"
     #[test]
     fn discover_falls_back_to_user_then_defaults() {
         let user = tempdir().unwrap();
-        fs::write(user.path().join("config.toml"), r#"default_log_level = "trace""#).unwrap();
+        fs::write(
+            user.path().join("config.toml"),
+            r#"default_log_level = "trace""#,
+        )
+        .unwrap();
 
         let c = ArkivedConfig::discover(None, Some(user.path())).unwrap();
         assert_eq!(c.default_log_level, "trace");

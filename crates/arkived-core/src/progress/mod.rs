@@ -47,7 +47,9 @@ pub struct MemorySink {
 
 impl MemorySink {
     /// Construct an empty `MemorySink`.
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     /// Snapshot of all events captured so far.
     pub fn events(&self) -> Vec<ProgressEvent> {
@@ -77,7 +79,11 @@ mod tests {
     async fn memory_sink_collects_events() {
         let s = MemorySink::new();
         s.emit(ProgressEvent::Start { total: Some(100) }).await;
-        s.emit(ProgressEvent::Update { current: 50, rate: Some(42.0) }).await;
+        s.emit(ProgressEvent::Update {
+            current: 50,
+            rate: Some(42.0),
+        })
+        .await;
         s.emit(ProgressEvent::Complete).await;
         assert_eq!(s.events().len(), 3);
         assert_eq!(s.events()[0], ProgressEvent::Start { total: Some(100) });

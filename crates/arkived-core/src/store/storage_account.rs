@@ -1,7 +1,7 @@
 //! CRUD for the `storage_account` table.
 
-use crate::Error;
 use crate::store::Store;
+use crate::Error;
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
@@ -68,7 +68,10 @@ impl Store {
     }
 
     /// List all storage accounts under a subscription, ordered by name.
-    pub fn storage_account_list_for_subscription(&self, subscription_id: &str) -> Result<Vec<StorageAccount>, Error> {
+    pub fn storage_account_list_for_subscription(
+        &self,
+        subscription_id: &str,
+    ) -> Result<Vec<StorageAccount>, Error> {
         self.with_conn(|c| {
             let mut stmt = c.prepare(
                 "SELECT name, subscription_id, kind, region, replication, tier, hns, endpoint, attached_directly
@@ -128,25 +131,29 @@ fn row_to_account(row: &rusqlite::Row<'_>) -> rusqlite::Result<StorageAccount> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::{Store, SignIn, Subscription};
+    use crate::store::{SignIn, Store, Subscription};
     use chrono::Utc;
 
     fn seed(store: &Store) {
-        store.sign_in_insert(&SignIn {
-            id: "si-1".into(),
-            display_name: "Hamza".into(),
-            tenant_id: "t".into(),
-            environment: "azure".into(),
-            user_principal: "h@x".into(),
-            added_at: Utc::now(),
-        }).unwrap();
-        store.subscription_upsert(&Subscription {
-            id: "sub-1".into(),
-            sign_in_id: "si-1".into(),
-            name: "dev".into(),
-            tenant_id: "t".into(),
-            discovered_at: Utc::now(),
-        }).unwrap();
+        store
+            .sign_in_insert(&SignIn {
+                id: "si-1".into(),
+                display_name: "Hamza".into(),
+                tenant_id: "t".into(),
+                environment: "azure".into(),
+                user_principal: "h@x".into(),
+                added_at: Utc::now(),
+            })
+            .unwrap();
+        store
+            .subscription_upsert(&Subscription {
+                id: "sub-1".into(),
+                sign_in_id: "si-1".into(),
+                name: "dev".into(),
+                tenant_id: "t".into(),
+                discovered_at: Utc::now(),
+            })
+            .unwrap();
     }
 
     fn account(name: &str) -> StorageAccount {

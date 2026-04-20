@@ -1,8 +1,8 @@
 //! Current-context 3-tuple (sign_in, subscription, account) persisted in
 //! the `context` key-value table.
 
-use crate::Error;
 use crate::store::Store;
+use crate::Error;
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
@@ -23,10 +23,12 @@ impl Store {
     pub fn context_get(&self) -> Result<CurrentContext, Error> {
         self.with_conn(|c| {
             let get = |k: &str| -> Result<Option<String>, Error> {
-                c.query_row("SELECT v FROM context WHERE k = ?1", params![k], |r| r.get::<_, Option<String>>(0))
-                    .optional()
-                    .map(|opt| opt.flatten())
-                    .map_err(|e| Error::Other(anyhow::anyhow!("context get {k}: {e}")))
+                c.query_row("SELECT v FROM context WHERE k = ?1", params![k], |r| {
+                    r.get::<_, Option<String>>(0)
+                })
+                .optional()
+                .map(|opt| opt.flatten())
+                .map_err(|e| Error::Other(anyhow::anyhow!("context get {k}: {e}")))
             };
             Ok(CurrentContext {
                 sign_in_id: get("current_sign_in")?,
@@ -57,7 +59,8 @@ impl Store {
                 "INSERT INTO context (k, v) VALUES (?1, ?2)
                  ON CONFLICT(k) DO UPDATE SET v = excluded.v",
                 params![key, value],
-            ).map_err(|e| Error::Other(anyhow::anyhow!("context set {key}: {e}")))?;
+            )
+            .map_err(|e| Error::Other(anyhow::anyhow!("context set {key}: {e}")))?;
             Ok(())
         })
     }

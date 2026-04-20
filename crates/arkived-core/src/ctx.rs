@@ -6,7 +6,10 @@
 use crate::auth::AuthProvider;
 use crate::policy::Policy;
 use crate::progress::{NoopSink, ProgressSink};
-use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use uuid::Uuid;
 
 /// Cooperative cancellation token. Set once; cloneable across tasks.
@@ -17,11 +20,17 @@ pub struct CancellationToken {
 
 impl CancellationToken {
     /// Create a new uncancelled token.
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
     /// Signal cancellation. Safe to call from any thread.
-    pub fn cancel(&self) { self.flag.store(true, Ordering::SeqCst); }
+    pub fn cancel(&self) {
+        self.flag.store(true, Ordering::SeqCst);
+    }
     /// Whether cancellation has been requested.
-    pub fn is_cancelled(&self) -> bool { self.flag.load(Ordering::SeqCst) }
+    pub fn is_cancelled(&self) -> bool {
+        self.flag.load(Ordering::SeqCst)
+    }
 }
 
 /// Context bundle for a single logical operation. Cheap to clone (all Arc/value).
@@ -76,17 +85,27 @@ mod tests {
 
     #[derive(Debug)]
     struct FakeCred;
-    impl Credential for FakeCred { fn kind(&self) -> AuthKind { AuthKind::Anonymous } }
+    impl Credential for FakeCred {
+        fn kind(&self) -> AuthKind {
+            AuthKind::Anonymous
+        }
+    }
 
     struct FakeAuth;
     #[async_trait]
     impl AuthProvider for FakeAuth {
-        fn kind(&self) -> AuthKind { AuthKind::Anonymous }
-        fn display_name(&self) -> &str { "fake" }
+        fn kind(&self) -> AuthKind {
+            AuthKind::Anonymous
+        }
+        fn display_name(&self) -> &str {
+            "fake"
+        }
         async fn credential(&self) -> crate::Result<Arc<dyn Credential>> {
             Ok(Arc::new(FakeCred))
         }
-        fn supports(&self, _: ResourceKind) -> bool { true }
+        fn supports(&self, _: ResourceKind) -> bool {
+            true
+        }
     }
 
     #[tokio::test]
@@ -96,13 +115,23 @@ mod tests {
         let sink = Arc::new(MemorySink::new());
         let ctx = Ctx::new(auth, policy).with_progress(sink.clone());
 
-        let decision = ctx.policy.confirm(
-            &Action { verb: "test".into(), target: "t".into(), summary: "s".into(), reversible: true },
-            &ActionContext::default(),
-        ).await;
+        let decision = ctx
+            .policy
+            .confirm(
+                &Action {
+                    verb: "test".into(),
+                    target: "t".into(),
+                    summary: "s".into(),
+                    reversible: true,
+                },
+                &ActionContext::default(),
+            )
+            .await;
         assert_eq!(decision, PolicyDecision::Allow);
 
-        ctx.progress.emit(crate::progress::ProgressEvent::Complete).await;
+        ctx.progress
+            .emit(crate::progress::ProgressEvent::Complete)
+            .await;
         assert_eq!(sink.events().len(), 1);
     }
 

@@ -75,9 +75,9 @@ impl AzureEnvironment {
     /// Return the storage DNS suffix for this environment.
     pub fn storage_suffix(&self) -> &str {
         match self {
-            Self::Public  => "core.windows.net",
-            Self::China   => "core.chinacloudapi.cn",
-            Self::UsGov   => "core.usgovcloudapi.net",
+            Self::Public => "core.windows.net",
+            Self::China => "core.chinacloudapi.cn",
+            Self::UsGov => "core.usgovcloudapi.net",
             Self::Germany => "core.cloudapi.de",
             Self::Custom { storage_suffix, .. } => storage_suffix,
         }
@@ -90,8 +90,14 @@ mod tests {
 
     #[test]
     fn known_suffixes() {
-        assert_eq!(AzureEnvironment::Public.storage_suffix(), "core.windows.net");
-        assert_eq!(AzureEnvironment::China.storage_suffix(), "core.chinacloudapi.cn");
+        assert_eq!(
+            AzureEnvironment::Public.storage_suffix(),
+            "core.windows.net"
+        );
+        assert_eq!(
+            AzureEnvironment::China.storage_suffix(),
+            "core.chinacloudapi.cn"
+        );
     }
 
     #[test]

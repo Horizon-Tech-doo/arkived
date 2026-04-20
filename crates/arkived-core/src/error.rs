@@ -72,18 +72,31 @@ mod tests {
     #[test]
     fn error_variants_display() {
         assert_eq!(
-            Error::NotFound { resource: "container/foo".into() }.to_string(),
+            Error::NotFound {
+                resource: "container/foo".into()
+            }
+            .to_string(),
             "not found: container/foo"
         );
         assert_eq!(
-            Error::Conflict { detail: "etag mismatch".into(), etag: Some("0xABC".into()) }.to_string(),
+            Error::Conflict {
+                detail: "etag mismatch".into(),
+                etag: Some("0xABC".into())
+            }
+            .to_string(),
             "conflict (etag 0xABC): etag mismatch"
         );
         assert_eq!(
-            Error::Throttled { retry_after: Duration::from_secs(5) }.to_string(),
+            Error::Throttled {
+                retry_after: Duration::from_secs(5)
+            }
+            .to_string(),
             "throttled by server (retry after 5s)"
         );
-        assert_eq!(Error::AuthExpired.to_string(), "authentication expired; sign in again");
+        assert_eq!(
+            Error::AuthExpired.to_string(),
+            "authentication expired; sign in again"
+        );
         assert!(matches!(
             Error::NetworkTransient("dns".into()),
             Error::NetworkTransient(_)
