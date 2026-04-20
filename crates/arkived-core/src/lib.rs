@@ -30,6 +30,13 @@ pub mod types;
 
 pub(crate) mod backend;
 
+// Re-export policy: the crate root surfaces top-level contracts (traits,
+// primary entry points, shared error types). Data-record types that only
+// matter alongside a specific subsystem (SignIn, Subscription, StorageAccount,
+// AttachedResource, CurrentContext, PolicyAllowEntry; CredentialStore, OsKeyring;
+// ProgressEvent, ProgressSink, NoopSink, MemorySink) stay reachable via their
+// module path (`arkived_core::store::SignIn` etc.) to keep the top-level namespace
+// focused.
 pub use auth::{AuthProvider, Credential};
 pub use config::{ArkivedConfig, ConfirmMode, OutputFormat};
 pub use ctx::{CancellationToken, Ctx};

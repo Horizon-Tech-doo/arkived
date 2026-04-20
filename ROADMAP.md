@@ -20,7 +20,7 @@ and the repository hosts the workspace layout plus project docs.
 - `StorageBackend` trait (`pub(crate)`) and `Policy` trait skeletons in core
 - CLI skeleton with placeholder subcommands (clap)
 - Apache-2.0 license, Contributor Covenant v2.1, SECURITY policy
-- CI: fmt, clippy, test matrix (Linux/macOS/Windows), MSRV 1.75
+- CI: fmt, clippy, test matrix (Linux/macOS/Windows), MSRV 1.85
 
 ### 🟡 Stage 3 (partial) — Desktop app shell
 

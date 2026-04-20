@@ -51,10 +51,6 @@ pub enum Error {
     #[error("network transient: {0}")]
     NetworkTransient(String),
 
-    /// Generic authentication error (for migration — prefer AuthFailed or AuthExpired).
-    #[error("authentication error: {0}")]
-    Auth(String),
-
     /// An I/O error.
     #[error(transparent)]
     Io(#[from] std::io::Error),

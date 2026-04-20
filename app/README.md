@@ -50,7 +50,7 @@ app/
 │   └── lib/ipc.ts         # invoke() wrapper with browser fallback
 └── src-tauri/
     ├── Cargo.toml         # Tauri 2 backend (excluded from root workspace)
-    ├── rust-toolchain.toml  # stable (Tauri 2 needs ≥1.77, workspace is 1.75)
+    ├── rust-toolchain.toml  # stable (Tauri 2 needs ≥1.77, workspace is 1.85)
     ├── tauri.conf.json
     ├── capabilities/default.json
     ├── icons/icon.png     # placeholder (replace before bundle)

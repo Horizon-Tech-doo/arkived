@@ -169,12 +169,6 @@ mod tests {
         let s = Store::open_in_memory().unwrap();
         s.sign_in_insert(&parent_sign_in()).unwrap();
         s.subscription_upsert(&child_sub()).unwrap();
-        // Enable FK pragma locally for this test (Task 14 will make it default).
-        s.with_conn(|c| {
-            c.pragma_update(None, "foreign_keys", "ON")
-                .map_err(|e| Error::Other(anyhow::anyhow!(e)))
-        })
-        .unwrap();
         s.sign_in_delete("si-1").unwrap();
         assert!(s.subscription_get("sub-1").unwrap().is_none());
     }
