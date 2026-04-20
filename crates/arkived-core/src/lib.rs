@@ -21,6 +21,7 @@
 
 pub mod auth;
 pub mod config;
+pub mod ctx;
 pub mod error;
 pub mod policy;
 pub mod progress;
@@ -30,6 +31,7 @@ pub(crate) mod backend;
 
 pub use auth::{AuthProvider, Credential};
 pub use config::{ArkivedConfig, ConfirmMode, OutputFormat};
+pub use ctx::{Ctx, CancellationToken};
 pub use error::{Error, Result};
 pub use policy::{Action, ActionContext, Policy, PolicyDecision};
 pub use types::{AuthKind, AzureEnvironment, ResourceKind};
