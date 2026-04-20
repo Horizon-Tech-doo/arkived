@@ -240,3 +240,6 @@ pub use storage_account::StorageAccount;
 
 pub mod attached_resource;
 pub use attached_resource::AttachedResource;
+
+pub mod context;
+pub use context::CurrentContext;
