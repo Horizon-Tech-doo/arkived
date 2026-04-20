@@ -67,6 +67,9 @@ impl Store {
             ).map_err(|e| Error::Other(anyhow::anyhow!("record schema version: {e}")))?;
         }
 
+        conn.execute("DELETE FROM policy_memory", [])
+            .map_err(|e| Error::Other(anyhow::anyhow!("truncate policy_memory: {e}")))?;
+
         Ok(())
     }
 
@@ -177,5 +180,37 @@ mod tests {
         store.migrate().unwrap();
         store.migrate().unwrap();
         assert_eq!(store.schema_version(), SCHEMA_VERSION);
+    }
+
+    use chrono::Utc;
+
+    #[test]
+    fn policy_memory_is_cleared_on_reopen() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("state.db");
+
+        {
+            let store = Store::open(&path).unwrap();
+            store.with_conn(|c| {
+                c.execute(
+                    "INSERT INTO policy_memory (action_kind, target, allowed_at) VALUES (?1, ?2, ?3)",
+                    rusqlite::params!["delete_blob", "acme/x", Utc::now().to_rfc3339()],
+                ).map_err(|e| Error::Other(anyhow::anyhow!(e)))?;
+                Ok(())
+            }).unwrap();
+
+            let count: i64 = store.with_conn(|c| {
+                c.query_row("SELECT COUNT(*) FROM policy_memory", [], |r| r.get(0))
+                    .map_err(|e| Error::Other(anyhow::anyhow!(e)))
+            }).unwrap();
+            assert_eq!(count, 1);
+        }
+
+        let store = Store::open(&path).unwrap();
+        let count: i64 = store.with_conn(|c| {
+            c.query_row("SELECT COUNT(*) FROM policy_memory", [], |r| r.get(0))
+                .map_err(|e| Error::Other(anyhow::anyhow!(e)))
+        }).unwrap();
+        assert_eq!(count, 0, "policy_memory must be truncated on every open");
     }
 }
