@@ -27,6 +27,8 @@ impl Store {
     pub fn open(path: &Path) -> Result<Self, Error> {
         let conn = Connection::open(path)
             .map_err(|e| Error::Other(anyhow::anyhow!("open store: {e}")))?;
+        conn.pragma_update(None, "foreign_keys", "ON")
+            .map_err(|e| Error::Other(anyhow::anyhow!("enable foreign_keys: {e}")))?;
         let store = Self { conn: Mutex::new(conn) };
         store.migrate()?;
         Ok(store)
@@ -36,6 +38,8 @@ impl Store {
     pub fn open_in_memory() -> Result<Self, Error> {
         let conn = Connection::open_in_memory()
             .map_err(|e| Error::Other(anyhow::anyhow!("open in-memory store: {e}")))?;
+        conn.pragma_update(None, "foreign_keys", "ON")
+            .map_err(|e| Error::Other(anyhow::anyhow!("enable foreign_keys: {e}")))?;
         let store = Self { conn: Mutex::new(conn) };
         store.migrate()?;
         Ok(store)
@@ -212,6 +216,16 @@ mod tests {
                 .map_err(|e| Error::Other(anyhow::anyhow!(e)))
         }).unwrap();
         assert_eq!(count, 0, "policy_memory must be truncated on every open");
+    }
+
+    #[test]
+    fn foreign_keys_enforced_by_default() {
+        let s = Store::open_in_memory().unwrap();
+        let enabled: i32 = s.with_conn(|c| {
+            c.query_row("PRAGMA foreign_keys", [], |r| r.get(0))
+                .map_err(|e| Error::Other(anyhow::anyhow!(e)))
+        }).unwrap();
+        assert_eq!(enabled, 1, "foreign_keys pragma must default to ON");
     }
 }
 
