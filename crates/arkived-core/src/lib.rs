@@ -22,6 +22,7 @@
 pub mod config;
 pub mod error;
 pub mod policy;
+pub mod progress;
 
 pub(crate) mod backend;
 
