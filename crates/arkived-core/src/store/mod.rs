@@ -243,3 +243,6 @@ pub use attached_resource::AttachedResource;
 
 pub mod context;
 pub use context::CurrentContext;
+
+pub mod policy_memory;
+pub use policy_memory::PolicyAllowEntry;
