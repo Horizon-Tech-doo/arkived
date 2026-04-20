@@ -1,0 +1,29 @@
+[package]
+name = "arkived-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+description = "Core library for Arkived — storage backend abstraction, policy layer, and Azure implementation."
+readme = "../../README.md"
+keywords = ["azure", "storage", "cloud"]
+categories = ["api-bindings", "filesystem"]
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+# Azure — uncomment in Stage 1 as you wire up AzureBackend:
+# azure_core = { workspace = true }
+# azure_identity = { workspace = true }
+# azure_storage = { workspace = true }
+# azure_storage_blobs = { workspace = true }

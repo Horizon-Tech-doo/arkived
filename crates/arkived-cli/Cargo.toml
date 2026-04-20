@@ -1,0 +1,25 @@
+[package]
+name = "arkived"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+description = "A fast, Rust-native storage client for Microsoft Azure with MCP and ACP support."
+readme = "../../README.md"
+keywords = ["azure", "storage", "cloud", "mcp", "cli"]
+categories = ["command-line-utilities", "filesystem"]
+
+[[bin]]
+name = "arkived"
+path = "src/main.rs"
+
+[dependencies]
+arkived-core = { path = "../arkived-core", version = "0.0.1" }
+anyhow = { workspace = true }
+clap = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

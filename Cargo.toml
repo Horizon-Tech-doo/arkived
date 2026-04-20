@@ -1,16 +1,53 @@
-[package]
-name = "arkived"
+[workspace]
+resolver = "2"
+members = [
+    "crates/arkived-core",
+    "crates/arkived-cli",
+]
+
+[workspace.package]
 version = "0.0.1"
 edition = "2021"
-authors = ["Hamza Abdagić <hamza.abdagic@horizon-tech.io>", "Horizon Tech d.o.o. <info@horizon-tech.io>"]
-description = "A fast, Rust-native storage client for Microsoft Azure. Under active development."
+authors = [
+    "Hamza Abdagić <hamza.abdagic@horizon-tech.io>",
+    "Horizon Tech d.o.o.",
+]
 license = "Apache-2.0"
-homepage = "https://arkived.app"
 repository = "https://github.com/Horizon-Tech-doo/arkived"
-readme = "README.md"
-keywords = ["azure", "storage", "cloud", "cli"]
-categories = ["command-line-utilities", "filesystem"]
+homepage = "https://arkived.app"
+rust-version = "1.75"
 
-[lib]
+[workspace.dependencies]
+# Azure SDK (preview — pin minor versions)
+azure_core = "0.21"
+azure_identity = "0.21"
+azure_storage = "0.21"
+azure_storage_blobs = "0.21"
 
-[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+futures = "0.3"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# CLI
+clap = { version = "~4.4", features = ["derive", "env"] }
+
+# Errors / logging
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Data
+bytes = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
