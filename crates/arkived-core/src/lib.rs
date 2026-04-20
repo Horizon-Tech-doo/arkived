@@ -23,9 +23,11 @@ pub mod config;
 pub mod error;
 pub mod policy;
 pub mod progress;
+pub mod types;
 
 pub(crate) mod backend;
 
 pub use config::{ArkivedConfig, ConfirmMode, OutputFormat};
 pub use error::{Error, Result};
 pub use policy::{Action, ActionContext, Policy, PolicyDecision};
+pub use types::{AuthKind, AzureEnvironment, ResourceKind};
