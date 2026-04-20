@@ -237,3 +237,6 @@ pub use subscription::Subscription;
 
 pub mod storage_account;
 pub use storage_account::StorageAccount;
+
+pub mod attached_resource;
+pub use attached_resource::AttachedResource;
