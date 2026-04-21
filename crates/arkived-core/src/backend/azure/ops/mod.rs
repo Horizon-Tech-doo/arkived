@@ -1,1 +1,3 @@
-//! Per-REST-verb implementations. Submodules land in Tasks 9–13.
+//! Per-REST-verb implementations.
+
+pub(crate) mod list_containers;
