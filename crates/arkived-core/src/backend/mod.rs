@@ -27,5 +27,7 @@ pub(crate) trait StorageBackend: Send + Sync {
     // before executing.
 }
 
+pub mod types;
+
 // Placeholder module — AzureBackend goes here in Stage 1:
 // pub(crate) mod azure;
