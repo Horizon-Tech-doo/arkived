@@ -37,7 +37,7 @@ pub(crate) mod backend;
 // ProgressEvent, ProgressSink, NoopSink, MemorySink) stay reachable via their
 // module path (`arkived_core::store::SignIn` etc.) to keep the top-level namespace
 // focused.
-pub use auth::{AuthProvider, Credential};
+pub use auth::{AuthProvider, ResolvedCredential};
 pub use config::{ArkivedConfig, ConfirmMode, OutputFormat};
 pub use ctx::{CancellationToken, Ctx};
 pub use error::{Error, Result};
