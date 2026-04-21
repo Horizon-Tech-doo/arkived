@@ -46,7 +46,35 @@ pub(crate) struct HttpPipeline<'a> {
 impl<'a> HttpPipeline<'a> {
     /// Send a request with auth + retry, returning the raw response on 2xx.
     pub async fn send(&self, tmpl: RequestTemplate) -> crate::Result<Response> {
-        with_retries(|| async { self.send_once(tmpl.clone()).await }).await
+        let request_id = uuid::Uuid::new_v4();
+        let span = tracing::info_span!(
+            "azure_request",
+            request_id = %request_id,
+            method = %tmpl.method,
+            host = %tmpl.url.host_str().unwrap_or("?"),
+            path = %tmpl.url.path(),
+            auth = ?self.credential.kind(),
+        );
+        let _enter = span.enter();
+        let started = std::time::Instant::now();
+        let result = with_retries(|| async { self.send_once(tmpl.clone()).await }).await;
+        match &result {
+            Ok(resp) => {
+                tracing::info!(
+                    status = %resp.status(),
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    "azure_request ok"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    error = %e,
+                    "azure_request failed"
+                );
+            }
+        }
+        result
     }
 
     async fn send_once(&self, mut tmpl: RequestTemplate) -> crate::Result<Response> {
