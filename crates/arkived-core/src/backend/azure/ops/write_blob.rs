@@ -156,4 +156,75 @@ mod tests {
         let err = collect_bytes(s, 1000).await.unwrap_err();
         assert!(matches!(err, Error::Backend(_)));
     }
+
+    use crate::auth::ResolvedCredential;
+    use crate::backend::AzureBlobBackend;
+    use crate::policy::DenyAllPolicy;
+    use crate::progress::NoopSink;
+    use crate::types::{AuthKind, ResourceKind};
+    use async_trait::async_trait;
+    use std::sync::Arc;
+
+    struct FakeAuth;
+    #[async_trait]
+    impl crate::auth::AuthProvider for FakeAuth {
+        fn kind(&self) -> AuthKind { AuthKind::Anonymous }
+        fn display_name(&self) -> &str { "fake" }
+        async fn resolve(&self) -> crate::Result<ResolvedCredential> {
+            Ok(ResolvedCredential::Anonymous)
+        }
+        fn supports(&self, _: ResourceKind) -> bool { true }
+    }
+
+    #[tokio::test]
+    async fn overwrite_with_deny_all_policy_blocks_before_http() {
+        let endpoint = url::Url::parse("http://127.0.0.1:1/").unwrap();
+        let backend = AzureBlobBackend::new(endpoint, ResolvedCredential::Anonymous).unwrap();
+        let ctx = Ctx::new(Arc::new(FakeAuth), Arc::new(DenyAllPolicy))
+            .with_progress(Arc::new(NoopSink));
+
+        let chunks: Vec<crate::Result<Bytes>> = vec![Ok(Bytes::from("data"))];
+        let stream = futures::stream::iter(chunks).boxed();
+
+        let err = backend
+            .write_blob(
+                &ctx,
+                &BlobPath::new("c", "b"),
+                stream,
+                WriteOpts {
+                    overwrite: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::PolicyDenied(_)));
+    }
+
+    #[tokio::test]
+    async fn non_overwrite_write_does_not_invoke_policy() {
+        // With overwrite=false we never call policy.confirm, so DenyAllPolicy
+        // is irrelevant. This test only verifies the code path compiles and
+        // runs up to the HTTP call (which will fail on the unreachable URL,
+        // but that's a NetworkTransient rather than a PolicyDenied).
+        let endpoint = url::Url::parse("http://127.0.0.1:1/").unwrap();
+        let backend = AzureBlobBackend::new(endpoint, ResolvedCredential::Anonymous).unwrap();
+        let ctx = Ctx::new(Arc::new(FakeAuth), Arc::new(DenyAllPolicy))
+            .with_progress(Arc::new(NoopSink));
+
+        let chunks: Vec<crate::Result<Bytes>> = vec![Ok(Bytes::from("data"))];
+        let stream = futures::stream::iter(chunks).boxed();
+
+        let err = backend
+            .write_blob(
+                &ctx,
+                &BlobPath::new("c", "b"),
+                stream,
+                WriteOpts { overwrite: false, ..Default::default() },
+            )
+            .await
+            .unwrap_err();
+        // Should NOT be PolicyDenied — we skipped the policy check.
+        assert!(!matches!(err, Error::PolicyDenied(_)));
+    }
 }
