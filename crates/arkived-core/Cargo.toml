@@ -42,3 +42,4 @@ time = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros", "test-util"] }
 mockito = { workspace = true }
+httpdate = { workspace = true }
