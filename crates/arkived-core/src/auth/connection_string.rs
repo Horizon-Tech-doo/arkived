@@ -12,8 +12,8 @@
 //! <https://learn.microsoft.com/azure/storage/common/storage-configure-connection-string>
 
 use crate::Error;
-use secrecy::SecretString;
 use secrecy::ExposeSecret;
+use secrecy::SecretString;
 use std::collections::HashMap;
 
 /// Parsed connection-string fields we care about for v0.1.0.
@@ -95,9 +95,11 @@ impl ConnectionStringParts {
             .fields
             .into_iter()
             .find(|(k, _)| k == "SharedAccessSignature")
-            .ok_or_else(|| Error::AuthFailed("no SharedAccessSignature in connection string".into()))?
+            .ok_or_else(|| {
+                Error::AuthFailed("no SharedAccessSignature in connection string".into())
+            })?
             .1;
-        Ok(SecretString::new(s.into()))
+        Ok(SecretString::new(s))
     }
 
     /// Extract account-key auth material (validates presence).
@@ -110,7 +112,7 @@ impl ConnectionStringParts {
             .fields
             .remove("AccountKey")
             .ok_or_else(|| Error::AuthFailed("no AccountKey in connection string".into()))?;
-        Ok((name, SecretString::new(key.into())))
+        Ok((name, SecretString::new(key)))
     }
 }
 
@@ -147,24 +149,33 @@ impl ConnectionStringProvider {
         let parts = ConnectionStringParts::parse(raw.expose_secret())?;
         if parts.classify() == ConnectionStringKind::Invalid {
             return Err(Error::AuthFailed(
-                "connection string contains neither AccountKey nor SharedAccessSignature"
-                    .into(),
+                "connection string contains neither AccountKey nor SharedAccessSignature".into(),
             ));
         }
-        Ok(Self { display_name: display_name.into(), raw })
+        Ok(Self {
+            display_name: display_name.into(),
+            raw,
+        })
     }
 }
 
 #[async_trait]
 impl AuthProvider for ConnectionStringProvider {
-    fn kind(&self) -> AuthKind { AuthKind::ConnectionString }
-    fn display_name(&self) -> &str { &self.display_name }
+    fn kind(&self) -> AuthKind {
+        AuthKind::ConnectionString
+    }
+    fn display_name(&self) -> &str {
+        &self.display_name
+    }
     async fn resolve(&self) -> crate::Result<ResolvedCredential> {
         let parts = ConnectionStringParts::parse(self.raw.expose_secret())?;
         match parts.classify() {
             ConnectionStringKind::AccountKey => {
                 let (name, key) = parts.into_account_key()?;
-                Ok(ResolvedCredential::SharedKey { account_name: name, key })
+                Ok(ResolvedCredential::SharedKey {
+                    account_name: name,
+                    key,
+                })
             }
             ConnectionStringKind::Sas => Ok(ResolvedCredential::Sas(parts.into_sas()?)),
             ConnectionStringKind::Invalid => Err(Error::AuthFailed(
@@ -201,7 +212,8 @@ mod tests {
 
     #[test]
     fn parses_sas_form() {
-        let s = "BlobEndpoint=https://acme.blob.core.windows.net;SharedAccessSignature=sv=2022&sig=ABC";
+        let s =
+            "BlobEndpoint=https://acme.blob.core.windows.net;SharedAccessSignature=sv=2022&sig=ABC";
         let p = ConnectionStringParts::parse(s).unwrap();
         assert_eq!(p.sas(), Some("sv=2022&sig=ABC"));
         assert_eq!(p.classify(), ConnectionStringKind::Sas);
@@ -238,13 +250,22 @@ mod tests {
     #[test]
     fn rejects_segment_without_equals() {
         let s = "AccountName=a;garbage;AccountKey=k";
-        assert!(matches!(ConnectionStringParts::parse(s), Err(Error::AuthFailed(_))));
+        assert!(matches!(
+            ConnectionStringParts::parse(s),
+            Err(Error::AuthFailed(_))
+        ));
     }
 
     #[test]
     fn rejects_empty() {
-        assert!(matches!(ConnectionStringParts::parse(""), Err(Error::AuthFailed(_))));
-        assert!(matches!(ConnectionStringParts::parse(";;;"), Err(Error::AuthFailed(_))));
+        assert!(matches!(
+            ConnectionStringParts::parse(""),
+            Err(Error::AuthFailed(_))
+        ));
+        assert!(matches!(
+            ConnectionStringParts::parse(";;;"),
+            Err(Error::AuthFailed(_))
+        ));
     }
 
     #[test]

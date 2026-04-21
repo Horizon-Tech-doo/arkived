@@ -19,17 +19,26 @@ pub struct AccountKeyProvider {
 impl AccountKeyProvider {
     /// Construct from an account name and its base64-encoded key.
     pub fn new(account_name: impl Into<String>, key: SecretString) -> Self {
-        Self { account_name: account_name.into(), key }
+        Self {
+            account_name: account_name.into(),
+            key,
+        }
     }
 
     /// Storage account name.
-    pub fn account_name(&self) -> &str { &self.account_name }
+    pub fn account_name(&self) -> &str {
+        &self.account_name
+    }
 }
 
 #[async_trait]
 impl AuthProvider for AccountKeyProvider {
-    fn kind(&self) -> AuthKind { AuthKind::AccountKey }
-    fn display_name(&self) -> &str { &self.account_name }
+    fn kind(&self) -> AuthKind {
+        AuthKind::AccountKey
+    }
+    fn display_name(&self) -> &str {
+        &self.account_name
+    }
     async fn resolve(&self) -> crate::Result<ResolvedCredential> {
         Ok(ResolvedCredential::SharedKey {
             account_name: self.account_name.clone(),
@@ -58,10 +67,8 @@ mod tests {
 
     #[tokio::test]
     async fn resolves_shared_key_variant() {
-        let p = AccountKeyProvider::new(
-            "acmeprod",
-            SecretString::new("dGVzdGtleWJhc2U2NA==".into()),
-        );
+        let p =
+            AccountKeyProvider::new("acmeprod", SecretString::new("dGVzdGtleWJhc2U2NA==".into()));
         assert_eq!(p.kind(), AuthKind::AccountKey);
         assert_eq!(p.display_name(), "acmeprod");
         assert_eq!(p.account_name(), "acmeprod");

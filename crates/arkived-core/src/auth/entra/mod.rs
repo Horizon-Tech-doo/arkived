@@ -4,9 +4,9 @@
 //! so we implement the four-endpoint flow directly against
 //! `login.microsoftonline.com`.
 
-pub mod device_code;
-pub mod credential;
 pub mod cache;
+pub mod credential;
+pub mod device_code;
 
 /// Default Entra client ID used for the device-code flow.
 ///
@@ -22,13 +22,11 @@ pub const DEFAULT_CLIENT_ID: &str = "04b07795-8ddb-461a-bbee-02f9e1bf7b46";
 /// Default scope for Azure Storage access via Entra ID.
 pub const STORAGE_SCOPE: &str = "https://storage.azure.com/.default";
 
-use crate::auth::{AuthProvider, ResolvedCredential};
 use crate::auth::credentials::CredentialStore;
 use crate::auth::entra::cache::{CachedRefresh, RefreshCache};
 use crate::auth::entra::credential::{EntraTokenCredential, RefreshContext, TokenBundle};
-use crate::auth::entra::device_code::{
-    poll_for_token, refresh_access_token, start_device_code,
-};
+use crate::auth::entra::device_code::{poll_for_token, refresh_access_token, start_device_code};
+use crate::auth::{AuthProvider, ResolvedCredential};
 use crate::progress::{ProgressEvent, ProgressSink};
 use crate::types::{AuthKind, ResourceKind};
 use crate::Error;
@@ -110,7 +108,9 @@ impl EntraDeviceCodeProvider {
             OffsetDateTime::now_utc() + time::Duration::seconds(response.expires_in as i64);
         let bundle = TokenBundle {
             access_token: response.access_token,
-            refresh_token: response.refresh_token.or(Some(cached.refresh_token.clone())),
+            refresh_token: response
+                .refresh_token
+                .or(Some(cached.refresh_token.clone())),
             expires_at,
             refresh_context: Some(RefreshContext {
                 client: self.http.clone(),
@@ -136,8 +136,7 @@ impl EntraDeviceCodeProvider {
     }
 
     async fn run_device_code_flow(&self) -> Result<TokenBundle, Error> {
-        let dc =
-            start_device_code(&self.http, &self.tenant, &self.client_id, &self.scope).await?;
+        let dc = start_device_code(&self.http, &self.tenant, &self.client_id, &self.scope).await?;
 
         // User-visible instructions: route through `tracing` so the CLI can
         // display via tracing-subscriber to stderr. The Backend/CLI plan will
@@ -150,7 +149,9 @@ impl EntraDeviceCodeProvider {
             "Entra sign-in required"
         );
         // Keep a progress heartbeat so any attached sink sees activity.
-        self.progress.emit(ProgressEvent::Start { total: None }).await;
+        self.progress
+            .emit(ProgressEvent::Start { total: None })
+            .await;
 
         let response = poll_for_token(
             &self.http,
@@ -196,8 +197,12 @@ impl EntraDeviceCodeProvider {
 
 #[async_trait]
 impl AuthProvider for EntraDeviceCodeProvider {
-    fn kind(&self) -> AuthKind { AuthKind::EntraDeviceCode }
-    fn display_name(&self) -> &str { &self.display_name }
+    fn kind(&self) -> AuthKind {
+        AuthKind::EntraDeviceCode
+    }
+    fn display_name(&self) -> &str {
+        &self.display_name
+    }
     async fn resolve(&self) -> crate::Result<ResolvedCredential> {
         let bundle = match self.try_cached_refresh().await? {
             Some(b) => b,
@@ -208,7 +213,7 @@ impl AuthProvider for EntraDeviceCodeProvider {
     }
     fn supports(&self, resource: ResourceKind) -> bool {
         !matches!(resource, ResourceKind::Queue | ResourceKind::Table)
-            // Entra auth for Queues/Tables requires different scope; out of v0.1.0.
+        // Entra auth for Queues/Tables requires different scope; out of v0.1.0.
     }
 }
 
@@ -222,16 +227,28 @@ mod tests {
     use std::sync::Mutex;
 
     struct FakeStore(Mutex<HashMap<String, String>>);
-    impl FakeStore { fn new() -> Self { Self(Mutex::new(HashMap::new())) } }
+    impl FakeStore {
+        fn new() -> Self {
+            Self(Mutex::new(HashMap::new()))
+        }
+    }
     impl CredentialStore for FakeStore {
         fn put(&self, key: &str, secret: &SecretString) -> Result<(), Error> {
-            self.0.lock().unwrap().insert(key.into(), secret.expose_secret().into());
+            self.0
+                .lock()
+                .unwrap()
+                .insert(key.into(), secret.expose_secret().into());
             Ok(())
         }
         fn get(&self, key: &str) -> Result<SecretString, Error> {
-            self.0.lock().unwrap().get(key)
-                .map(|s| SecretString::new(s.clone().into()))
-                .ok_or_else(|| Error::NotFound { resource: key.into() })
+            self.0
+                .lock()
+                .unwrap()
+                .get(key)
+                .map(|s| SecretString::new(s.clone()))
+                .ok_or_else(|| Error::NotFound {
+                    resource: key.into(),
+                })
         }
         fn delete(&self, key: &str) -> Result<(), Error> {
             self.0.lock().unwrap().remove(key);
@@ -243,13 +260,8 @@ mod tests {
     fn builds_with_defaults() {
         let store: Arc<dyn CredentialStore> = Arc::new(FakeStore::new());
         let sink: Arc<dyn ProgressSink> = Arc::new(NoopSink);
-        let p = EntraDeviceCodeProvider::new(
-            "hamza@horizon-tech.io",
-            "common",
-            "si-1",
-            store,
-            sink,
-        );
+        let p =
+            EntraDeviceCodeProvider::new("hamza@horizon-tech.io", "common", "si-1", store, sink);
         assert_eq!(p.kind(), AuthKind::EntraDeviceCode);
         assert_eq!(p.display_name(), "hamza@horizon-tech.io");
         assert_eq!(p.client_id, DEFAULT_CLIENT_ID);

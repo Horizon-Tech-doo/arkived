@@ -3,8 +3,8 @@
 //!
 //! Implements automatic token refresh on expiry when a refresh context is attached.
 
-use azure_core::credentials::{AccessToken, Secret, TokenCredential, TokenRequestOptions};
 use async_trait::async_trait;
+use azure_core::credentials::{AccessToken, Secret, TokenCredential, TokenRequestOptions};
 use std::sync::Mutex;
 use time::OffsetDateTime;
 
@@ -30,7 +30,9 @@ pub struct EntraTokenCredential {
 impl EntraTokenCredential {
     /// Construct from a token bundle.
     pub fn new(bundle: TokenBundle) -> Self {
-        Self { inner: Mutex::new(bundle) }
+        Self {
+            inner: Mutex::new(bundle),
+        }
     }
 
     /// Access the current bundle (clone of).
@@ -85,7 +87,8 @@ impl TokenCredential for EntraTokenCredential {
             (guard.clone(), needs)
         };
 
-        if !needs_refresh || snapshot.refresh_context.is_none() || snapshot.refresh_token.is_none() {
+        if !needs_refresh || snapshot.refresh_context.is_none() || snapshot.refresh_token.is_none()
+        {
             return Ok(AccessToken::new(
                 Secret::new(snapshot.access_token),
                 snapshot.expires_at,
@@ -120,7 +123,10 @@ impl TokenCredential for EntraTokenCredential {
         };
         self.replace(new_bundle);
 
-        Ok(AccessToken::new(Secret::new(response.access_token), new_expiry))
+        Ok(AccessToken::new(
+            Secret::new(response.access_token),
+            new_expiry,
+        ))
     }
 }
 
@@ -141,7 +147,10 @@ mod tests {
     #[tokio::test]
     async fn get_token_returns_stored_access_token() {
         let c = EntraTokenCredential::new(bundle("AT-XYZ", 60));
-        let tok = c.get_token(&["https://storage.azure.com/.default"], None).await.unwrap();
+        let tok = c
+            .get_token(&["https://storage.azure.com/.default"], None)
+            .await
+            .unwrap();
         assert_eq!(tok.token.secret(), "AT-XYZ");
     }
 

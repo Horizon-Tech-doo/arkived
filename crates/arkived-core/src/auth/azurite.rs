@@ -26,13 +26,19 @@ pub struct AzuriteEmulatorProvider;
 
 impl AzuriteEmulatorProvider {
     /// Construct a new Azurite emulator provider.
-    pub fn new() -> Self { Self }
+    pub fn new() -> Self {
+        Self
+    }
 }
 
 #[async_trait]
 impl AuthProvider for AzuriteEmulatorProvider {
-    fn kind(&self) -> AuthKind { AuthKind::AzuriteEmulator }
-    fn display_name(&self) -> &str { "azurite-emulator" }
+    fn kind(&self) -> AuthKind {
+        AuthKind::AzuriteEmulator
+    }
+    fn display_name(&self) -> &str {
+        "azurite-emulator"
+    }
     async fn resolve(&self) -> crate::Result<ResolvedCredential> {
         Ok(ResolvedCredential::SharedKey {
             account_name: AZURITE_ACCOUNT.into(),

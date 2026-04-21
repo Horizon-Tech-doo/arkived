@@ -60,24 +60,39 @@ pub fn build_string_to_sign(account_name: &str, req: &SignRequest<'_>) -> String
     // Content-Length is "0" → "" per the spec (empty string, not zero).
     let content_length = {
         let v = h("Content-Length");
-        if v == "0" { "" } else { v }
+        if v == "0" {
+            ""
+        } else {
+            v
+        }
     };
 
     let mut s = String::new();
     s.push_str(req.method);
     s.push('\n');
-    s.push_str(h("Content-Encoding"));  s.push('\n');
-    s.push_str(h("Content-Language"));  s.push('\n');
-    s.push_str(content_length);          s.push('\n');
-    s.push_str(h("Content-MD5"));        s.push('\n');
-    s.push_str(h("Content-Type"));       s.push('\n');
-    s.push_str(h("Date"));               s.push('\n');
-    s.push_str(h("If-Modified-Since"));  s.push('\n');
-    s.push_str(h("If-Match"));           s.push('\n');
-    s.push_str(h("If-None-Match"));      s.push('\n');
-    s.push_str(h("If-Unmodified-Since")); s.push('\n');
-    s.push_str(h("Range"));              s.push('\n');
-    s.push('\n');  // Blank line before canonicalized headers
+    s.push_str(h("Content-Encoding"));
+    s.push('\n');
+    s.push_str(h("Content-Language"));
+    s.push('\n');
+    s.push_str(content_length);
+    s.push('\n');
+    s.push_str(h("Content-MD5"));
+    s.push('\n');
+    s.push_str(h("Content-Type"));
+    s.push('\n');
+    s.push_str(h("Date"));
+    s.push('\n');
+    s.push_str(h("If-Modified-Since"));
+    s.push('\n');
+    s.push_str(h("If-Match"));
+    s.push('\n');
+    s.push_str(h("If-None-Match"));
+    s.push('\n');
+    s.push_str(h("If-Unmodified-Since"));
+    s.push('\n');
+    s.push_str(h("Range"));
+    s.push('\n');
+    s.push('\n'); // Blank line before canonicalized headers
     s.push_str(&canonicalized_headers(req.headers));
     s.push_str(&canonicalized_resource(account_name, req.url));
     s
@@ -141,20 +156,24 @@ mod tests {
         "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==";
 
     fn hdrs(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
-        pairs.iter().map(|(k, v)| ((*k).into(), (*v).into())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).into(), (*v).into()))
+            .collect()
     }
 
     #[test]
     fn string_to_sign_list_containers() {
-        let url = url::Url::parse(
-            "http://127.0.0.1:10000/devstoreaccount1/?comp=list",
-        )
-        .unwrap();
+        let url = url::Url::parse("http://127.0.0.1:10000/devstoreaccount1/?comp=list").unwrap();
         let headers = hdrs(&[
             ("x-ms-date", "Mon, 21 Apr 2026 12:00:00 GMT"),
             ("x-ms-version", "2022-11-02"),
         ]);
-        let req = SignRequest { method: "GET", url: &url, headers: &headers };
+        let req = SignRequest {
+            method: "GET",
+            url: &url,
+            headers: &headers,
+        };
         let s = build_string_to_sign(AZURITE_ACCOUNT, &req);
         // Twelve empty lines, then canonicalized headers (2), then canonicalized resource.
         let expected = concat!(
@@ -170,28 +189,37 @@ mod tests {
 
     #[test]
     fn query_params_grouped_and_sorted() {
-        let url =
-            url::Url::parse("http://127.0.0.1:10000/devstoreaccount1/container?b=2&a=1&a=3")
-                .unwrap();
+        let url = url::Url::parse("http://127.0.0.1:10000/devstoreaccount1/container?b=2&a=1&a=3")
+            .unwrap();
         let headers = hdrs(&[
             ("x-ms-date", "Mon, 21 Apr 2026 12:00:00 GMT"),
             ("x-ms-version", "2022-11-02"),
         ]);
-        let req = SignRequest { method: "GET", url: &url, headers: &headers };
+        let req = SignRequest {
+            method: "GET",
+            url: &url,
+            headers: &headers,
+        };
         let s = build_string_to_sign(AZURITE_ACCOUNT, &req);
         // Resource section should contain sorted `a:1,3` before `b:2`.
-        assert!(s.ends_with("/devstoreaccount1/container\na:1,3\nb:2"), "got: {s}");
+        assert!(
+            s.ends_with("/devstoreaccount1/container\na:1,3\nb:2"),
+            "got: {s}"
+        );
     }
 
     #[test]
     fn sign_with_azurite_key_is_stable() {
-        let url =
-            url::Url::parse("http://127.0.0.1:10000/devstoreaccount1/?comp=list").unwrap();
+        let url = url::Url::parse("http://127.0.0.1:10000/devstoreaccount1/?comp=list").unwrap();
         let headers = hdrs(&[
             ("x-ms-date", "Mon, 21 Apr 2026 12:00:00 GMT"),
             ("x-ms-version", "2022-11-02"),
         ]);
-        let req = SignRequest { method: "GET", url: &url, headers: &headers };
+        let req = SignRequest {
+            method: "GET",
+            url: &url,
+            headers: &headers,
+        };
         let header = sign(
             AZURITE_ACCOUNT,
             &SecretString::new(AZURITE_KEY_B64.into()),
@@ -208,7 +236,11 @@ mod tests {
     #[test]
     fn bad_key_errors() {
         let url = url::Url::parse("http://x/").unwrap();
-        let req = SignRequest { method: "GET", url: &url, headers: &[] };
+        let req = SignRequest {
+            method: "GET",
+            url: &url,
+            headers: &[],
+        };
         let err = sign("x", &SecretString::new("not-base64!!!".into()), &req).unwrap_err();
         assert_eq!(err, SignError::BadKey);
     }
@@ -216,11 +248,12 @@ mod tests {
     #[test]
     fn content_length_zero_treated_as_empty() {
         let url = url::Url::parse("http://x/devstoreaccount1/").unwrap();
-        let headers = hdrs(&[
-            ("Content-Length", "0"),
-            ("x-ms-date", "d"),
-        ]);
-        let req = SignRequest { method: "PUT", url: &url, headers: &headers };
+        let headers = hdrs(&[("Content-Length", "0"), ("x-ms-date", "d")]);
+        let req = SignRequest {
+            method: "PUT",
+            url: &url,
+            headers: &headers,
+        };
         let s = build_string_to_sign("devstoreaccount1", &req);
         // Line 4 (after method) must be empty, not "0".
         let lines: Vec<&str> = s.split('\n').collect();
@@ -233,12 +266,12 @@ mod tests {
     #[test]
     fn headers_not_prefixed_x_ms_are_excluded_from_canon() {
         let url = url::Url::parse("http://x/devstoreaccount1/").unwrap();
-        let headers = hdrs(&[
-            ("Host", "x"),
-            ("User-Agent", "arkived"),
-            ("x-ms-date", "d"),
-        ]);
-        let req = SignRequest { method: "GET", url: &url, headers: &headers };
+        let headers = hdrs(&[("Host", "x"), ("User-Agent", "arkived"), ("x-ms-date", "d")]);
+        let req = SignRequest {
+            method: "GET",
+            url: &url,
+            headers: &headers,
+        };
         let s = build_string_to_sign("devstoreaccount1", &req);
         assert!(!s.contains("host:"));
         assert!(!s.contains("user-agent:"));

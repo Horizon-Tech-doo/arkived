@@ -31,7 +31,12 @@ async fn signed_list_containers_against_azurite() {
         url: &url,
         headers: &headers,
     };
-    let auth = sign(AZURITE_ACCOUNT, &SecretString::new(AZURITE_KEY.into()), &req).unwrap();
+    let auth = sign(
+        AZURITE_ACCOUNT,
+        &SecretString::new(AZURITE_KEY.into()),
+        &req,
+    )
+    .unwrap();
 
     let resp = client
         .get(&url_str)

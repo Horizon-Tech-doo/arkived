@@ -46,7 +46,7 @@ impl<'a> RefreshCache<'a> {
         let json = serde_json::to_string(cached)
             .map_err(|e| Error::Other(anyhow::anyhow!("serialize refresh cache: {e}")))?;
         self.store
-            .put(&Self::key_for(sign_in_id), &SecretString::new(json.into()))
+            .put(&Self::key_for(sign_in_id), &SecretString::new(json))
     }
 
     /// Retrieve a refresh token for a sign-in. Returns `None` if missing.
@@ -78,12 +78,17 @@ mod tests {
     struct FakeStore(Mutex<HashMap<String, String>>);
 
     impl FakeStore {
-        fn new() -> Self { Self(Mutex::new(HashMap::new())) }
+        fn new() -> Self {
+            Self(Mutex::new(HashMap::new()))
+        }
     }
 
     impl CredentialStore for FakeStore {
         fn put(&self, key: &str, secret: &SecretString) -> Result<(), Error> {
-            self.0.lock().unwrap().insert(key.into(), secret.expose_secret().into());
+            self.0
+                .lock()
+                .unwrap()
+                .insert(key.into(), secret.expose_secret().into());
             Ok(())
         }
         fn get(&self, key: &str) -> Result<SecretString, Error> {
@@ -91,8 +96,10 @@ mod tests {
                 .lock()
                 .unwrap()
                 .get(key)
-                .map(|s| SecretString::new(s.clone().into()))
-                .ok_or_else(|| Error::NotFound { resource: key.into() })
+                .map(|s| SecretString::new(s.clone()))
+                .ok_or_else(|| Error::NotFound {
+                    resource: key.into(),
+                })
         }
         fn delete(&self, key: &str) -> Result<(), Error> {
             self.0.lock().unwrap().remove(key);

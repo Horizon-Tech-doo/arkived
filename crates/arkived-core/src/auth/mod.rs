@@ -10,12 +10,14 @@ pub mod resolved;
 pub mod sas;
 pub mod shared_key;
 
-pub use resolved::ResolvedCredential;
 pub use account_key::AccountKeyProvider;
 pub use anonymous::AnonymousProvider;
 pub use azurite::AzuriteEmulatorProvider;
-pub use connection_string::{ConnectionStringKind, ConnectionStringParts, ConnectionStringProvider};
+pub use connection_string::{
+    ConnectionStringKind, ConnectionStringParts, ConnectionStringProvider,
+};
 pub use entra::EntraDeviceCodeProvider;
+pub use resolved::ResolvedCredential;
 pub use sas::SasTokenProvider;
 
 use crate::types::{AuthKind, ResourceKind};
@@ -47,12 +49,18 @@ mod tests {
 
     #[async_trait]
     impl AuthProvider for AlwaysAnonymousProvider {
-        fn kind(&self) -> AuthKind { AuthKind::Anonymous }
-        fn display_name(&self) -> &str { "test-anonymous" }
+        fn kind(&self) -> AuthKind {
+            AuthKind::Anonymous
+        }
+        fn display_name(&self) -> &str {
+            "test-anonymous"
+        }
         async fn resolve(&self) -> crate::Result<ResolvedCredential> {
             Ok(ResolvedCredential::Anonymous)
         }
-        fn supports(&self, _: ResourceKind) -> bool { true }
+        fn supports(&self, _: ResourceKind) -> bool {
+            true
+        }
     }
 
     #[tokio::test]

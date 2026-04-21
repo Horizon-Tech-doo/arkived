@@ -29,15 +29,19 @@ impl SasTokenProvider {
         let normalized = normalize_sas(raw.expose_secret())?;
         Ok(Self {
             display_name: display_name.into(),
-            token: SecretString::new(normalized.into()),
+            token: SecretString::new(normalized),
         })
     }
 }
 
 #[async_trait]
 impl AuthProvider for SasTokenProvider {
-    fn kind(&self) -> AuthKind { AuthKind::SasToken }
-    fn display_name(&self) -> &str { &self.display_name }
+    fn kind(&self) -> AuthKind {
+        AuthKind::SasToken
+    }
+    fn display_name(&self) -> &str {
+        &self.display_name
+    }
     async fn resolve(&self) -> crate::Result<ResolvedCredential> {
         Ok(ResolvedCredential::Sas(self.token.clone()))
     }
@@ -97,7 +101,7 @@ mod tests {
     #[tokio::test]
     async fn accepts_url_form_and_strips_prefix() {
         let url = format!("https://acme.blob.core.windows.net/container?{SAMPLE}");
-        let p = SasTokenProvider::new("dev", SecretString::new(url.into())).unwrap();
+        let p = SasTokenProvider::new("dev", SecretString::new(url)).unwrap();
         match p.resolve().await.unwrap() {
             ResolvedCredential::Sas(s) => assert_eq!(s.expose_secret(), SAMPLE),
             other => panic!("expected Sas, got {other:?}"),
@@ -107,7 +111,7 @@ mod tests {
     #[test]
     fn accepts_leading_question_mark() {
         let with_q = format!("?{SAMPLE}");
-        let p = SasTokenProvider::new("dev", SecretString::new(with_q.into())).unwrap();
+        let p = SasTokenProvider::new("dev", SecretString::new(with_q)).unwrap();
         assert_eq!(p.display_name(), "dev");
     }
 
@@ -130,7 +134,10 @@ mod tests {
     #[test]
     fn rejects_url_with_no_query() {
         assert!(matches!(
-            SasTokenProvider::new("x", SecretString::new("https://acme.blob.core.windows.net/".into())),
+            SasTokenProvider::new(
+                "x",
+                SecretString::new("https://acme.blob.core.windows.net/".into())
+            ),
             Err(Error::AuthFailed(_))
         ));
     }

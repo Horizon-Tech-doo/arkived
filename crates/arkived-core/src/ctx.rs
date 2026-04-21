@@ -86,12 +86,18 @@ mod tests {
     struct FakeAuth;
     #[async_trait]
     impl AuthProvider for FakeAuth {
-        fn kind(&self) -> AuthKind { AuthKind::Anonymous }
-        fn display_name(&self) -> &str { "fake" }
+        fn kind(&self) -> AuthKind {
+            AuthKind::Anonymous
+        }
+        fn display_name(&self) -> &str {
+            "fake"
+        }
         async fn resolve(&self) -> crate::Result<ResolvedCredential> {
             Ok(ResolvedCredential::Anonymous)
         }
-        fn supports(&self, _: ResourceKind) -> bool { true }
+        fn supports(&self, _: ResourceKind) -> bool {
+            true
+        }
     }
 
     #[tokio::test]
@@ -115,7 +121,9 @@ mod tests {
             .await;
         assert_eq!(decision, PolicyDecision::Allow);
 
-        ctx.progress.emit(crate::progress::ProgressEvent::Complete).await;
+        ctx.progress
+            .emit(crate::progress::ProgressEvent::Complete)
+            .await;
         assert_eq!(sink.events().len(), 1);
 
         let cred = ctx.auth.resolve().await.unwrap();

@@ -10,18 +10,27 @@ pub struct AnonymousProvider;
 
 impl AnonymousProvider {
     /// Construct a new `AnonymousProvider`.
-    pub fn new() -> Self { Self }
+    pub fn new() -> Self {
+        Self
+    }
 }
 
 #[async_trait]
 impl AuthProvider for AnonymousProvider {
-    fn kind(&self) -> AuthKind { AuthKind::Anonymous }
-    fn display_name(&self) -> &str { "anonymous" }
+    fn kind(&self) -> AuthKind {
+        AuthKind::Anonymous
+    }
+    fn display_name(&self) -> &str {
+        "anonymous"
+    }
     async fn resolve(&self) -> crate::Result<ResolvedCredential> {
         Ok(ResolvedCredential::Anonymous)
     }
     fn supports(&self, resource: ResourceKind) -> bool {
-        matches!(resource, ResourceKind::BlobContainer | ResourceKind::AdlsContainer | ResourceKind::AdlsDirectory)
+        matches!(
+            resource,
+            ResourceKind::BlobContainer | ResourceKind::AdlsContainer | ResourceKind::AdlsDirectory
+        )
     }
 }
 
