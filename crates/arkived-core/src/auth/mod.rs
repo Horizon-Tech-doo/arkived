@@ -7,6 +7,7 @@ pub mod connection_string;
 pub mod credentials;
 pub mod resolved;
 pub mod sas;
+pub mod shared_key;
 
 pub use resolved::ResolvedCredential;
 
