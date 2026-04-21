@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **MSRV bumped from 1.88 to 1.88.** Required by the current Microsoft
+  Azure SDK for Rust (`azure_storage_blob 0.11`). Updated
+  `rust-toolchain.toml`, workspace `rust-version`, and CI matrix.
 - **MSRV bumped from 1.75 to 1.85.** Modern crates in the foundation
   dependency chain (`uuid`, `keyring`, transitive `getrandom 0.4.x`)
   require `edition2024`, stabilized in Rust 1.85 (Feb 2025). Was flagged

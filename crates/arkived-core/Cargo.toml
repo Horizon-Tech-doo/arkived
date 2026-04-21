@@ -28,13 +28,18 @@ keyring = { workspace = true }
 uuid = { workspace = true }
 secrecy = { workspace = true }
 chrono = { workspace = true }
-
-# Azure — uncomment in Stage 1 as you wire up AzureBackend:
-# azure_core = { workspace = true }
-# azure_identity = { workspace = true }
-# azure_storage = { workspace = true }
-# azure_storage_blobs = { workspace = true }
+azure_core = { workspace = true }
+azure_identity = { workspace = true }
+azure_storage_blob = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+base64 = { workspace = true }
+reqwest = { workspace = true }
+url = { workspace = true }
+time = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros", "test-util"] }
+mockito = { workspace = true }
+httpdate = { workspace = true }

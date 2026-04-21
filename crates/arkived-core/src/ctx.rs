@@ -77,19 +77,11 @@ impl Ctx {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth::Credential;
+    use crate::auth::ResolvedCredential;
     use crate::policy::{Action, ActionContext, AllowAllPolicy, PolicyDecision};
     use crate::progress::MemorySink;
     use crate::types::{AuthKind, ResourceKind};
     use async_trait::async_trait;
-
-    #[derive(Debug)]
-    struct FakeCred;
-    impl Credential for FakeCred {
-        fn kind(&self) -> AuthKind {
-            AuthKind::Anonymous
-        }
-    }
 
     struct FakeAuth;
     #[async_trait]
@@ -100,8 +92,8 @@ mod tests {
         fn display_name(&self) -> &str {
             "fake"
         }
-        async fn credential(&self) -> crate::Result<Arc<dyn Credential>> {
-            Ok(Arc::new(FakeCred))
+        async fn resolve(&self) -> crate::Result<ResolvedCredential> {
+            Ok(ResolvedCredential::Anonymous)
         }
         fn supports(&self, _: ResourceKind) -> bool {
             true
@@ -133,6 +125,9 @@ mod tests {
             .emit(crate::progress::ProgressEvent::Complete)
             .await;
         assert_eq!(sink.events().len(), 1);
+
+        let cred = ctx.auth.resolve().await.unwrap();
+        assert!(matches!(cred, ResolvedCredential::Anonymous));
     }
 
     #[test]
