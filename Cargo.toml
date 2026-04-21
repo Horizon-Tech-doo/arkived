@@ -18,7 +18,7 @@ authors = [
 license = "Apache-2.0"
 repository = "https://github.com/Horizon-Tech-doo/arkived"
 homepage = "https://arkived.app"
-rust-version = "1.75"
+rust-version = "1.85"
 
 [workspace.dependencies]
 # Azure SDK (preview — pin minor versions)
@@ -48,6 +48,14 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Data
 bytes = "1"
+
+# Store + crypto + identifiers
+rusqlite = { version = "0.31", features = ["bundled"] }
+keyring = "2"
+uuid = { version = "1", features = ["v4", "serde"] }
+secrecy = { version = "0.8", features = ["serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+tempfile = "3"
 
 [profile.release]
 opt-level = 3

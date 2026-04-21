@@ -19,7 +19,7 @@ cargo test --workspace
 
 Requirements:
 
-- Rust 1.75+ (install via [rustup](https://rustup.rs))
+- Rust 1.85+ (install via [rustup](https://rustup.rs))
 - An Azure storage account for integration tests (optional for unit tests)
 
 ## Coding standards
