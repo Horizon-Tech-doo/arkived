@@ -58,6 +58,23 @@ impl AzureBlobBackend {
     pub fn endpoint(&self) -> &url::Url {
         &self.endpoint
     }
+
+    /// Construct from a storage account name + Azure environment.
+    ///
+    /// Builds the endpoint URL as `https://<account>.blob.<env_suffix>`.
+    pub fn for_account(
+        account_name: &str,
+        environment: &crate::types::AzureEnvironment,
+        credential: ResolvedCredential,
+    ) -> crate::Result<Self> {
+        let endpoint = url::Url::parse(&format!(
+            "https://{}.blob.{}",
+            account_name,
+            environment.storage_suffix()
+        ))
+        .map_err(|e| crate::Error::Backend(format!("build endpoint: {e}")))?;
+        Self::new(endpoint, credential)
+    }
 }
 
 #[cfg(test)]
@@ -79,6 +96,36 @@ mod tests {
         let dbg = format!("{b:?}");
         assert!(dbg.contains("AzureBlobBackend"));
         assert!(dbg.contains("acme.blob.core.windows.net"));
+    }
+
+    #[test]
+    fn for_account_builds_public_endpoint() {
+        use crate::types::AzureEnvironment;
+        let b = AzureBlobBackend::for_account(
+            "acmeprod",
+            &AzureEnvironment::Public,
+            ResolvedCredential::Anonymous,
+        )
+        .unwrap();
+        assert_eq!(
+            b.endpoint().as_str(),
+            "https://acmeprod.blob.core.windows.net/"
+        );
+    }
+
+    #[test]
+    fn for_account_builds_china_endpoint() {
+        use crate::types::AzureEnvironment;
+        let b = AzureBlobBackend::for_account(
+            "acmeprod",
+            &AzureEnvironment::China,
+            ResolvedCredential::Anonymous,
+        )
+        .unwrap();
+        assert_eq!(
+            b.endpoint().as_str(),
+            "https://acmeprod.blob.core.chinacloudapi.cn/"
+        );
     }
 }
 
