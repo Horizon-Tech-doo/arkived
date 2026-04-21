@@ -5,6 +5,7 @@ pub mod anonymous;
 pub mod azurite;
 pub mod connection_string;
 pub mod credentials;
+pub mod entra;
 pub mod resolved;
 pub mod sas;
 pub mod shared_key;
