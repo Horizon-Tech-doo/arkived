@@ -151,6 +151,38 @@ pub async fn poll_for_token(
     }
 }
 
+/// Exchange a refresh token for a new access token.
+pub async fn refresh_access_token(
+    client: &reqwest::Client,
+    tenant: &str,
+    client_id: &str,
+    refresh_token: &str,
+    scope: &str,
+) -> Result<TokenResponse, Error> {
+    let url = format!("{AUTHORITY_HOST}/{tenant}/oauth2/v2.0/token");
+    let params = [
+        ("grant_type", "refresh_token"),
+        ("client_id", client_id),
+        ("refresh_token", refresh_token),
+        ("scope", scope),
+    ];
+    let resp = client
+        .post(&url)
+        .form(&params)
+        .send()
+        .await
+        .map_err(|e| Error::NetworkTransient(format!("refresh request: {e}")))?;
+
+    if !resp.status().is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(Error::AuthFailed(format!("refresh failed: {body}")));
+    }
+
+    resp.json::<TokenResponse>()
+        .await
+        .map_err(|e| Error::AuthFailed(format!("refresh parse: {e}")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -256,5 +288,37 @@ mod tests {
         let e: TokenError = serde_json::from_str(body).unwrap();
         assert_eq!(e.error, "authorization_pending");
         assert_eq!(e.error_description.as_deref(), Some("waiting"));
+    }
+
+    #[tokio::test]
+    async fn refresh_success_returns_new_token() {
+        let mut server = mockito::Server::new_async().await;
+        let host = server.url();
+
+        let _m = server
+            .mock("POST", "/tenant-abc/oauth2/v2.0/token")
+            .with_status(200)
+            .with_body(
+                r#"{"access_token":"NEW","refresh_token":"RT2","expires_in":3600,"token_type":"Bearer"}"#,
+            )
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let url = format!("{host}/tenant-abc/oauth2/v2.0/token");
+        let resp = client
+            .post(&url)
+            .form(&[
+                ("grant_type", "refresh_token"),
+                ("client_id", "x"),
+                ("refresh_token", "RT1"),
+                ("scope", "s"),
+            ])
+            .send()
+            .await
+            .unwrap();
+        let parsed: TokenResponse = resp.json().await.unwrap();
+        assert_eq!(parsed.access_token, "NEW");
+        assert_eq!(parsed.refresh_token.as_deref(), Some("RT2"));
     }
 }
