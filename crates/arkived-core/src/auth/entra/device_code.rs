@@ -61,6 +61,96 @@ pub async fn start_device_code(
         .map_err(|e| Error::AuthFailed(format!("devicecode parse: {e}")))
 }
 
+use std::time::Duration;
+
+/// Successful `/token` response.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TokenResponse {
+    /// Access token (bearer).
+    pub access_token: String,
+    /// Refresh token — use to get new access tokens without re-prompting.
+    #[serde(default)]
+    pub refresh_token: Option<String>,
+    /// Seconds until `access_token` expires.
+    pub expires_in: u64,
+    /// Always `Bearer` for Entra.
+    pub token_type: String,
+    /// Scope(s) actually granted.
+    #[serde(default)]
+    pub scope: Option<String>,
+}
+
+/// Error field in a `/token` error response.
+#[derive(Debug, Deserialize)]
+struct TokenError {
+    error: String,
+    #[serde(default)]
+    error_description: Option<String>,
+}
+
+/// Poll the `/token` endpoint until the user completes sign-in or the flow errors.
+pub async fn poll_for_token(
+    client: &reqwest::Client,
+    tenant: &str,
+    client_id: &str,
+    device_code: &str,
+    interval: Duration,
+    timeout: Duration,
+) -> Result<TokenResponse, Error> {
+    let url = format!("{AUTHORITY_HOST}/{tenant}/oauth2/v2.0/token");
+    let deadline = std::time::Instant::now() + timeout;
+
+    loop {
+        if std::time::Instant::now() >= deadline {
+            return Err(Error::AuthFailed("device-code flow timed out".into()));
+        }
+
+        let params = [
+            ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+            ("client_id", client_id),
+            ("device_code", device_code),
+        ];
+        let resp = client
+            .post(&url)
+            .form(&params)
+            .send()
+            .await
+            .map_err(|e| Error::NetworkTransient(format!("token poll: {e}")))?;
+
+        if resp.status().is_success() {
+            return resp
+                .json::<TokenResponse>()
+                .await
+                .map_err(|e| Error::AuthFailed(format!("token parse: {e}")));
+        }
+
+        // Parse error to decide: keep polling, or abort.
+        let body = resp.text().await.unwrap_or_default();
+        let err: TokenError = serde_json::from_str(&body).unwrap_or(TokenError {
+            error: "unknown_error".into(),
+            error_description: Some(body.clone()),
+        });
+
+        match err.error.as_str() {
+            "authorization_pending" => tokio::time::sleep(interval).await,
+            "slow_down" => tokio::time::sleep(interval * 2).await,
+            "authorization_declined" | "expired_token" | "bad_verification_code" => {
+                return Err(Error::AuthFailed(format!(
+                    "{}: {}",
+                    err.error,
+                    err.error_description.unwrap_or_default()
+                )));
+            }
+            other => {
+                return Err(Error::AuthFailed(format!(
+                    "unexpected token error `{other}`: {}",
+                    err.error_description.unwrap_or_default()
+                )));
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,5 +216,45 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), 400);
+    }
+
+    #[tokio::test]
+    async fn poll_success_on_first_try() {
+        let mut server = mockito::Server::new_async().await;
+        let host = server.url();
+
+        let _m = server
+            .mock("POST", "/tenant-abc/oauth2/v2.0/token")
+            .with_status(200)
+            .with_body(
+                r#"{"access_token":"AT","refresh_token":"RT","expires_in":3600,"token_type":"Bearer","scope":"x"}"#,
+            )
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let url = format!("{host}/tenant-abc/oauth2/v2.0/token");
+        let resp = client
+            .post(&url)
+            .form(&[
+                ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+                ("client_id", "x"),
+                ("device_code", "dc"),
+            ])
+            .send()
+            .await
+            .unwrap();
+        let parsed: TokenResponse = resp.json().await.unwrap();
+        assert_eq!(parsed.access_token, "AT");
+        assert_eq!(parsed.refresh_token.as_deref(), Some("RT"));
+        assert_eq!(parsed.expires_in, 3600);
+    }
+
+    #[test]
+    fn token_error_deserializes() {
+        let body = r#"{"error":"authorization_pending","error_description":"waiting"}"#;
+        let e: TokenError = serde_json::from_str(body).unwrap();
+        assert_eq!(e.error, "authorization_pending");
+        assert_eq!(e.error_description.as_deref(), Some("waiting"));
     }
 }
