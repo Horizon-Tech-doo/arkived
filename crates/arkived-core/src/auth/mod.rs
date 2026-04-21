@@ -4,6 +4,7 @@
 //! the Auth plan. This module only defines the contract.
 
 pub mod credentials;
+pub mod resolved;
 
 use crate::types::{AuthKind, ResourceKind};
 use async_trait::async_trait;
