@@ -1,5 +1,6 @@
 //! `AuthProvider` trait + credential storage abstractions.
 
+pub mod account_key;
 pub mod anonymous;
 pub mod azurite;
 pub mod credentials;
