@@ -5,6 +5,7 @@
 //! `login.microsoftonline.com`.
 
 pub mod device_code;
+pub mod credential;
 
 /// Default Entra client ID used for the device-code flow.
 ///
