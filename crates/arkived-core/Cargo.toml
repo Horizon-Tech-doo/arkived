@@ -37,6 +37,7 @@ base64 = { workspace = true }
 reqwest = { workspace = true }
 url = { workspace = true }
 time = { workspace = true }
+quick-xml = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
