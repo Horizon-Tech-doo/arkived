@@ -28,7 +28,7 @@ pub mod progress;
 pub mod store;
 pub mod types;
 
-pub(crate) mod backend;
+pub mod backend;
 
 // Re-export policy: the crate root surfaces top-level contracts (traits,
 // primary entry points, shared error types). Data-record types that only
@@ -38,6 +38,10 @@ pub(crate) mod backend;
 // module path (`arkived_core::store::SignIn` etc.) to keep the top-level namespace
 // focused.
 pub use auth::{AuthProvider, ResolvedCredential};
+pub use backend::{
+    AzureBlobBackend, BlobEntry, BlobPath, ByteStream, Container, DeleteOpts, Page, Range,
+    WriteOpts, WriteResult,
+};
 pub use config::{ArkivedConfig, ConfirmMode, OutputFormat};
 pub use ctx::{CancellationToken, Ctx};
 pub use error::{Error, Result};
