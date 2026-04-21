@@ -13,6 +13,7 @@
 
 use crate::Error;
 use secrecy::SecretString;
+use secrecy::ExposeSecret;
 use std::collections::HashMap;
 
 /// Parsed connection-string fields we care about for v0.1.0.
@@ -124,6 +125,62 @@ pub enum ConnectionStringKind {
     Invalid,
 }
 
+use crate::auth::{AuthProvider, ResolvedCredential};
+use crate::types::{AuthKind, ResourceKind};
+use async_trait::async_trait;
+
+/// Auth provider that resolves from a connection string — resolves to either
+/// a `SharedKey` or a `Sas` `ResolvedCredential` based on which fields are
+/// present.
+#[derive(Debug, Clone)]
+pub struct ConnectionStringProvider {
+    display_name: String,
+    raw: SecretString,
+}
+
+impl ConnectionStringProvider {
+    /// Construct from a raw connection string. Parses eagerly for validation
+    /// but re-parses on each `resolve()` because the raw form is kept as the
+    /// secret of record.
+    pub fn new(display_name: impl Into<String>, raw: SecretString) -> crate::Result<Self> {
+        // Validate up front.
+        let parts = ConnectionStringParts::parse(raw.expose_secret())?;
+        if parts.classify() == ConnectionStringKind::Invalid {
+            return Err(Error::AuthFailed(
+                "connection string contains neither AccountKey nor SharedAccessSignature"
+                    .into(),
+            ));
+        }
+        Ok(Self { display_name: display_name.into(), raw })
+    }
+}
+
+#[async_trait]
+impl AuthProvider for ConnectionStringProvider {
+    fn kind(&self) -> AuthKind { AuthKind::ConnectionString }
+    fn display_name(&self) -> &str { &self.display_name }
+    async fn resolve(&self) -> crate::Result<ResolvedCredential> {
+        let parts = ConnectionStringParts::parse(self.raw.expose_secret())?;
+        match parts.classify() {
+            ConnectionStringKind::AccountKey => {
+                let (name, key) = parts.into_account_key()?;
+                Ok(ResolvedCredential::SharedKey { account_name: name, key })
+            }
+            ConnectionStringKind::Sas => Ok(ResolvedCredential::Sas(parts.into_sas()?)),
+            ConnectionStringKind::Invalid => Err(Error::AuthFailed(
+                "connection string missing both AccountKey and SharedAccessSignature".into(),
+            )),
+        }
+    }
+    fn supports(&self, resource: ResourceKind) -> bool {
+        // Connection strings can carry any auth method — we accept everything.
+        // The wrapped AccountKey/Sas variants have their own coarser filters;
+        // the server is the final arbiter of what works.
+        let _ = resource;
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -209,5 +266,43 @@ mod tests {
         let p = ConnectionStringParts::parse("SharedAccessSignature=sv=2022&sig=ABC").unwrap();
         let s = p.into_sas().unwrap();
         assert_eq!(s.expose_secret(), "sv=2022&sig=ABC");
+    }
+
+    #[tokio::test]
+    async fn provider_account_key_path() {
+        let p = ConnectionStringProvider::new(
+            "acme",
+            SecretString::new("AccountName=acme;AccountKey=dGVzdA==".into()),
+        )
+        .unwrap();
+        match p.resolve().await.unwrap() {
+            ResolvedCredential::SharedKey { account_name, key } => {
+                assert_eq!(account_name, "acme");
+                assert_eq!(key.expose_secret(), "dGVzdA==");
+            }
+            other => panic!("expected SharedKey, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_sas_path() {
+        let p = ConnectionStringProvider::new(
+            "dev",
+            SecretString::new("BlobEndpoint=https://acme.blob.core.windows.net;SharedAccessSignature=sv=2022&sig=ABC".into()),
+        )
+        .unwrap();
+        match p.resolve().await.unwrap() {
+            ResolvedCredential::Sas(s) => assert_eq!(s.expose_secret(), "sv=2022&sig=ABC"),
+            other => panic!("expected Sas, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn provider_rejects_invalid_at_construction() {
+        let bad = SecretString::new("BlobEndpoint=https://acme.blob".into());
+        assert!(matches!(
+            ConnectionStringProvider::new("bad", bad),
+            Err(Error::AuthFailed(_))
+        ));
     }
 }
