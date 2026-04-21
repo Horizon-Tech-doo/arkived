@@ -1,5 +1,6 @@
 //! `AuthProvider` trait + credential storage abstractions.
 
+pub mod anonymous;
 pub mod credentials;
 pub mod resolved;
 
