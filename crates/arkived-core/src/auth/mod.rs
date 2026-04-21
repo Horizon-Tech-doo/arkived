@@ -11,6 +11,12 @@ pub mod sas;
 pub mod shared_key;
 
 pub use resolved::ResolvedCredential;
+pub use account_key::AccountKeyProvider;
+pub use anonymous::AnonymousProvider;
+pub use azurite::AzuriteEmulatorProvider;
+pub use connection_string::{ConnectionStringKind, ConnectionStringParts, ConnectionStringProvider};
+pub use entra::EntraDeviceCodeProvider;
+pub use sas::SasTokenProvider;
 
 use crate::types::{AuthKind, ResourceKind};
 use async_trait::async_trait;
