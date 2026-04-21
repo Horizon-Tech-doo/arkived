@@ -5,6 +5,7 @@ pub mod anonymous;
 pub mod azurite;
 pub mod credentials;
 pub mod resolved;
+pub mod sas;
 
 pub use resolved::ResolvedCredential;
 
