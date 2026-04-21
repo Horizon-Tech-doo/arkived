@@ -68,9 +68,12 @@ fn fastrand_u64(max_exclusive: u64) -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.subsec_nanos() as u64 | ((d.as_secs() as u64) << 32))
+        .map(|d| d.subsec_nanos() as u64 | (d.as_secs() << 32))
         .unwrap_or(0);
-    (nanos.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407)) % max_exclusive
+    (nanos
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407))
+        % max_exclusive
 }
 
 #[cfg(test)]
@@ -107,7 +110,9 @@ mod tests {
             let a = a2.clone();
             async move {
                 a.fetch_add(1, Ordering::SeqCst);
-                Err(Error::NotFound { resource: "x".into() })
+                Err(Error::NotFound {
+                    resource: "x".into(),
+                })
             }
         })
         .await;

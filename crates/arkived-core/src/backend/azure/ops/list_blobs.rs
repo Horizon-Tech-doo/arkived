@@ -25,7 +25,7 @@ impl AzureBlobBackend {
         continuation: Option<String>,
     ) -> crate::Result<Page<BlobEntry>> {
         let mut url = self.endpoint.clone();
-        url.set_path(&format!("/{}", container));
+        url.set_path(&format!("/{container}"));
         let mut query = String::from("restype=container&comp=list");
         if let Some(p) = prefix {
             query.push_str(&format!("&prefix={}", urlencoding::encode(p)));
@@ -62,10 +62,7 @@ impl AzureBlobBackend {
             items.push(BlobEntry::Blob {
                 name: b.name,
                 size: b.properties.content_length.unwrap_or(0),
-                blob_type: b
-                    .properties
-                    .blob_type
-                    .unwrap_or_else(|| "BlockBlob".into()),
+                blob_type: b.properties.blob_type.unwrap_or_else(|| "BlockBlob".into()),
                 tier: b.properties.access_tier,
                 etag: b.properties.etag,
                 content_type: b.properties.content_type,

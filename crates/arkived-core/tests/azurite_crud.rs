@@ -37,7 +37,10 @@ fn ctx() -> Ctx {
 #[ignore]
 async fn list_containers_against_azurite() {
     let b = backend().await;
-    let page = b.list_containers(None).await.expect("azurite must be running");
+    let page = b
+        .list_containers(None)
+        .await
+        .expect("azurite must be running");
     // We don't assert count — Azurite starts empty in CI but might have state on a dev box.
     println!("containers: {}", page.items.len());
 }
@@ -86,11 +89,19 @@ async fn full_write_read_delete_cycle() {
     assert_eq!(&collected[..], b"hello-arkived");
 
     // LIST
-    let page = b.list_blobs("arkivedci", None, None, None).await.expect("list_blobs");
-    assert!(page.items.iter().any(|e| matches!(e, BlobEntry::Blob { name, .. } if name == &path.blob)));
+    let page = b
+        .list_blobs("arkivedci", None, None, None)
+        .await
+        .expect("list_blobs");
+    assert!(page
+        .items
+        .iter()
+        .any(|e| matches!(e, BlobEntry::Blob { name, .. } if name == &path.blob)));
 
     // DELETE
-    b.delete_blob(&c, &path, DeleteOpts::default()).await.expect("delete_blob");
+    b.delete_blob(&c, &path, DeleteOpts::default())
+        .await
+        .expect("delete_blob");
 }
 
 /// Create a container if it doesn't already exist. Out-of-scope for v0.1.0
@@ -99,7 +110,7 @@ async fn full_write_read_delete_cycle() {
 async fn ensure_container(b: &AzureBlobBackend, name: &str) {
     let http = reqwest::Client::new();
     let mut url = b.endpoint().clone();
-    url.set_path(&format!("/{}", name));
+    url.set_path(&format!("/{name}"));
     url.set_query(Some("restype=container"));
 
     // Authorize the PUT manually using our signer.
@@ -116,7 +127,11 @@ async fn ensure_container(b: &AzureBlobBackend, name: &str) {
     let auth = sign(
         "devstoreaccount1",
         &SecretString::new(AZURITE_KEY.into()),
-        &SignRequest { method: "PUT", url: &url, headers: &headers },
+        &SignRequest {
+            method: "PUT",
+            url: &url,
+            headers: &headers,
+        },
     )
     .unwrap();
     let resp = http

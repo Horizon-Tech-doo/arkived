@@ -21,7 +21,10 @@ pub struct BlobPath {
 impl BlobPath {
     /// Construct from container + blob.
     pub fn new(container: impl Into<String>, blob: impl Into<String>) -> Self {
-        Self { container: container.into(), blob: blob.into() }
+        Self {
+            container: container.into(),
+            blob: blob.into(),
+        }
     }
 }
 

@@ -13,7 +13,9 @@ use crate::auth::shared_key::{sign, SignRequest};
 use crate::auth::ResolvedCredential;
 use crate::Error;
 use azure_core::credentials::TokenCredential;
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION};
+#[cfg(test)]
+use reqwest::header::HeaderMap;
+use reqwest::header::{HeaderName, HeaderValue, AUTHORIZATION};
 use reqwest::{Request, Url};
 use std::sync::Arc;
 
@@ -65,10 +67,7 @@ pub(crate) async fn apply_auth(
     }
 }
 
-async fn apply_entra(
-    tc: Arc<dyn TokenCredential>,
-    request: &mut Request,
-) -> crate::Result<()> {
+async fn apply_entra(tc: Arc<dyn TokenCredential>, request: &mut Request) -> crate::Result<()> {
     let token = tc
         .get_token(&["https://storage.azure.com/.default"], None)
         .await
@@ -76,7 +75,8 @@ async fn apply_entra(
     let header = format!("Bearer {}", token.token.secret());
     request.headers_mut().insert(
         AUTHORIZATION,
-        HeaderValue::from_str(&header).map_err(|e| Error::AuthFailed(format!("bearer header: {e}")))?,
+        HeaderValue::from_str(&header)
+            .map_err(|e| Error::AuthFailed(format!("bearer header: {e}")))?,
     );
     Ok(())
 }
@@ -92,12 +92,7 @@ fn apply_shared_key(
     let header_pairs: Vec<(String, String)> = request
         .headers()
         .iter()
-        .map(|(k, v)| {
-            (
-                k.as_str().to_string(),
-                v.to_str().unwrap_or("").to_string(),
-            )
-        })
+        .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap_or("").to_string()))
         .collect();
 
     let signed = sign(
@@ -113,7 +108,8 @@ fn apply_shared_key(
 
     request.headers_mut().insert(
         AUTHORIZATION,
-        HeaderValue::from_str(&signed).map_err(|e| Error::AuthFailed(format!("auth header: {e}")))?,
+        HeaderValue::from_str(&signed)
+            .map_err(|e| Error::AuthFailed(format!("auth header: {e}")))?,
     );
     Ok(())
 }
@@ -140,12 +136,11 @@ mod tests {
     #[tokio::test]
     async fn anonymous_sets_date_and_version_only() {
         let mut req = build_get("https://example.com/container");
-        apply_auth(&ResolvedCredential::Anonymous, &mut req).await.unwrap();
+        apply_auth(&ResolvedCredential::Anonymous, &mut req)
+            .await
+            .unwrap();
         assert!(req.headers().contains_key("x-ms-date"));
-        assert_eq!(
-            req.headers().get("x-ms-version").unwrap(),
-            MS_VERSION
-        );
+        assert_eq!(req.headers().get("x-ms-version").unwrap(), MS_VERSION);
         assert!(!req.headers().contains_key(AUTHORIZATION));
     }
 

@@ -44,6 +44,9 @@ pub(crate) struct ContainerProperties {
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct ListBlobsResult {
+    /// Echo of the prefix filter the server applied. Not surfaced through
+    /// the public API since the caller already knows what they requested.
+    #[allow(dead_code)]
     #[serde(rename = "Prefix", default)]
     pub prefix: Option<String>,
     #[serde(rename = "Blobs", default)]

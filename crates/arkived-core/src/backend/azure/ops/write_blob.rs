@@ -59,7 +59,7 @@ impl AzureBlobBackend {
                 )
                 .await;
             match decision {
-                PolicyDecision::Allow | PolicyDecision::AllowAlways { .. } => {}
+                PolicyDecision::Allow | PolicyDecision::AllowAlways => {}
                 PolicyDecision::Deny(reason) => return Err(Error::PolicyDenied(reason)),
             }
         }
@@ -150,8 +150,10 @@ mod tests {
 
     #[tokio::test]
     async fn collect_bytes_errors_above_limit() {
-        let chunks: Vec<crate::Result<Bytes>> =
-            vec![Ok(Bytes::from(vec![0u8; 600])), Ok(Bytes::from(vec![0u8; 600]))];
+        let chunks: Vec<crate::Result<Bytes>> = vec![
+            Ok(Bytes::from(vec![0u8; 600])),
+            Ok(Bytes::from(vec![0u8; 600])),
+        ];
         let s = stream::iter(chunks).boxed();
         let err = collect_bytes(s, 1000).await.unwrap_err();
         assert!(matches!(err, Error::Backend(_)));
@@ -168,20 +170,26 @@ mod tests {
     struct FakeAuth;
     #[async_trait]
     impl crate::auth::AuthProvider for FakeAuth {
-        fn kind(&self) -> AuthKind { AuthKind::Anonymous }
-        fn display_name(&self) -> &str { "fake" }
+        fn kind(&self) -> AuthKind {
+            AuthKind::Anonymous
+        }
+        fn display_name(&self) -> &str {
+            "fake"
+        }
         async fn resolve(&self) -> crate::Result<ResolvedCredential> {
             Ok(ResolvedCredential::Anonymous)
         }
-        fn supports(&self, _: ResourceKind) -> bool { true }
+        fn supports(&self, _: ResourceKind) -> bool {
+            true
+        }
     }
 
     #[tokio::test]
     async fn overwrite_with_deny_all_policy_blocks_before_http() {
         let endpoint = url::Url::parse("http://127.0.0.1:1/").unwrap();
         let backend = AzureBlobBackend::new(endpoint, ResolvedCredential::Anonymous).unwrap();
-        let ctx = Ctx::new(Arc::new(FakeAuth), Arc::new(DenyAllPolicy))
-            .with_progress(Arc::new(NoopSink));
+        let ctx =
+            Ctx::new(Arc::new(FakeAuth), Arc::new(DenyAllPolicy)).with_progress(Arc::new(NoopSink));
 
         let chunks: Vec<crate::Result<Bytes>> = vec![Ok(Bytes::from("data"))];
         let stream = futures::stream::iter(chunks).boxed();
@@ -209,8 +217,8 @@ mod tests {
         // but that's a NetworkTransient rather than a PolicyDenied).
         let endpoint = url::Url::parse("http://127.0.0.1:1/").unwrap();
         let backend = AzureBlobBackend::new(endpoint, ResolvedCredential::Anonymous).unwrap();
-        let ctx = Ctx::new(Arc::new(FakeAuth), Arc::new(DenyAllPolicy))
-            .with_progress(Arc::new(NoopSink));
+        let ctx =
+            Ctx::new(Arc::new(FakeAuth), Arc::new(DenyAllPolicy)).with_progress(Arc::new(NoopSink));
 
         let chunks: Vec<crate::Result<Bytes>> = vec![Ok(Bytes::from("data"))];
         let stream = futures::stream::iter(chunks).boxed();
@@ -220,7 +228,10 @@ mod tests {
                 &ctx,
                 &BlobPath::new("c", "b"),
                 stream,
-                WriteOpts { overwrite: false, ..Default::default() },
+                WriteOpts {
+                    overwrite: false,
+                    ..Default::default()
+                },
             )
             .await
             .unwrap_err();

@@ -80,9 +80,7 @@ impl<'a> HttpPipeline<'a> {
     async fn send_once(&self, mut tmpl: RequestTemplate) -> crate::Result<Response> {
         decorate_url(self.credential, &mut tmpl.url);
 
-        let mut builder = self
-            .http
-            .request(tmpl.method.clone(), tmpl.url.clone());
+        let mut builder = self.http.request(tmpl.method.clone(), tmpl.url.clone());
         for (k, v) in &tmpl.headers {
             builder = builder.header(k, v);
         }
@@ -132,7 +130,10 @@ mod tests {
 
         let http = reqwest::Client::new();
         let cred = ResolvedCredential::Anonymous;
-        let pipeline = HttpPipeline { http: &http, credential: &cred };
+        let pipeline = HttpPipeline {
+            http: &http,
+            credential: &cred,
+        };
 
         let url = url::Url::parse(&format!("{}/hello", server.url())).unwrap();
         let resp = pipeline
@@ -162,7 +163,10 @@ mod tests {
 
         let http = reqwest::Client::new();
         let cred = ResolvedCredential::Anonymous;
-        let pipeline = HttpPipeline { http: &http, credential: &cred };
+        let pipeline = HttpPipeline {
+            http: &http,
+            credential: &cred,
+        };
         let url = url::Url::parse(&format!("{}/missing", server.url())).unwrap();
         let err = pipeline
             .send(RequestTemplate {

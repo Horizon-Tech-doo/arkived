@@ -23,7 +23,12 @@ use async_trait::async_trait;
 ///
 /// **Stability: internal.** This trait is `pub(crate)` and may change without
 /// notice. Do not implement or depend on it outside this crate.
+///
+/// `#[allow(dead_code)]` because only `AzureBlobBackend` implements it
+/// today; nothing yet consumes it via `dyn StorageBackend`. The trait
+/// exists as the seam a second backend (S3, GCS, …) will plug into.
 #[async_trait]
+#[allow(dead_code)]
 pub(crate) trait StorageBackend: Send + Sync {
     /// Human-readable name (e.g. `"azure-blob"`).
     fn name(&self) -> &'static str;

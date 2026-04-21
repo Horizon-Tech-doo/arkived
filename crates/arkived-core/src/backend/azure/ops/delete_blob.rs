@@ -32,7 +32,7 @@ impl AzureBlobBackend {
             )
             .await;
         match decision {
-            PolicyDecision::Allow | PolicyDecision::AllowAlways { .. } => {}
+            PolicyDecision::Allow | PolicyDecision::AllowAlways => {}
             PolicyDecision::Deny(reason) => return Err(Error::PolicyDenied(reason)),
         }
 
@@ -93,8 +93,8 @@ mod tests {
     async fn deny_all_policy_short_circuits_before_http() {
         let endpoint = url::Url::parse("http://127.0.0.1:1/").unwrap();
         let backend = AzureBlobBackend::new(endpoint, ResolvedCredential::Anonymous).unwrap();
-        let ctx = Ctx::new(Arc::new(FakeAuth), Arc::new(DenyAllPolicy))
-            .with_progress(Arc::new(NoopSink));
+        let ctx =
+            Ctx::new(Arc::new(FakeAuth), Arc::new(DenyAllPolicy)).with_progress(Arc::new(NoopSink));
 
         let err = backend
             .delete_blob(&ctx, &BlobPath::new("c", "b"), DeleteOpts::default())

@@ -30,11 +30,11 @@ pub(crate) fn map_rest_error(
 ) -> Error {
     // Parse body as Azure error; if that fails, fall through to Backend with the raw text.
     let parsed: Option<AzureError> = from_str(body).ok();
-    let code = parsed.as_ref().map(|e| e.code.as_str()).unwrap_or("Unknown");
-    let message = parsed
+    let code = parsed
         .as_ref()
-        .map(|e| e.message.as_str())
-        .unwrap_or(body);
+        .map(|e| e.code.as_str())
+        .unwrap_or("Unknown");
+    let message = parsed.as_ref().map(|e| e.message.as_str()).unwrap_or(body);
 
     match (status.as_u16(), code) {
         (404, _) => Error::NotFound {
