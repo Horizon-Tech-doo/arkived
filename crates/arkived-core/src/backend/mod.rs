@@ -24,7 +24,6 @@ use async_trait::async_trait;
 /// **Stability: internal.** This trait is `pub(crate)` and may change without
 /// notice. Do not implement or depend on it outside this crate.
 #[async_trait]
-#[allow(dead_code)] // Placeholder until ops impls are added in Tasks 9–13.
 pub(crate) trait StorageBackend: Send + Sync {
     /// Human-readable name (e.g. `"azure-blob"`).
     fn name(&self) -> &'static str;

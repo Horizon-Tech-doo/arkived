@@ -81,3 +81,60 @@ mod tests {
         assert!(dbg.contains("acme.blob.core.windows.net"));
     }
 }
+
+use crate::backend::types::{BlobEntry, BlobPath, ByteStream, Container, DeleteOpts, Page, Range, WriteOpts, WriteResult};
+use crate::backend::StorageBackend;
+use crate::Ctx;
+use async_trait::async_trait;
+
+#[async_trait]
+impl StorageBackend for AzureBlobBackend {
+    fn name(&self) -> &'static str { "azure-blob" }
+
+    async fn list_containers(
+        &self,
+        _ctx: &Ctx,
+        continuation: Option<String>,
+    ) -> crate::Result<Page<Container>> {
+        AzureBlobBackend::list_containers(self, continuation).await
+    }
+
+    async fn list_blobs(
+        &self,
+        _ctx: &Ctx,
+        container: &str,
+        prefix: Option<&str>,
+        delimiter: Option<&str>,
+        continuation: Option<String>,
+    ) -> crate::Result<Page<BlobEntry>> {
+        AzureBlobBackend::list_blobs(self, container, prefix, delimiter, continuation).await
+    }
+
+    async fn read_blob(
+        &self,
+        _ctx: &Ctx,
+        path: &BlobPath,
+        range: Option<Range>,
+    ) -> crate::Result<ByteStream> {
+        AzureBlobBackend::read_blob(self, path, range).await
+    }
+
+    async fn write_blob(
+        &self,
+        ctx: &Ctx,
+        path: &BlobPath,
+        body: ByteStream,
+        opts: WriteOpts,
+    ) -> crate::Result<WriteResult> {
+        AzureBlobBackend::write_blob(self, ctx, path, body, opts).await
+    }
+
+    async fn delete_blob(
+        &self,
+        ctx: &Ctx,
+        path: &BlobPath,
+        opts: DeleteOpts,
+    ) -> crate::Result<()> {
+        AzureBlobBackend::delete_blob(self, ctx, path, opts).await
+    }
+}
