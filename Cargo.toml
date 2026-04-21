@@ -63,7 +63,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 secrecy = { version = "0.8", features = ["serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 tempfile = "3"
-time = "0.3"
+time = { version = "0.3", features = ["serde-well-known"] }
 
 [profile.release]
 opt-level = 3

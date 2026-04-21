@@ -6,6 +6,7 @@
 
 pub mod device_code;
 pub mod credential;
+pub mod cache;
 
 /// Default Entra client ID used for the device-code flow.
 ///
