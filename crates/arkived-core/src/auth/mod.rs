@@ -3,6 +3,7 @@
 pub mod account_key;
 pub mod anonymous;
 pub mod azurite;
+pub mod connection_string;
 pub mod credentials;
 pub mod resolved;
 pub mod sas;
