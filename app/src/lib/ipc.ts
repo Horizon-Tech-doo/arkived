@@ -1,21 +1,291 @@
-// Thin wrapper around Tauri's invoke() with graceful fallback when running
-// in a plain browser (e.g. `vite dev`). This lets the design render during
-// frontend-only iteration.
-
 import type { BlobRow, Activity } from "../data";
 
-async function callTauri<T>(cmd: string, args?: Record<string, unknown>): Promise<T | null> {
-  if (typeof window === "undefined") return null;
-  // @ts-expect-error — optional runtime-only global injected by Tauri
-  if (!window.__TAURI_INTERNALS__) return null;
+export interface BrowserConnection {
+  id: string;
+  display_name: string;
+  account_name: string;
+  endpoint: string;
+  auth_kind: string;
+  fixed_container?: string | null;
+  origin_sign_in_id?: string | null;
+  origin_subscription_id?: string | null;
+}
+
+export interface BrowserSignIn {
+  id: string;
+  display_name: string;
+  tenant: string;
+  environment: string;
+  subscription_count: number;
+  selected_subscription_count: number;
+  tenant_count: number;
+  selected_tenant_count: number;
+}
+
+export interface BrowserTenant {
+  id: string;
+  sign_in_id: string;
+  display_name: string;
+  default_domain?: string | null;
+  selected: boolean;
+  needs_reauth: boolean;
+  error?: string | null;
+  subscription_count: number;
+  selected_subscription_count: number;
+  storage_account_count: number;
+  subscriptions: BrowserSubscription[];
+}
+
+export interface BrowserSubscription {
+  id: string;
+  sign_in_id: string;
+  name: string;
+  tenant_id: string;
+  tenant_label: string;
+  storage_account_count: number;
+  selected: boolean;
+}
+
+export interface BrowserStorageAccount {
+  sign_in_id: string;
+  subscription_id: string;
+  name: string;
+  kind: string;
+  region: string;
+  replication: string;
+  tier: string;
+  hns: boolean;
+  endpoint: string;
+}
+
+export interface BrowserContainer {
+  id: string;
+  name: string;
+  public_access?: string | null;
+  lease?: string | null;
+  blob_count?: number | null;
+}
+
+export interface DeviceCodePrompt {
+  login_id: string;
+  verification_uri: string;
+  user_code: string;
+  message: string;
+  expires_in_seconds: number;
+  interval_seconds: number;
+}
+
+export interface BrowserLoginPrompt {
+  login_id: string;
+  authorize_url: string;
+  redirect_uri: string;
+}
+
+export interface DeviceCodeLoginStatus {
+  status: "pending" | "complete" | "error";
+  connection_id?: string | null;
+  error?: string | null;
+}
+
+export interface DiscoveryLoginStatus {
+  status: "pending" | "complete" | "error";
+  sign_in_id?: string | null;
+  error?: string | null;
+}
+
+async function callTauri<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  if (typeof window === "undefined") {
+    throw new Error("Tauri IPC is unavailable on the server");
+  }
+  // @ts-expect-error - optional runtime-only global injected by Tauri
+  if (!window.__TAURI_INTERNALS__) {
+    throw new Error("Tauri IPC is unavailable in browser-only mode");
+  }
   const mod = await import("@tauri-apps/api/core");
   return mod.invoke<T>(cmd, args);
 }
 
-export async function fetchBlobs(account: string, container: string, prefix: string): Promise<BlobRow[] | null> {
-  return callTauri<BlobRow[]>("list_blobs", { account, container, prefix });
+export async function listConnections(): Promise<BrowserConnection[]> {
+  return callTauri<BrowserConnection[]>("list_connections");
 }
 
-export async function fetchActivities(): Promise<Activity[] | null> {
+export async function listSignIns(): Promise<BrowserSignIn[]> {
+  return callTauri<BrowserSignIn[]>("list_sign_ins");
+}
+
+export async function listSignInTenants(signInId: string): Promise<BrowserTenant[]> {
+  return callTauri<BrowserTenant[]>("list_sign_in_tenants", {
+    signInId,
+  });
+}
+
+export async function updateSignInFilter(
+  signInId: string,
+  tenantIds: string[],
+  subscriptionIds: string[],
+): Promise<BrowserSignIn> {
+  return callTauri<BrowserSignIn>("update_sign_in_filter", {
+    signInId,
+    tenantIds,
+    subscriptionIds,
+  });
+}
+
+export async function listSubscriptions(signInId: string): Promise<BrowserSubscription[]> {
+  return callTauri<BrowserSubscription[]>("list_subscriptions", {
+    signInId,
+  });
+}
+
+export async function listDiscoveredStorageAccounts(
+  signInId: string,
+  subscriptionId: string,
+): Promise<BrowserStorageAccount[]> {
+  return callTauri<BrowserStorageAccount[]>("list_discovered_storage_accounts", {
+    signInId,
+    subscriptionId,
+  });
+}
+
+export async function connectWithConnectionString(displayName: string, connectionString: string): Promise<BrowserConnection> {
+  return callTauri<BrowserConnection>("connect_connection_string", {
+    displayName,
+    connectionString,
+  });
+}
+
+export async function connectWithAccountKey(
+  displayName: string,
+  accountName: string,
+  accountKey: string,
+  endpoint?: string,
+): Promise<BrowserConnection> {
+  return callTauri<BrowserConnection>("connect_account_key", {
+    displayName,
+    accountName,
+    accountKey,
+    endpoint,
+  });
+}
+
+export async function connectWithSas(
+  displayName: string,
+  endpoint: string,
+  sas: string,
+  fixedContainer?: string,
+): Promise<BrowserConnection> {
+  return callTauri<BrowserConnection>("connect_sas", {
+    displayName,
+    endpoint,
+    sas,
+    fixedContainer,
+  });
+}
+
+export async function connectAzurite(): Promise<BrowserConnection> {
+  return callTauri<BrowserConnection>("connect_azurite");
+}
+
+export async function startEntraDeviceLogin(
+  displayName: string,
+  accountName: string,
+  tenant?: string,
+): Promise<DeviceCodePrompt> {
+  return callTauri<DeviceCodePrompt>("start_entra_device_login", {
+    displayName,
+    accountName,
+    tenant,
+  });
+}
+
+export async function pollEntraDeviceLogin(loginId: string): Promise<DeviceCodeLoginStatus> {
+  return callTauri<DeviceCodeLoginStatus>("poll_entra_device_login", {
+    loginId,
+  });
+}
+
+export async function startEntraBrowserLogin(
+  displayName: string,
+  tenant?: string,
+): Promise<BrowserLoginPrompt> {
+  return callTauri<BrowserLoginPrompt>("start_entra_browser_login", {
+    displayName,
+    tenant,
+  });
+}
+
+export async function pollEntraBrowserLogin(loginId: string): Promise<DiscoveryLoginStatus> {
+  return callTauri<DiscoveryLoginStatus>("poll_entra_browser_login", {
+    loginId,
+  });
+}
+
+export async function startSignInTenantReauth(
+  signInId: string,
+  tenantId: string,
+): Promise<BrowserLoginPrompt> {
+  return callTauri<BrowserLoginPrompt>("start_sign_in_tenant_reauth", {
+    signInId,
+    tenantId,
+  });
+}
+
+export async function pollSignInTenantReauth(loginId: string): Promise<DiscoveryLoginStatus> {
+  return callTauri<DiscoveryLoginStatus>("poll_sign_in_tenant_reauth", {
+    loginId,
+  });
+}
+
+export async function startEntraDiscoveryLogin(
+  displayName: string,
+  tenant?: string,
+): Promise<DeviceCodePrompt> {
+  return callTauri<DeviceCodePrompt>("start_entra_discovery_login", {
+    displayName,
+    tenant,
+  });
+}
+
+export async function pollEntraDiscoveryLogin(loginId: string): Promise<DiscoveryLoginStatus> {
+  return callTauri<DiscoveryLoginStatus>("poll_entra_discovery_login", {
+    loginId,
+  });
+}
+
+export async function connectDiscoveredStorageAccount(
+  signInId: string,
+  subscriptionId: string,
+  accountName: string,
+): Promise<BrowserConnection> {
+  return callTauri<BrowserConnection>("connect_discovered_storage_account", {
+    signInId,
+    subscriptionId,
+    accountName,
+  });
+}
+
+export async function listContainers(connectionId: string): Promise<BrowserContainer[]> {
+  return callTauri<BrowserContainer[]>("list_containers", {
+    connectionId,
+  });
+}
+
+export async function fetchBlobs(
+  connectionId: string,
+  container: string,
+  prefix?: string | null,
+): Promise<BlobRow[]> {
+  return callTauri<BlobRow[]>("list_blobs", {
+    connectionId,
+    container,
+    prefix,
+  });
+}
+
+export async function disconnectConnection(connectionId: string): Promise<void> {
+  return callTauri<void>("disconnect_connection", { connectionId });
+}
+
+export async function fetchActivities(): Promise<Activity[]> {
   return callTauri<Activity[]>("list_activities");
 }

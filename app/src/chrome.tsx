@@ -15,8 +15,23 @@ interface TitleBarProps {
   agentOpen: boolean;
   onToggleAgent: () => void;
   activeConnection: string;
+  connectionDetail?: string;
+  connected?: boolean;
+  statusText?: string;
+  onRefresh?: () => void;
+  onOpenSettings?: () => void;
 }
-export function TitleBar({ onOpenPalette, agentOpen, onToggleAgent, activeConnection }: TitleBarProps) {
+export function TitleBar({
+  onOpenPalette,
+  agentOpen,
+  onToggleAgent,
+  activeConnection,
+  connectionDetail = "No endpoint selected",
+  connected = true,
+  statusText = "connected",
+  onRefresh,
+  onOpenSettings,
+}: TitleBarProps) {
   return (
     <div className="titlebar" style={titlebarStyles.root}>
       <div style={titlebarStyles.left}>
@@ -37,7 +52,7 @@ export function TitleBar({ onOpenPalette, agentOpen, onToggleAgent, activeConnec
           <IconAzure size={11} />
           <span style={{ color: "var(--fg-1)", fontWeight: 500 }}>{activeConnection}</span>
           <span style={titlebarStyles.connSep}>/</span>
-          <span style={{ color: "var(--fg-2)" }}>West Europe</span>
+          <span style={{ color: "var(--fg-2)" }}>{connectionDetail}</span>
           <IconCaretDown size={10} style={{ color: "var(--fg-3)", marginLeft: 2 }} />
         </button>
       </div>
@@ -53,13 +68,13 @@ export function TitleBar({ onOpenPalette, agentOpen, onToggleAgent, activeConnec
 
       <div style={titlebarStyles.right}>
         <div style={titlebarStyles.statusGroup}>
-          <IconCircleFilled size={7} color="var(--green)" />
-          <span style={{ color: "var(--fg-2)" }}>connected</span>
+          <IconCircleFilled size={7} color={connected ? "var(--green)" : "var(--yellow)"} />
+          <span style={{ color: "var(--fg-2)" }}>{statusText}</span>
         </div>
-        <button style={titlebarStyles.iconBtn} title="Refresh">
+        <button style={titlebarStyles.iconBtn} title="Refresh" onClick={onRefresh}>
           <IconRefresh size={13} />
         </button>
-        <button style={titlebarStyles.iconBtn} title="Settings">
+        <button style={titlebarStyles.iconBtn} title="Settings" onClick={onOpenSettings}>
           <IconSettings size={13} />
         </button>
         <div style={titlebarStyles.sep} />
@@ -148,8 +163,23 @@ interface TreeRowProps {
   dim?: boolean;
   badge?: string | null;
   onClick?: () => void;
+  action?: ReactNode;
+  onAction?: () => void;
 }
-export function TreeRow({ depth, expanded, onToggle, icon, label, meta, selected, dim, badge, onClick }: TreeRowProps) {
+export function TreeRow({
+  depth,
+  expanded,
+  onToggle,
+  icon,
+  label,
+  meta,
+  selected,
+  dim,
+  badge,
+  onClick,
+  action,
+  onAction,
+}: TreeRowProps) {
   return (
     <div
       onClick={onClick}
@@ -188,6 +218,26 @@ export function TreeRow({ depth, expanded, onToggle, icon, label, meta, selected
           background: "var(--bg-3)", color: "var(--fg-2)",
           border: "1px solid var(--border-1)",
         }}>{badge}</span>
+      )}
+      {action && (
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            onAction?.();
+          }}
+          style={{
+            width: 16,
+            height: 16,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            color: "var(--fg-3)",
+            borderRadius: 4,
+          }}
+        >
+          {action}
+        </button>
       )}
     </div>
   );

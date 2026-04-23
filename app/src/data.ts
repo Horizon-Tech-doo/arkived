@@ -148,6 +148,7 @@ export const BREADCRUMB_BLOB: BreadcrumbEntry[] = [
 ];
 
 export interface BlobRow {
+  path?: string;
   name: string;
   kind: "dir" | "blob";
   size: string | null;

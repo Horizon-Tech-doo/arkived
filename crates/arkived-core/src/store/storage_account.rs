@@ -67,6 +67,23 @@ impl Store {
         })
     }
 
+    /// List all storage accounts, ordered by name.
+    pub fn storage_account_list_all(&self) -> Result<Vec<StorageAccount>, Error> {
+        self.with_conn(|c| {
+            let mut stmt = c.prepare(
+                "SELECT name, subscription_id, kind, region, replication, tier, hns, endpoint, attached_directly
+                 FROM storage_account ORDER BY name"
+            ).map_err(|e| Error::Other(anyhow::anyhow!("storage_account list_all prepare: {e}")))?;
+            let rows = stmt.query_map([], row_to_account)
+                .map_err(|e| Error::Other(anyhow::anyhow!("storage_account list_all query: {e}")))?;
+            let mut out = Vec::new();
+            for r in rows {
+                out.push(r.map_err(|e| Error::Other(anyhow::anyhow!("storage_account list_all row: {e}")))?);
+            }
+            Ok(out)
+        })
+    }
+
     /// List all storage accounts under a subscription, ordered by name.
     pub fn storage_account_list_for_subscription(
         &self,
@@ -188,6 +205,18 @@ mod tests {
         s.storage_account_upsert(&account("acmeb")).unwrap();
         let list = s.storage_account_list_for_subscription("sub-1").unwrap();
         assert_eq!(list.len(), 2);
+    }
+
+    #[test]
+    fn list_all_orders_by_name() {
+        let s = Store::open_in_memory().unwrap();
+        seed(&s);
+        s.storage_account_upsert(&account("zeta")).unwrap();
+        s.storage_account_upsert(&account("alpha")).unwrap();
+
+        let list = s.storage_account_list_all().unwrap();
+        let names: Vec<_> = list.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, vec!["alpha", "zeta"]);
     }
 
     #[test]

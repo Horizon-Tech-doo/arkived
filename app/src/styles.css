@@ -2,11 +2,11 @@
 @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap');
 
 :root {
-  /* Accent (rust orange by default; tweakable) */
-  --accent: #e06c3a;
-  --accent-dim: #a4502b;
-  --accent-ghost: rgba(224, 108, 58, 0.12);
-  --accent-ghost-strong: rgba(224, 108, 58, 0.22);
+  /* Accent (Azure blue by default; tweakable) */
+  --accent: #3f9df6;
+  --accent-dim: #2d71b2;
+  --accent-ghost: rgba(63, 157, 246, 0.12);
+  --accent-ghost-strong: rgba(63, 157, 246, 0.22);
 
   /* Background tiers (dark) */
   --bg-0: #0a0a0c;      /* page / window behind everything */
@@ -43,8 +43,8 @@
   --cyan-dim: rgba(111, 192, 200, 0.15);
 
   /* Font stacks */
-  --mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
-  --sans: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --mono: 'Cascadia Mono', 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  --sans: 'Segoe UI', 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
 
   --radius-sm: 3px;
   --radius: 5px;

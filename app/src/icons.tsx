@@ -240,6 +240,17 @@ export const IconKey = (p: IconProps) => (
     <path d="M6.5 7h5.5v2h-1.5M10 7v2" />
   </I>
 );
+export const IconUser = (p: IconProps) => (
+  <I {...p}>
+    <circle cx="7" cy="4.2" r="2.2" />
+    <path d="M2.8 11.2c.8-2 2.35-3 4.2-3 1.85 0 3.4 1 4.2 3" />
+  </I>
+);
+export const IconPlug = (p: IconProps) => (
+  <I {...p}>
+    <path d="M5 1.8v3.6M9 1.8v3.6M4 5.4h6v1.1A2.9 2.9 0 0 1 7.6 9.4v2.8H6.4V9.4A2.9 2.9 0 0 1 4 6.5z" />
+  </I>
+);
 
 // Agent
 export const IconSparkle = (p: IconProps) => (

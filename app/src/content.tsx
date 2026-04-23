@@ -298,8 +298,9 @@ interface BlobTableProps {
   onToggleSelect: (i: number) => void;
   onSelectAll: () => void;
   onDelete: () => void;
+  onActivateRow?: (i: number) => void;
 }
-export function BlobTable({ rows, selected, onToggleSelect, onSelectAll }: BlobTableProps) {
+export function BlobTable({ rows, selected, onToggleSelect, onSelectAll, onActivateRow }: BlobTableProps) {
   const cols = [
     { key: "name",     label: "Name",                sortable: true },
     { key: "tier",     label: "Access Tier" },
@@ -354,6 +355,7 @@ export function BlobTable({ rows, selected, onToggleSelect, onSelectAll }: BlobT
           <div
             key={i}
             onClick={() => onToggleSelect(i)}
+            onDoubleClick={() => onActivateRow?.(i)}
             style={{
               display: "grid",
               gridTemplateColumns: gridTemplate,
@@ -385,11 +387,11 @@ export function BlobTable({ rows, selected, onToggleSelect, onSelectAll }: BlobT
             </div>
 
             <div style={{ display: "flex", alignItems: "center", padding: "0 8px", color: "var(--fg-3)" }}>
-              {r.tier ? r.modified : "—"}
+              {r.tier ? r.modified || "—" : "—"}
             </div>
 
             <div style={{ display: "flex", alignItems: "center", padding: "0 8px", color: "var(--fg-2)" }}>
-              {r.modified}
+              {r.modified || "—"}
             </div>
 
             <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", padding: "0 8px", color: r.size ? "var(--fg-1)" : "var(--fg-3)" }}>
@@ -448,8 +450,12 @@ export function Checkbox({ checked, onChange }: CheckboxProps) {
 // ─────────────────────────────────────────────────────────────
 interface InspectorProps {
   row: BlobRow | null;
+  resourceUrl?: string | null;
+  containerName?: string | null;
+  endpoint?: string | null;
+  authKind?: string | null;
 }
-export function Inspector({ row }: InspectorProps) {
+export function Inspector({ row, resourceUrl, containerName, endpoint, authKind }: InspectorProps) {
   if (!row) return null;
   const kv = (k: string, v: ReactNode, mono = true) => (
     <div style={{ display: "flex", gap: 10, fontSize: 10, minHeight: 16 }}>
@@ -477,14 +483,16 @@ export function Inspector({ row }: InspectorProps) {
         <span style={{ color: "var(--fg-4)" }}>{row.kind === "dir" ? "VIRTUAL_DIR" : "BLOCK_BLOB"}</span>
       </div>
       {kv("name", row.name)}
-      {kv("url", `https://stdlnphoenixproddlp.blob.core.windows.net/device-twins/device-twins-sync/.../${row.name}`)}
+      {row.path && kv("path", row.path)}
+      {containerName && kv("container", containerName)}
+      {resourceUrl && kv("url", resourceUrl)}
+      {endpoint && kv("endpoint", endpoint)}
+      {authKind && kv("auth", authKind, false)}
       {row.tier && kv("tier", row.tier)}
       {row.etag && kv("etag", row.etag)}
       {row.size && kv("size", row.size)}
-      {kv("modified", row.modified)}
+      {kv("modified", row.modified || "—")}
       {row.lease && kv("lease state", row.lease === "avail" ? "available" : "leased")}
-      {kv("hns", "true", true)}
-      {kv("encryption", "Microsoft-managed key")}
     </div>
   );
 }

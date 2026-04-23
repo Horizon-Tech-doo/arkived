@@ -116,9 +116,15 @@ fn canonicalized_headers(headers: &[(String, String)]) -> String {
     out
 }
 
-fn canonicalized_resource(_account_name: &str, url: &url::Url) -> String {
+fn canonicalized_resource(account_name: &str, url: &url::Url) -> String {
     let mut res = String::new();
-    res.push_str(url.path());
+    if uses_path_style_endpoint(account_name, url) {
+        res.push_str(url.path());
+    } else {
+        res.push('/');
+        res.push_str(account_name);
+        res.push_str(url.path());
+    }
 
     // Group query params by lowercase name, sort, emit as `name:v1,v2`.
     let mut grouped: std::collections::BTreeMap<String, Vec<String>> = Default::default();
@@ -136,6 +142,24 @@ fn canonicalized_resource(_account_name: &str, url: &url::Url) -> String {
         res.push_str(&vs.join(","));
     }
     res
+}
+
+fn uses_path_style_endpoint(account_name: &str, url: &url::Url) -> bool {
+    let first_segment = url
+        .path()
+        .trim_start_matches('/')
+        .split('/')
+        .next()
+        .unwrap_or_default();
+    if !first_segment.eq_ignore_ascii_case(account_name) {
+        return false;
+    }
+
+    match url.host_str() {
+        Some("localhost") => true,
+        Some(host) => host.parse::<std::net::IpAddr>().is_ok(),
+        None => false,
+    }
 }
 
 /// Errors produced by [`sign`].
@@ -204,6 +228,28 @@ mod tests {
         // Resource section should contain sorted `a:1,3` before `b:2`.
         assert!(
             s.ends_with("/devstoreaccount1/container\na:1,3\nb:2"),
+            "got: {s}"
+        );
+    }
+
+    #[test]
+    fn host_style_resource_prepends_account_name() {
+        let url = url::Url::parse(
+            "https://acme.blob.core.windows.net/container?restype=container&comp=list",
+        )
+        .unwrap();
+        let headers = hdrs(&[
+            ("x-ms-date", "Mon, 21 Apr 2026 12:00:00 GMT"),
+            ("x-ms-version", "2022-11-02"),
+        ]);
+        let req = SignRequest {
+            method: "GET",
+            url: &url,
+            headers: &headers,
+        };
+        let s = build_string_to_sign("acme", &req);
+        assert!(
+            s.ends_with("/acme/container\ncomp:list\nrestype:container"),
             "got: {s}"
         );
     }

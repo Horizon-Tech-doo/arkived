@@ -68,6 +68,9 @@ use std::time::Duration;
 pub struct TokenResponse {
     /// Access token (bearer).
     pub access_token: String,
+    /// ID token with profile claims when OpenID scopes were requested.
+    #[serde(default)]
+    pub id_token: Option<String>,
     /// Refresh token — use to get new access tokens without re-prompting.
     #[serde(default)]
     pub refresh_token: Option<String>,
