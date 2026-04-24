@@ -76,6 +76,7 @@ version = "0.0.1"
 dependencies = [
  "arkived-core",
  "base64 0.22.1",
+ "chrono",
  "reqwest 0.12.28",
  "secrecy",
  "serde",

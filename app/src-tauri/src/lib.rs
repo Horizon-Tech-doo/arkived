@@ -6,10 +6,45 @@
 
 mod commands;
 
+use arkived_core::auth::credentials::{CredentialStore, OsKeyring};
+use arkived_core::Store;
+use std::sync::Arc;
+use tauri::Manager;
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .manage(commands::AppState::default())
+        .setup(|app| {
+            let app_data_dir = app
+                .path()
+                .app_data_dir()
+                .map_err(|error| std::io::Error::other(format!("resolve app data dir: {error}")))?;
+            std::fs::create_dir_all(&app_data_dir).map_err(|error| {
+                std::io::Error::other(format!(
+                    "create app data directory `{}`: {error}",
+                    app_data_dir.display()
+                ))
+            })?;
+
+            let store_path = app_data_dir.join("arkived-state.sqlite3");
+            let store = Arc::new(Store::open(&store_path).map_err(|error| {
+                std::io::Error::other(format!(
+                    "open persistent state store `{}`: {error}",
+                    store_path.display()
+                ))
+            })?);
+            let credential_store: Arc<dyn CredentialStore> =
+                Arc::new(OsKeyring::new("arkived-desktop"));
+
+            let state = tauri::async_runtime::block_on(commands::AppState::restore(
+                store,
+                credential_store,
+            ))
+            .map_err(std::io::Error::other)?;
+
+            app.manage(state);
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::list_connections,
             commands::list_sign_ins,

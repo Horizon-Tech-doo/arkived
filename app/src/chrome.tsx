@@ -165,6 +165,7 @@ interface TreeRowProps {
   onClick?: () => void;
   action?: ReactNode;
   onAction?: () => void;
+  onContextMenu?: (event: React.MouseEvent<HTMLDivElement>) => void;
 }
 export function TreeRow({
   depth,
@@ -179,10 +180,12 @@ export function TreeRow({
   onClick,
   action,
   onAction,
+  onContextMenu,
 }: TreeRowProps) {
   return (
     <div
       onClick={onClick}
+      onContextMenu={onContextMenu}
       style={{
         display: "flex", alignItems: "center", gap: 4,
         height: 22, padding: `0 8px 0 ${6 + depth * 12}px`,

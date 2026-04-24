@@ -92,7 +92,9 @@ pub fn build_string_to_sign(account_name: &str, req: &SignRequest<'_>) -> String
     s.push('\n');
     s.push_str(h("Range"));
     s.push('\n');
-    s.push('\n'); // Blank line before canonicalized headers
+    // Per the Shared Key spec, the 12 fixed fields (VERB + 11 headers) are
+    // each terminated by "\n"; CanonicalizedHeaders starts immediately after
+    // Range's trailing "\n" with no extra blank line.
     s.push_str(&canonicalized_headers(req.headers));
     s.push_str(&canonicalized_resource(account_name, req.url));
     s
@@ -199,10 +201,12 @@ mod tests {
             headers: &headers,
         };
         let s = build_string_to_sign(AZURITE_ACCOUNT, &req);
-        // Twelve empty lines, then canonicalized headers (2), then canonicalized resource.
+        // 12 "\n"-terminated fixed-field lines (VERB + 11 headers), then
+        // canonicalized headers, then canonicalized resource. Matches the
+        // example in the Microsoft Shared Key spec.
         let expected = concat!(
             "GET\n",
-            "\n\n\n\n\n\n\n\n\n\n\n\n",
+            "\n\n\n\n\n\n\n\n\n\n\n",
             "x-ms-date:Mon, 21 Apr 2026 12:00:00 GMT\n",
             "x-ms-version:2022-11-02\n",
             "/devstoreaccount1/\n",

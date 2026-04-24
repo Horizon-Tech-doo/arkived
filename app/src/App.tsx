@@ -1,6 +1,6 @@
 import React, { CSSProperties, FormEvent, ReactNode, useEffect, useRef, useState } from "react";
 import { GroupHeader, TitleBar, TreeRow } from "./chrome";
-import { BlobTable, Inspector } from "./content";
+import { BlobTable, Inspector, TabsBar } from "./content";
 import type { BlobRow } from "./data";
 import {
   IconAlert,
@@ -79,6 +79,38 @@ interface TenantReauthFlowState {
   queuedTenantIds: string[];
 }
 
+interface ContainerListState {
+  items: BrowserContainer[];
+  busy: boolean;
+  error: string | null;
+  loaded: boolean;
+}
+
+interface BrowserTabState {
+  id: string;
+  connectionId: string;
+  containerName: string;
+  prefix: string;
+  rows: BlobRow[];
+  busy: boolean;
+  error: string | null;
+  loaded: boolean;
+  selectedIndices: number[];
+}
+
+interface ContextMenuItem {
+  label: string;
+  action: () => void;
+  danger?: boolean;
+  disabled?: boolean;
+}
+
+interface ContextMenuState {
+  x: number;
+  y: number;
+  items: ContextMenuItem[];
+}
+
 const EMPTY_FORM: ConnectionFormState = {
   displayName: "",
   connectionString: "",
@@ -136,14 +168,14 @@ function App() {
   const [tenantsBySignIn, setTenantsBySignIn] = useState<Record<string, BrowserTenant[]>>({});
   const [subscriptionsBySignIn, setSubscriptionsBySignIn] = useState<Record<string, BrowserSubscription[]>>({});
   const [accountsBySubscription, setAccountsBySubscription] = useState<Record<string, BrowserStorageAccount[]>>({});
-  const [containers, setContainers] = useState<BrowserContainer[]>([]);
-  const [rows, setRows] = useState<BlobRow[]>([]);
+  const [containerStatesByConnection, setContainerStatesByConnection] = useState<Record<string, ContainerListState>>({});
+  const [browserTabs, setBrowserTabs] = useState<BrowserTabState[]>([]);
+  const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [activeConnectionId, setActiveConnectionId] = useState<string | null>(null);
-  const [activeContainer, setActiveContainer] = useState<string | null>(null);
-  const [prefix, setPrefix] = useState("");
-  const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set());
   const [expandedSignIns, setExpandedSignIns] = useState<Record<string, boolean>>({});
   const [expandedSubscriptions, setExpandedSubscriptions] = useState<Record<string, boolean>>({});
+  const [expandedAccounts, setExpandedAccounts] = useState<Record<string, boolean>>({});
+  const [activatingAccounts, setActivatingAccounts] = useState<Record<string, boolean>>({});
   const [connectOpen, setConnectOpen] = useState(false);
   const [manageSignInId, setManageSignInId] = useState<string | null>(null);
   const [connectMethod, setConnectMethod] = useState<ConnectMethod>("entra-browser");
@@ -155,32 +187,79 @@ function App() {
   const [connectError, setConnectError] = useState<string | null>(null);
   const [shellError, setShellError] = useState<string | null>(null);
   const [discoveryError, setDiscoveryError] = useState<string | null>(null);
-  const [containersError, setContainersError] = useState<string | null>(null);
-  const [rowsError, setRowsError] = useState<string | null>(null);
+  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [connectionsBusy, setConnectionsBusy] = useState(false);
   const [signInsBusy, setSignInsBusy] = useState(false);
-  const [containersBusy, setContainersBusy] = useState(false);
-  const [rowsBusy, setRowsBusy] = useState(false);
   const [connectBusy, setConnectBusy] = useState(false);
   const [manageBusy, setManageBusy] = useState(false);
   const [tenantReauthBusy, setTenantReauthBusy] = useState(false);
   const [disconnectBusy, setDisconnectBusy] = useState(false);
   const [copiedCode, setCopiedCode] = useState(false);
 
-  const containerRequestId = useRef(0);
-  const blobRequestId = useRef(0);
+  const containerRequestIds = useRef<Record<string, number>>({});
+  const blobRequestIds = useRef<Record<string, number>>({});
   const openedDevicePromptId = useRef<string | null>(null);
   const tauriAvailable = useRef(isTauriRuntimeAvailable());
+  const browserTabsRef = useRef<BrowserTabState[]>([]);
+  const connectionsRef = useRef<BrowserConnection[]>([]);
+  const containerStatesRef = useRef<Record<string, ContainerListState>>({});
 
-  const activeConnection = connections.find((connection) => connection.id === activeConnectionId) ?? null;
-  const selectedIndex = selectedRows.size > 0 ? Array.from(selectedRows).sort((a, b) => a - b)[0] : null;
-  const selectedRow = selectedIndex == null ? null : rows[selectedIndex] ?? null;
+  browserTabsRef.current = browserTabs;
+  connectionsRef.current = connections;
+  containerStatesRef.current = containerStatesByConnection;
+
+  const activeTab = activeTabId ? browserTabs.find((tab) => tab.id === activeTabId) ?? null : null;
+  const browsingConnectionId = activeTab?.connectionId ?? activeConnectionId;
+  const activeConnection = connections.find((connection) => connection.id === browsingConnectionId) ?? null;
+  const activeContainer = activeTab?.containerName ?? null;
+  const activeRows = activeTab?.rows ?? [];
+  const selectedIndices = activeTab?.selectedIndices ?? [];
+  const selectedRows = new Set(selectedIndices);
+  const selectedIndex = selectedIndices.length > 0 ? [...selectedIndices].sort((a, b) => a - b)[0] : null;
+  const selectedRow = selectedIndex == null ? null : activeRows[selectedIndex] ?? null;
+  const prefix = activeTab?.prefix ?? "";
   const breadcrumbSegments = splitPrefix(prefix);
   const resourceUrl =
     activeConnection && activeContainer && selectedRow?.path
       ? buildResourceUrl(activeConnection.endpoint, activeContainer, selectedRow.path)
       : null;
   const directConnections = connections.filter((connection) => !isDiscoveredConnection(connection));
+  const anyContainersBusy = Object.values(containerStatesByConnection).some((state) => state.busy);
+  const anyRowsBusy = browserTabs.some((tab) => tab.busy);
+
+  function tabIdFor(connectionId: string, containerName: string) {
+    return `${connectionId}::${containerName}`;
+  }
+
+  function discoveredRowKey(account: BrowserStorageAccount) {
+    return `${account.sign_in_id}::${account.subscription_id}::${account.name}`.toLowerCase();
+  }
+
+  function directRowKey(connectionId: string) {
+    return `direct::${connectionId}`;
+  }
+
+  function findDiscoveredConnection(account: BrowserStorageAccount): BrowserConnection | null {
+    return (
+      connectionsRef.current.find(
+        (connection) =>
+          connection.origin_sign_in_id === account.sign_in_id &&
+          connection.origin_subscription_id === account.subscription_id &&
+          connection.account_name === account.name &&
+          normalizeUrlHost(connection.endpoint) === normalizeUrlHost(account.endpoint),
+      ) ?? null
+    );
+  }
+
+  function isDiscoveredAccountActive(account: BrowserStorageAccount): boolean {
+    return (
+      activeConnection != null &&
+      activeConnection.origin_sign_in_id === account.sign_in_id &&
+      activeConnection.origin_subscription_id === account.subscription_id &&
+      activeConnection.account_name === account.name &&
+      normalizeUrlHost(activeConnection.endpoint) === normalizeUrlHost(account.endpoint)
+    );
+  }
 
   function resetAzureSignInFormDefaults() {
     setForm((current) => ({
@@ -201,7 +280,16 @@ function App() {
 
     try {
       const nextConnections = await listConnections();
+      const nextConnectionIds = new Set(nextConnections.map((connection) => connection.id));
       setConnections(nextConnections);
+      setContainerStatesByConnection((current) =>
+        Object.fromEntries(
+          Object.entries(current).filter(([connectionId]) => nextConnectionIds.has(connectionId)),
+        ),
+      );
+      setBrowserTabs((current) =>
+        current.filter((tab) => nextConnectionIds.has(tab.connectionId)),
+      );
       setActiveConnectionId((current) => {
         if (preferredConnectionId && nextConnections.some((connection) => connection.id === preferredConnectionId)) {
           return preferredConnectionId;
@@ -212,24 +300,14 @@ function App() {
         return nextConnections[0]?.id ?? null;
       });
 
-      if (nextConnections.length === 0) {
-        setActiveContainer(null);
-        setContainers([]);
-        setRows([]);
-        setPrefix("");
-        setSelectedRows(new Set());
-      }
-
       return nextConnections;
     } catch (error) {
       setShellError(getErrorMessage(error));
       setConnections([]);
+      setContainerStatesByConnection({});
+      setBrowserTabs([]);
+      setActiveTabId(null);
       setActiveConnectionId(null);
-      setActiveContainer(null);
-      setContainers([]);
-      setRows([]);
-      setPrefix("");
-      setSelectedRows(new Set());
       return [];
     } finally {
       setConnectionsBusy(false);
@@ -306,66 +384,111 @@ function App() {
     }
   }
 
-  async function loadContainers(connectionId: string, preferredContainer?: string | null) {
-    const requestId = ++containerRequestId.current;
-    setContainersBusy(true);
-    setContainersError(null);
+  async function ensureContainersLoaded(connectionId: string, force = false): Promise<BrowserContainer[]> {
+    const currentState = containerStatesRef.current[connectionId];
+    if (!force && currentState?.loaded && !currentState.busy) {
+      return currentState.items;
+    }
+    if (!force && currentState?.busy) {
+      return currentState.items;
+    }
+
+    const requestId = (containerRequestIds.current[connectionId] ?? 0) + 1;
+    containerRequestIds.current[connectionId] = requestId;
+    setContainerStatesByConnection((current) => ({
+      ...current,
+      [connectionId]: {
+        items: current[connectionId]?.items ?? [],
+        busy: true,
+        error: null,
+        loaded: current[connectionId]?.loaded ?? false,
+      },
+    }));
 
     try {
       const nextContainers = await listContainers(connectionId);
-      if (requestId !== containerRequestId.current) {
-        return null;
+      if (containerRequestIds.current[connectionId] !== requestId) {
+        return currentState?.items ?? [];
       }
 
-      setContainers(nextContainers);
-      const nextActiveContainer =
-        preferredContainer && nextContainers.some((container) => container.name === preferredContainer)
-          ? preferredContainer
-          : nextContainers[0]?.name ?? null;
-
-      setActiveContainer(nextActiveContainer);
-      return nextActiveContainer;
+      setContainerStatesByConnection((current) => ({
+        ...current,
+        [connectionId]: {
+          items: nextContainers,
+          busy: false,
+          error: null,
+          loaded: true,
+        },
+      }));
+      return nextContainers;
     } catch (error) {
-      if (requestId !== containerRequestId.current) {
-        return null;
+      if (containerRequestIds.current[connectionId] !== requestId) {
+        return currentState?.items ?? [];
       }
 
-      setContainers([]);
-      setActiveContainer(null);
-      setContainersError(getErrorMessage(error));
-      return null;
-    } finally {
-      if (requestId === containerRequestId.current) {
-        setContainersBusy(false);
-      }
+      setContainerStatesByConnection((current) => ({
+        ...current,
+        [connectionId]: {
+          items: current[connectionId]?.items ?? [],
+          busy: false,
+          error: getErrorMessage(error),
+          loaded: true,
+        },
+      }));
+      return [];
     }
   }
 
-  async function loadBlobs(connectionId: string, containerName: string, nextPrefix: string) {
-    const requestId = ++blobRequestId.current;
-    setRowsBusy(true);
-    setRowsError(null);
+  function updateTab(tabId: string, updater: (tab: BrowserTabState) => BrowserTabState) {
+    setBrowserTabs((current) =>
+      current.map((tab) => (tab.id === tabId ? updater(tab) : tab)),
+    );
+  }
+
+  async function loadTabRows(tabId: string, force = false) {
+    const tab = browserTabsRef.current.find((currentTab) => currentTab.id === tabId);
+    if (!tab) {
+      return;
+    }
+    if (!force && (tab.loaded || tab.busy)) {
+      return;
+    }
+
+    const requestId = (blobRequestIds.current[tabId] ?? 0) + 1;
+    blobRequestIds.current[tabId] = requestId;
+    updateTab(tabId, (currentTab) => ({
+      ...currentTab,
+      busy: true,
+      error: null,
+    }));
 
     try {
-      const nextRows = await fetchBlobs(connectionId, containerName, nextPrefix || null);
-      if (requestId !== blobRequestId.current) {
+      const nextRows = await fetchBlobs(tab.connectionId, tab.containerName, tab.prefix || null);
+      if (blobRequestIds.current[tabId] !== requestId) {
         return;
       }
 
-      setRows(nextRows);
-      setSelectedRows(new Set());
+      updateTab(tabId, (currentTab) => ({
+        ...currentTab,
+        rows: nextRows,
+        busy: false,
+        error: null,
+        loaded: true,
+        selectedIndices: [],
+      }));
     } catch (error) {
-      if (requestId !== blobRequestId.current) {
+      if (blobRequestIds.current[tabId] !== requestId) {
         return;
       }
 
-      setRows([]);
-      setSelectedRows(new Set());
-      setRowsError(getErrorMessage(error));
-    } finally {
-      if (requestId === blobRequestId.current) {
-        setRowsBusy(false);
-      }
+      updateTab(tabId, (currentTab) => ({
+        ...currentTab,
+        rows: [],
+        busy: false,
+        error: getErrorMessage(error),
+        loaded: true,
+        selectedIndices: [],
+      }));
     }
   }
 
@@ -387,29 +510,24 @@ function App() {
       return;
     }
 
-    const preferredConnectionId = activeConnectionId;
-    const [nextConnections] = await Promise.all([
+    const preferredConnectionId = activeTab?.connectionId ?? activeConnectionId;
+    await Promise.all([
       refreshConnections(preferredConnectionId),
       refreshDiscoveryTree(),
     ]);
 
-    const refreshedConnectionId =
-      preferredConnectionId && nextConnections.some((connection) => connection.id === preferredConnectionId)
-        ? preferredConnectionId
-        : nextConnections[0]?.id ?? null;
-
-    if (!refreshedConnectionId) {
-      return;
-    }
-
-    const nextContainer = await loadContainers(refreshedConnectionId, activeContainer);
-    if (nextContainer) {
-      await loadBlobs(refreshedConnectionId, nextContainer, prefix);
+    await Promise.all(
+      Object.keys(containerStatesRef.current).map((connectionId) =>
+        ensureContainersLoaded(connectionId, true),
+      ),
+    );
+    if (activeTabId) {
+      updateTab(activeTabId, (tab) => ({ ...tab, loaded: false }));
     }
   }
 
-  async function handleDisconnect() {
-    if (!activeConnectionId) {
+  async function handleDisconnect(connectionId = activeTab?.connectionId ?? activeConnectionId) {
+    if (!connectionId) {
       return;
     }
 
@@ -417,7 +535,13 @@ function App() {
     setShellError(null);
 
     try {
-      await disconnectConnection(activeConnectionId);
+      await disconnectConnection(connectionId);
+      setBrowserTabs((current) => current.filter((tab) => tab.connectionId !== connectionId));
+      setContainerStatesByConnection((current) =>
+        Object.fromEntries(
+          Object.entries(current).filter(([currentConnectionId]) => currentConnectionId !== connectionId),
+        ),
+      );
       await refreshConnections();
     } catch (error) {
       setShellError(getErrorMessage(error));
@@ -490,6 +614,11 @@ function App() {
 
       if (connection) {
         await refreshConnections(connection.id);
+        setExpandedAccounts((current) => ({
+          ...current,
+          [directRowKey(connection.id)]: true,
+        }));
+        await ensureContainersLoaded(connection.id);
         setConnectOpen(false);
         setBrowserPrompt(null);
         setDevicePrompt(null);
@@ -503,18 +632,38 @@ function App() {
     }
   }
 
-  async function handleActivateDiscoveredAccount(account: BrowserStorageAccount) {
-    const existing = connections.find(
-      (connection) =>
-        connection.origin_sign_in_id === account.sign_in_id &&
-        connection.origin_subscription_id === account.subscription_id &&
-        connection.account_name === account.name &&
-        normalizeUrlHost(connection.endpoint) === normalizeUrlHost(account.endpoint),
-    );
+  function openContainerTab(connectionId: string, containerName: string) {
+    const id = tabIdFor(connectionId, containerName);
+    setBrowserTabs((current) => {
+      if (current.some((tab) => tab.id === id)) {
+        return current;
+      }
+
+      return [
+        ...current,
+        {
+          id,
+          connectionId,
+          containerName,
+          prefix: "",
+          rows: [],
+          busy: false,
+          error: null,
+          loaded: false,
+          selectedIndices: [],
+        },
+      ];
+    });
+    setActiveTabId(id);
+    setActiveConnectionId(connectionId);
+  }
+
+  async function ensureDiscoveredAccountConnection(account: BrowserStorageAccount): Promise<BrowserConnection> {
+    const existing = findDiscoveredConnection(account);
 
     if (existing?.auth_kind === "entra-managed-key") {
-      handleSelectConnection(existing.id);
-      return;
+      setActiveConnectionId(existing.id);
+      return existing;
     }
 
     setConnectBusy(true);
@@ -526,12 +675,56 @@ function App() {
         account.subscription_id,
         account.name,
       );
-      await refreshConnections(connection.id);
-    } catch (error) {
-      setShellError(getErrorMessage(error));
+      const nextConnections = await refreshConnections(connection.id);
+      const resolved =
+        nextConnections.find((candidate) => candidate.id === connection.id) ?? connection;
+      setActiveConnectionId(resolved.id);
+      return resolved;
     } finally {
       setConnectBusy(false);
     }
+  }
+
+  async function handleSelectDiscoveredAccount(account: BrowserStorageAccount) {
+    try {
+      const connection = await ensureDiscoveredAccountConnection(account);
+      setActiveConnectionId(connection.id);
+    } catch (error) {
+      setShellError(getErrorMessage(error));
+    }
+  }
+
+  async function handleToggleDiscoveredAccount(account: BrowserStorageAccount) {
+    const key = discoveredRowKey(account);
+    const nextExpanded = !(expandedAccounts[key] ?? false);
+    setExpandedAccounts((current) => ({ ...current, [key]: nextExpanded }));
+
+    if (!nextExpanded) {
+      return;
+    }
+
+    setActivatingAccounts((current) => ({ ...current, [key]: true }));
+    try {
+      const connection = await ensureDiscoveredAccountConnection(account);
+      await ensureContainersLoaded(connection.id);
+    } catch (error) {
+      setShellError(getErrorMessage(error));
+    } finally {
+      setActivatingAccounts((current) => ({ ...current, [key]: false }));
+    }
+  }
+
+  async function handleToggleDirectAccount(connection: BrowserConnection) {
+    const key = directRowKey(connection.id);
+    const nextExpanded = !(expandedAccounts[key] ?? false);
+    setExpandedAccounts((current) => ({ ...current, [key]: nextExpanded }));
+
+    if (!nextExpanded) {
+      return;
+    }
+
+    setActiveConnectionId(connection.id);
+    await ensureContainersLoaded(connection.id);
   }
 
   function openManageDialog(signInId: string) {
@@ -658,20 +851,10 @@ function App() {
 
   function handleSelectConnection(connectionId: string) {
     setActiveConnectionId(connectionId);
-    setActiveContainer(null);
-    setContainers([]);
-    setRows([]);
-    setPrefix("");
-    setSelectedRows(new Set());
-    setContainersError(null);
-    setRowsError(null);
   }
 
-  function handleSelectContainer(containerName: string) {
-    setActiveContainer(containerName);
-    setPrefix("");
-    setSelectedRows(new Set());
-    setRowsError(null);
+  function handleSelectContainer(connectionId: string, containerName: string) {
+    openContainerTab(connectionId, containerName);
   }
 
   function toggleSignIn(signInId: string) {
@@ -683,42 +866,67 @@ function App() {
   }
 
   function handleActivateRow(index: number) {
-    const row = rows[index];
+    if (!activeTab) {
+      return;
+    }
+
+    const row = activeRows[index];
     if (!row || row.kind !== "dir" || !row.path) {
       return;
     }
+    const nextPrefix = ensureTrailingSlash(row.path);
 
-    setPrefix(ensureTrailingSlash(row.path));
-    setSelectedRows(new Set());
+    updateTab(activeTab.id, (tab) => ({
+      ...tab,
+      prefix: nextPrefix,
+      loaded: false,
+      error: null,
+      selectedIndices: [],
+    }));
   }
 
   function handleGoUp() {
-    if (!prefix) {
+    if (!activeTab || !prefix) {
       return;
     }
-    setPrefix(parentPrefix(prefix));
-    setSelectedRows(new Set());
+
+    updateTab(activeTab.id, (tab) => ({
+      ...tab,
+      prefix: parentPrefix(tab.prefix),
+      loaded: false,
+      error: null,
+      selectedIndices: [],
+    }));
   }
 
   function handleToggleSelection(index: number) {
-    setSelectedRows((current) => {
-      const next = new Set(current);
+    if (!activeTab) {
+      return;
+    }
+
+    updateTab(activeTab.id, (tab) => {
+      const next = new Set(tab.selectedIndices);
       if (next.has(index)) {
         next.delete(index);
       } else {
         next.add(index);
       }
-      return next;
+      return { ...tab, selectedIndices: Array.from(next) };
     });
   }
 
   function handleToggleSelectAll() {
-    setSelectedRows((current) => {
-      if (current.size === rows.length) {
-        return new Set();
-      }
-      return new Set(rows.map((_, index) => index));
-    });
+    if (!activeTab) {
+      return;
+    }
+
+    updateTab(activeTab.id, (tab) => ({
+      ...tab,
+      selectedIndices:
+        tab.selectedIndices.length === tab.rows.length
+          ? []
+          : tab.rows.map((_, index) => index),
+    }));
   }
 
   async function handleCopyUserCode() {
@@ -730,34 +938,73 @@ function App() {
     setCopiedCode(true);
   }
 
+  async function copyText(value: string) {
+    if (!navigator.clipboard) {
+      return;
+    }
+    await navigator.clipboard.writeText(value);
+  }
+
+  function closeContextMenu() {
+    setContextMenu(null);
+  }
+
+  function openContextMenu(
+    event: React.MouseEvent<HTMLDivElement>,
+    items: ContextMenuItem[],
+  ) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (items.length === 0) {
+      return;
+    }
+
+    setContextMenu({
+      x: event.clientX,
+      y: event.clientY,
+      items,
+    });
+  }
+
   useEffect(() => {
     void initializeShell();
   }, []);
 
   useEffect(() => {
-    if (!activeConnectionId) {
-      setContainers([]);
-      setRows([]);
-      setActiveContainer(null);
+    if (activeTabId && !browserTabs.some((tab) => tab.id === activeTabId)) {
+      setActiveTabId(browserTabs[0]?.id ?? null);
       return;
     }
-
-    setActiveContainer(null);
-    setContainers([]);
-    setRows([]);
-    setPrefix("");
-    setSelectedRows(new Set());
-    void loadContainers(activeConnectionId, null);
-  }, [activeConnectionId]);
+    if (!activeTabId && browserTabs.length > 0) {
+      setActiveTabId(browserTabs[0].id);
+    }
+  }, [activeTabId, browserTabs]);
 
   useEffect(() => {
-    if (!activeConnectionId || !activeContainer) {
-      setRows([]);
+    if (!activeTabId) {
       return;
     }
 
-    void loadBlobs(activeConnectionId, activeContainer, prefix);
-  }, [activeConnectionId, activeContainer, prefix]);
+    const tab = browserTabs.find((currentTab) => currentTab.id === activeTabId);
+    if (tab) {
+      setActiveConnectionId(tab.connectionId);
+    }
+  }, [activeTabId, browserTabs]);
+
+  useEffect(() => {
+    if (!activeTab || activeTab.loaded || activeTab.busy) {
+      return;
+    }
+
+    void loadTabRows(activeTab.id);
+  }, [
+    activeTab?.id,
+    activeTab?.connectionId,
+    activeTab?.containerName,
+    activeTab?.prefix,
+    activeTab?.loaded,
+    activeTab?.busy,
+  ]);
 
   useEffect(() => {
     if (!browserPrompt) {
@@ -957,6 +1204,20 @@ function App() {
     return () => window.clearTimeout(timerId);
   }, [copiedCode]);
 
+  useEffect(() => {
+    if (!contextMenu) {
+      return;
+    }
+
+    const close = () => setContextMenu(null);
+    window.addEventListener("click", close);
+    window.addEventListener("blur", close);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("blur", close);
+    };
+  }, [contextMenu]);
+
   const runtimeUnavailable = !tauriAvailable.current;
   const statusText = runtimeUnavailable
     ? "browser-only mode"
@@ -964,7 +1225,7 @@ function App() {
       ? "error"
       : browserPrompt || devicePrompt || tenantBrowserPrompt || tenantReauthBusy
       ? "auth pending"
-      : connectionsBusy || signInsBusy || containersBusy || rowsBusy
+      : connectionsBusy || signInsBusy || anyContainersBusy || anyRowsBusy
         ? "refreshing"
         : activeConnection
           ? "live"
@@ -1027,9 +1288,9 @@ function App() {
                 onClick={() => {
                   void handleRefresh();
                 }}
-                disabled={connectionsBusy || signInsBusy || containersBusy || rowsBusy}
+                disabled={connectionsBusy || signInsBusy || anyContainersBusy || anyRowsBusy}
                 icon={
-                  connectionsBusy || signInsBusy || containersBusy || rowsBusy ? (
+                  connectionsBusy || signInsBusy || anyContainersBusy || anyRowsBusy ? (
                     <IconLoader size={12} />
                   ) : (
                     <IconRefresh size={12} />
@@ -1069,6 +1330,22 @@ function App() {
                     meta={`${signIn.selected_tenant_count}/${signIn.tenant_count} tenants`}
                     action={<IconSettings size={10} />}
                     onAction={() => openManageDialog(signIn.id)}
+                    onContextMenu={(event) =>
+                      openContextMenu(event, [
+                        {
+                          label: "Manage account",
+                          action: () => {
+                            openManageDialog(signIn.id);
+                          },
+                        },
+                        {
+                          label: signInExpanded ? "Collapse account" : "Expand account",
+                          action: () => {
+                            toggleSignIn(signIn.id);
+                          },
+                        },
+                      ])
+                    }
                   />
 
                   {signInExpanded && subscriptions.map((subscription) => {
@@ -1084,31 +1361,70 @@ function App() {
                           icon={<IconAzure size={11} />}
                           label={subscription.name}
                           meta={subscription.storage_account_count}
+                          onContextMenu={(event) =>
+                            openContextMenu(event, [
+                              {
+                                label: subscriptionExpanded ? "Collapse subscription" : "Expand subscription",
+                                action: () => {
+                                  toggleSubscription(subscription.id);
+                                },
+                              },
+                            ])
+                          }
                         />
 
                         {subscriptionExpanded && accounts.map((account) => {
-                          const isActive =
-                            activeConnection != null &&
-                            activeConnection.origin_sign_in_id === account.sign_in_id &&
-                            activeConnection.origin_subscription_id === account.subscription_id &&
-                            activeConnection.account_name === account.name &&
-                            normalizeUrlHost(activeConnection.endpoint) === normalizeUrlHost(account.endpoint);
+                          const isActive = isDiscoveredAccountActive(account);
+                          const connection = findDiscoveredConnection(account);
+                          const accountKey = discoveredRowKey(account);
+                          const isExpanded = expandedAccounts[accountKey] ?? false;
+                          const isBusy = activatingAccounts[accountKey] ?? false;
 
                           return (
                             <React.Fragment key={account.name}>
                               <TreeRow
                                 depth={2}
+                                expanded={isExpanded}
+                                onToggle={() => {
+                                  void handleToggleDiscoveredAccount(account);
+                                }}
                                 icon={<IconAzure size={11} />}
                                 label={account.name}
                                 meta={account.region}
                                 badge={account.hns ? "ADLS" : account.tier === "Premium" ? "P" : null}
                                 selected={isActive}
                                 onClick={() => {
-                                  void handleActivateDiscoveredAccount(account);
+                                  void handleSelectDiscoveredAccount(account);
                                 }}
+                                onContextMenu={(event) =>
+                                  openContextMenu(event, [
+                                    {
+                                      label: connection ? "Open account" : "Connect account",
+                                      action: () => {
+                                        void handleSelectDiscoveredAccount(account);
+                                      },
+                                    },
+                                    {
+                                      label: isExpanded ? "Collapse account" : "Expand account",
+                                      action: () => {
+                                        void handleToggleDiscoveredAccount(account);
+                                      },
+                                    },
+                                    {
+                                      label: "Refresh containers",
+                                      disabled: !connection,
+                                      action: () => {
+                                        if (!connection) {
+                                          return;
+                                        }
+                                        void ensureContainersLoaded(connection.id, true);
+                                      },
+                                    },
+                                  ])
+                                }
                               />
 
-                              {isActive && renderContainerBranch(3)}
+                              {isExpanded && renderContainerBranch(connection?.id ?? null, 3, isBusy)}
                             </React.Fragment>
                           );
                         })}
@@ -1128,19 +1444,54 @@ function App() {
             )}
 
             {directConnections.map((connection) => {
-              const isActive = connection.id === activeConnectionId;
+              const isActive = connection.id === browsingConnectionId;
+              const accountKey = directRowKey(connection.id);
+              const isExpanded = expandedAccounts[accountKey] ?? false;
               return (
                 <div key={connection.id} style={styles.discoveryGroup}>
                   <TreeRow
                     depth={0}
+                    expanded={isExpanded}
+                    onToggle={() => {
+                      void handleToggleDirectAccount(connection);
+                    }}
                     icon={connectionIcon(connection.auth_kind)}
                     label={connection.display_name}
                     meta={compactAuthLabel(connection.auth_kind)}
                     selected={isActive}
                     onClick={() => handleSelectConnection(connection.id)}
+                    onContextMenu={(event) =>
+                      openContextMenu(event, [
+                        {
+                          label: "Open account",
+                          action: () => {
+                            handleSelectConnection(connection.id);
+                          },
+                        },
+                        {
+                          label: isExpanded ? "Collapse account" : "Expand account",
+                          action: () => {
+                            void handleToggleDirectAccount(connection);
+                          },
+                        },
+                        {
+                          label: "Refresh containers",
+                          action: () => {
+                            void ensureContainersLoaded(connection.id, true);
+                          },
+                        },
+                        {
+                          label: "Detach",
+                          danger: true,
+                          action: () => {
+                            void handleDisconnect(connection.id);
+                          },
+                        },
+                      ])
+                    }
                   />
                   <div style={styles.connectionMeta}>{compactHost(connection.endpoint)}</div>
-                  {isActive && renderContainerBranch(1)}
+                  {isExpanded && renderContainerBranch(connection.id, 1)}
                 </div>
               );
             })}
@@ -1168,17 +1519,17 @@ function App() {
             />
             <ToolbarButton
               label="Refresh"
-              icon={connectionsBusy || signInsBusy || containersBusy || rowsBusy ? <IconLoader size={12} /> : <IconRefresh size={12} />}
+              icon={connectionsBusy || signInsBusy || anyContainersBusy || anyRowsBusy ? <IconLoader size={12} /> : <IconRefresh size={12} />}
               onClick={() => {
                 void handleRefresh();
               }}
-              disabled={!tauriAvailable.current || connectionsBusy || signInsBusy || containersBusy || rowsBusy}
+              disabled={!tauriAvailable.current || connectionsBusy || signInsBusy || anyContainersBusy || anyRowsBusy}
             />
             <ToolbarButton
               label="Up"
               icon={<IconArrowUp size={12} />}
               onClick={handleGoUp}
-              disabled={!prefix}
+              disabled={!activeTab || !prefix}
             />
             <ToolbarButton
               label={disconnectBusy ? "Detaching…" : "Detach"}
@@ -1227,32 +1578,64 @@ function App() {
             />
           )}
 
-          {activeConnection && !activeContainer && containersBusy && (
+          {browserTabs.length > 0 && (
+            <TabsBar
+              tabs={browserTabs.map((tab) => ({
+                id: tab.id,
+                label: tab.containerName,
+                icon: <IconContainer size={11} />,
+                dirty: tab.busy,
+              }))}
+              active={activeTabId ?? browserTabs[0].id}
+              onSelect={(tabId) => {
+                setActiveTabId(tabId);
+              }}
+              onClose={(tabId) => {
+                setBrowserTabs((current) => {
+                  const index = current.findIndex((tab) => tab.id === tabId);
+                  const next = current.filter((tab) => tab.id !== tabId);
+                  if (activeTabId === tabId) {
+                    const fallback = next[index] ?? next[index - 1] ?? null;
+                    setActiveTabId(fallback?.id ?? null);
+                    if (fallback) {
+                      setActiveConnectionId(fallback.connectionId);
+                    }
+                  }
+                  return next;
+                });
+              }}
+              onNew={() => openConnectDialog()}
+            />
+          )}
+
+          {activeConnection && !activeContainer && anyContainersBusy && (
             <MainEmptyState
               title="Loading containers"
               body="The selected storage account is live. Container metadata is being fetched now."
             />
           )}
 
-          {activeConnection && !activeContainer && !containersBusy && containersError && (
+          {activeConnection && !activeContainer && activeConnectionId && containerStatesByConnection[activeConnectionId]?.error && (
             <MainEmptyState
               title="Container lookup failed"
-              body={containersError}
+              body={containerStatesByConnection[activeConnectionId]?.error ?? "Container lookup failed."}
               primaryLabel="Try again"
               onPrimary={() => {
-                void handleRefresh();
+                if (activeConnectionId) {
+                  void ensureContainersLoaded(activeConnectionId, true);
+                }
               }}
             />
           )}
 
-          {activeConnection && !activeContainer && !containersBusy && !containersError && (
+          {activeConnection && !activeContainer && !anyContainersBusy && !containerStatesByConnection[activeConnectionId ?? ""]?.error && (
             <MainEmptyState
               title="No container selected"
-              body="Choose a container from the left explorer tree."
+              body="Choose a container from the left explorer tree. Each container opens as its own tab, so you can keep multiple storage accounts expanded and switch between live listings without losing your place."
             />
           )}
 
-          {activeConnection && activeContainer && (
+          {activeConnection && activeContainer && activeTab && (
             <>
               <div style={styles.pathBar}>
                 <div style={styles.pathTrail}>
@@ -1260,8 +1643,13 @@ function App() {
                     type="button"
                     style={styles.pathButtonActive}
                     onClick={() => {
-                      setPrefix("");
-                      setSelectedRows(new Set());
+                      updateTab(activeTab.id, (tab) => ({
+                        ...tab,
+                        prefix: "",
+                        loaded: false,
+                        error: null,
+                        selectedIndices: [],
+                      }));
                     }}
                   >
                     {activeContainer}
@@ -1274,8 +1662,13 @@ function App() {
                         type="button"
                         style={segment.value === prefix ? styles.pathButtonActive : styles.pathButton}
                         onClick={() => {
-                          setPrefix(segment.value);
-                          setSelectedRows(new Set());
+                          updateTab(activeTab.id, (tab) => ({
+                            ...tab,
+                            prefix: segment.value,
+                            loaded: false,
+                            error: null,
+                            selectedIndices: [],
+                          }));
                         }}
                       >
                         {segment.label}
@@ -1285,43 +1678,84 @@ function App() {
                 </div>
 
                 <div style={styles.pathMeta}>
-                  {rowsBusy && (
+                  {activeTab.busy && (
                     <span style={styles.pathStatus}>
                       <IconLoader size={11} />
                       Loading…
                     </span>
                   )}
                   <span style={styles.pathCount}>
-                    {rows.length} {rows.length === 1 ? "item" : "items"}
+                    {activeRows.length} {activeRows.length === 1 ? "item" : "items"}
                   </span>
                 </div>
               </div>
 
-              {rowsError ? (
+              {activeTab.error ? (
                 <MainEmptyState
                   title="Blob listing failed"
-                  body={rowsError}
+                  body={activeTab.error}
                   primaryLabel="Retry"
                   onPrimary={() => {
-                    void loadBlobs(activeConnection.id, activeContainer, prefix);
+                    updateTab(activeTab.id, (tab) => ({ ...tab, loaded: false }));
                   }}
                 />
               ) : (
                 <div style={styles.browserPane}>
                   <div style={styles.tablePane}>
-                    {rows.length === 0 && !rowsBusy ? (
+                    {activeRows.length === 0 && !activeTab.busy ? (
                       <MainEmptyState
                         title="This prefix is empty"
                         body="The live container responded successfully, but there are no blobs or virtual directories at the current prefix."
                       />
                     ) : (
                       <BlobTable
-                        rows={rows}
+                        rows={activeRows}
                         selected={selectedRows}
                         onToggleSelect={handleToggleSelection}
                         onSelectAll={handleToggleSelectAll}
                         onDelete={() => undefined}
                         onActivateRow={handleActivateRow}
+                        onContextMenuRow={(index, row, event) => {
+                          if (!selectedRows.has(index)) {
+                            updateTab(activeTab.id, (tab) => ({
+                              ...tab,
+                              selectedIndices: [index],
+                            }));
+                          }
+                          openContextMenu(event, [
+                            {
+                              label: row.kind === "dir" ? "Open folder" : "Select blob",
+                              action: () => {
+                                if (row.kind === "dir") {
+                                  handleActivateRow(index);
+                                } else {
+                                  handleToggleSelection(index);
+                                }
+                              },
+                            },
+                            {
+                              label: "Copy path",
+                              action: () => {
+                                void copyText(row.path ?? row.name);
+                              },
+                            },
+                            {
+                              label: "Copy URL",
+                              disabled: !(activeConnection && row.path),
+                              action: () => {
+                                if (activeConnection && row.path) {
+                                  void copyText(buildResourceUrl(activeConnection.endpoint, activeContainer, row.path));
+                                }
+                              },
+                            },
+                            {
+                              label: "Refresh listing",
+                              action: () => {
+                                updateTab(activeTab.id, (tab) => ({ ...tab, loaded: false }));
+                              },
+                            },
+                          ]);
+                        }}
                       />
                     )}
                   </div>
@@ -1417,15 +1851,71 @@ function App() {
           }}
         />
       )}
+
+      {contextMenu && (
+        <div
+          style={{
+            position: "fixed",
+            left: Math.min(contextMenu.x, window.innerWidth - 224),
+            top: Math.min(contextMenu.y, window.innerHeight - 240),
+            minWidth: 220,
+            padding: 6,
+            borderRadius: 10,
+            background: "rgba(10, 12, 18, 0.98)",
+            border: "1px solid var(--border-1)",
+            boxShadow: "0 18px 40px rgba(0, 0, 0, 0.45)",
+            zIndex: 60,
+          }}
+          onClick={(event) => event.stopPropagation()}
+        >
+          {contextMenu.items.map((item) => (
+            <button
+              key={item.label}
+              type="button"
+              disabled={item.disabled}
+              style={{
+                width: "100%",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 12,
+                padding: "8px 10px",
+                borderRadius: 8,
+                color: item.disabled ? "var(--fg-4)" : item.danger ? "var(--red)" : "var(--fg-1)",
+                fontFamily: "var(--sans)",
+                fontSize: 12,
+                textAlign: "left",
+                cursor: item.disabled ? "not-allowed" : "pointer",
+              }}
+              onClick={() => {
+                closeContextMenu();
+                if (!item.disabled) {
+                  void item.action();
+                }
+              }}
+            >
+              <span>{item.label}</span>
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 
-  function renderContainerBranch(depth: number) {
-    if (!activeConnectionId) {
-      return null;
+  function renderContainerBranch(connectionId: string | null, depth: number, connecting = false) {
+    if (!connectionId) {
+      return connecting ? (
+        <div style={treeHintStyle(depth)}>
+          <IconLoader size={11} />
+          <span>Connecting account…</span>
+        </div>
+      ) : (
+        <div style={treeEmptyStyle(depth)}>Select this account to load containers.</div>
+      );
     }
 
-    if (containersBusy) {
+    const containerState = containerStatesByConnection[connectionId];
+    if (connecting || containerState?.busy) {
       return (
         <div style={treeHintStyle(depth)}>
           <IconLoader size={11} />
@@ -1434,23 +1924,52 @@ function App() {
       );
     }
 
-    if (containersError) {
-      return <div style={treeErrorStyle(depth)}>{containersError}</div>;
+    if (!containerState) {
+      return <div style={treeEmptyStyle(depth)}>Expand this account to load containers.</div>;
     }
 
-    if (containers.length === 0) {
+    if (containerState.error) {
+      return <div style={treeErrorStyle(depth)}>{containerState.error}</div>;
+    }
+
+    if (containerState.items.length === 0) {
       return <div style={treeEmptyStyle(depth)}>No containers available.</div>;
     }
 
-    return containers.map((container) => (
+    return containerState.items.map((container) => (
       <TreeRow
-        key={container.id}
+        key={`${connectionId}:${container.id}`}
         depth={depth}
         icon={<IconContainer size={11} />}
         label={container.name}
         meta={container.public_access ?? undefined}
-        selected={activeContainer === container.name}
-        onClick={() => handleSelectContainer(container.name)}
+        selected={
+          activeTab?.connectionId === connectionId &&
+          activeTab.containerName === container.name
+        }
+        onClick={() => handleSelectContainer(connectionId, container.name)}
+        onContextMenu={(event) =>
+          openContextMenu(event, [
+            {
+              label: "Open in tab",
+              action: () => {
+                handleSelectContainer(connectionId, container.name);
+              },
+            },
+            {
+              label: "Refresh account containers",
+              action: () => {
+                void ensureContainersLoaded(connectionId, true);
+              },
+            },
+            {
+              label: "Copy container name",
+              action: () => {
+                void copyText(container.name);
+              },
+            },
+          ])
+        }
       />
     ));
   }

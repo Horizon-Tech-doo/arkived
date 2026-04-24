@@ -299,8 +299,16 @@ interface BlobTableProps {
   onSelectAll: () => void;
   onDelete: () => void;
   onActivateRow?: (i: number) => void;
+  onContextMenuRow?: (index: number, row: BlobRow, event: React.MouseEvent<HTMLDivElement>) => void;
 }
-export function BlobTable({ rows, selected, onToggleSelect, onSelectAll, onActivateRow }: BlobTableProps) {
+export function BlobTable({
+  rows,
+  selected,
+  onToggleSelect,
+  onSelectAll,
+  onActivateRow,
+  onContextMenuRow,
+}: BlobTableProps) {
   const cols = [
     { key: "name",     label: "Name",                sortable: true },
     { key: "tier",     label: "Access Tier" },
@@ -312,7 +320,7 @@ export function BlobTable({ rows, selected, onToggleSelect, onSelectAll, onActiv
     { key: "lease",    label: "Lease" },
   ];
 
-  const gridTemplate = "24px 1fr 100px 160px 170px 90px 90px 170px 60px";
+  const gridTemplate = "24px minmax(360px, 2fr) 92px 148px 156px 92px 84px minmax(120px, 1fr) 72px";
   const allSelected = rows.length > 0 && selected.size === rows.length;
 
   return (
@@ -330,7 +338,7 @@ export function BlobTable({ rows, selected, onToggleSelect, onSelectAll, onActiv
         borderBottom: "1px solid var(--border-1)",
         fontSize: 10, fontWeight: 600,
         color: "var(--fg-2)", textTransform: "uppercase", letterSpacing: "0.04em",
-        height: 26,
+        height: 28,
       }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
           <Checkbox checked={allSelected} onChange={onSelectAll} />
@@ -356,12 +364,13 @@ export function BlobTable({ rows, selected, onToggleSelect, onSelectAll, onActiv
             key={i}
             onClick={() => onToggleSelect(i)}
             onDoubleClick={() => onActivateRow?.(i)}
+            onContextMenu={(event) => onContextMenuRow?.(i, r, event)}
             style={{
               display: "grid",
               gridTemplateColumns: gridTemplate,
-              height: 26,
+              height: 30,
               borderBottom: "1px solid var(--border-0)",
-              background: isSelected ? "var(--accent-ghost)" : "transparent",
+              background: isSelected ? "var(--accent-ghost-strong)" : "transparent",
               cursor: "pointer",
               color: "var(--fg-1)",
             }}
@@ -372,13 +381,20 @@ export function BlobTable({ rows, selected, onToggleSelect, onSelectAll, onActiv
               <Checkbox checked={isSelected} onChange={() => onToggleSelect(i)} />
             </div>
 
-            <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "0 8px", overflow: "hidden" }}>
-              {blobIcon(r.icon)}
+            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "0 10px", overflow: "hidden", minWidth: 0 }}>
+              <span style={{ display: "flex", alignItems: "center", justifyContent: "center", color: r.kind === "dir" ? "var(--yellow)" : "var(--fg-2)" }}>
+                {blobIcon(r.icon)}
+              </span>
               <span style={{
+                flex: 1,
+                minWidth: 0,
                 overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-                color: r.kind === "dir" ? "var(--fg-0)" : "var(--fg-1)",
-                fontWeight: r.kind === "dir" ? 500 : 400,
-              }}>{r.name}</span>
+                color: isSelected ? "var(--fg-0)" : r.kind === "dir" ? "#eef4ff" : "var(--fg-0)",
+                fontFamily: "var(--sans)",
+                fontSize: 12,
+                letterSpacing: "0.01em",
+                fontWeight: r.kind === "dir" ? 600 : 500,
+              }} title={r.name}>{r.name}</span>
               {r.kind === "dir" && <IconChevronRight size={9} style={{ color: "var(--fg-3)" }} />}
             </div>
 

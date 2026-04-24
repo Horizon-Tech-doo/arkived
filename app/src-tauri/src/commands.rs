@@ -6,6 +6,8 @@
 //!
 //! Discovered accounts can then be activated into live blob-browser connections.
 
+use arkived_core::auth::credentials::CredentialStore;
+use arkived_core::auth::entra::cache::{CachedRefresh, RefreshCache};
 use arkived_core::auth::entra::credential::{RefreshContext, TokenBundle};
 use arkived_core::auth::entra::device_code::{
     poll_for_token, refresh_access_token, start_device_code, DeviceCodeResponse, TokenResponse,
@@ -16,10 +18,14 @@ use arkived_core::auth::{
     ConnectionStringProvider, ResolvedCredential, SasTokenProvider,
 };
 use arkived_core::backend::{AzureBlobBackend, BlobEntry, Page};
-use arkived_core::types::AzureEnvironment;
+use arkived_core::store::{AttachedResource, SignIn};
+use arkived_core::types::{AuthKind, AzureEnvironment, ResourceKind};
+use arkived_core::Store;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use chrono::Utc;
 use secrecy::SecretString;
+use secrecy::ExposeSecret;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -38,10 +44,12 @@ const ARM_SUBSCRIPTIONS_API_VERSION: &str = "2020-01-01";
 const ARM_STORAGE_ACCOUNTS_API_VERSION: &str = "2023-05-01";
 const ENTRA_INTERACTIVE_AUTH_KIND: &str = "entra-interactive";
 const ENTRA_DEVICE_CODE_AUTH_KIND: &str = "entra-device-code";
+const KEYCHAIN_CONNECTION_PREFIX: &str = "arkived:connection:";
 
-#[derive(Default)]
 pub struct AppState {
     inner: Arc<Mutex<InnerState>>,
+    store: Arc<Store>,
+    credential_store: Arc<dyn CredentialStore>,
 }
 
 #[derive(Default)]
@@ -366,6 +374,18 @@ struct ArmStorageAccountKey {
     value: Option<String>,
 }
 
+#[derive(Serialize, Deserialize)]
+struct PersistedAccountKeySecret {
+    account_name: String,
+    account_key: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct PersistedSasSecret {
+    sas: String,
+    fixed_container: Option<String>,
+}
+
 #[derive(Deserialize)]
 struct IdTokenClaims {
     #[serde(default)]
@@ -376,6 +396,68 @@ struct IdTokenClaims {
     upn: Option<String>,
     #[serde(default)]
     name: Option<String>,
+}
+
+impl AppState {
+    pub fn new(store: Arc<Store>, credential_store: Arc<dyn CredentialStore>) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(InnerState::default())),
+            store,
+            credential_store,
+        }
+    }
+
+    pub async fn restore(
+        store: Arc<Store>,
+        credential_store: Arc<dyn CredentialStore>,
+    ) -> Result<Self, String> {
+        let state = Self::new(store, credential_store);
+        state.restore_sign_ins().await?;
+        state.restore_direct_attachments().await?;
+        Ok(state)
+    }
+
+    async fn restore_sign_ins(&self) -> Result<(), String> {
+        let persisted = self
+            .store
+            .sign_in_list()
+            .map_err(|error| format!("failed to list persisted sign-ins: {error}"))?;
+
+        for persisted_sign_in in persisted {
+            if let Ok(sign_in) =
+                restore_sign_in_session(&*self.credential_store, persisted_sign_in.clone()).await
+            {
+                self.inner
+                    .lock()
+                    .unwrap()
+                    .sign_ins
+                    .insert(sign_in.id.clone(), sign_in);
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn restore_direct_attachments(&self) -> Result<(), String> {
+        let persisted = self
+            .store
+            .attached_resource_list()
+            .map_err(|error| format!("failed to list persisted attachments: {error}"))?;
+
+        for attachment in persisted {
+            if let Ok(connection) =
+                restore_direct_attachment(&*self.credential_store, attachment).await
+            {
+                self.inner
+                    .lock()
+                    .unwrap()
+                    .connections
+                    .insert(connection_id(&connection).to_string(), connection);
+            }
+        }
+
+        Ok(())
+    }
 }
 
 #[tauri::command]
@@ -505,6 +587,12 @@ pub async fn connect_connection_string(
     let connection = build_connection_string_connection(display_name, connection_string).await?;
     validate_connection(&connection).await?;
     let summary = connection_summary(connection.clone());
+    if let Err(error) = persist_direct_connection(&state, &connection) {
+        eprintln!(
+            "failed to persist connection-string attachment `{}`: {error}",
+            summary.display_name
+        );
+    }
     state
         .inner
         .lock()
@@ -526,6 +614,12 @@ pub async fn connect_account_key(
         build_account_key_connection(display_name, account_name, account_key, endpoint)?;
     validate_connection(&connection).await?;
     let summary = connection_summary(connection.clone());
+    if let Err(error) = persist_direct_connection(&state, &connection) {
+        eprintln!(
+            "failed to persist shared-key attachment `{}`: {error}",
+            summary.display_name
+        );
+    }
     state
         .inner
         .lock()
@@ -546,6 +640,12 @@ pub async fn connect_sas(
     let connection = build_sas_connection(display_name, endpoint, sas, fixed_container)?;
     validate_connection(&connection).await?;
     let summary = connection_summary(connection.clone());
+    if let Err(error) = persist_direct_connection(&state, &connection) {
+        eprintln!(
+            "failed to persist SAS attachment `{}`: {error}",
+            summary.display_name
+        );
+    }
     state
         .inner
         .lock()
@@ -563,6 +663,12 @@ pub async fn connect_azurite(state: State<'_, AppState>) -> Result<BrowserConnec
     };
     validate_connection(&connection).await?;
     let summary = connection_summary(connection.clone());
+    if let Err(error) = persist_direct_connection(&state, &connection) {
+        eprintln!(
+            "failed to persist Azurite attachment `{}`: {error}",
+            summary.display_name
+        );
+    }
     state
         .inner
         .lock()
@@ -748,6 +854,8 @@ pub async fn start_entra_browser_login(
 
     let client = reqwest::Client::new();
     let inner = state.inner.clone();
+    let store = state.store.clone();
+    let credential_store = state.credential_store.clone();
     let login_id_for_task = login_id.clone();
     tauri::async_runtime::spawn(async move {
         let callback_result = tauri::async_runtime::spawn_blocking(move || {
@@ -795,6 +903,13 @@ pub async fn start_entra_browser_login(
                         match discovery_result {
                             Ok(sign_in) => {
                                 let sign_in_id = sign_in.id.clone();
+                                if let Err(error) = persist_sign_in_session_snapshot(
+                                    &store,
+                                    &*credential_store,
+                                    &sign_in,
+                                ) {
+                                    eprintln!("failed to persist Azure sign-in `{sign_in_id}`: {error}");
+                                }
                                 guard.sign_ins.insert(sign_in_id.clone(), sign_in);
                                 if let Some(pending) =
                                     guard.pending_browser_logins.get_mut(&login_id_for_task)
@@ -929,6 +1044,8 @@ pub async fn start_sign_in_tenant_reauth(
 
     let client = reqwest::Client::new();
     let inner = state.inner.clone();
+    let store = state.store.clone();
+    let credential_store = state.credential_store.clone();
     let login_id_for_task = login_id.clone();
     let sign_in_id_for_task = sign_in_id.clone();
     let tenant_id_for_task = tenant.id.clone();
@@ -962,6 +1079,8 @@ pub async fn start_sign_in_tenant_reauth(
                         );
                         let refresh_result = refresh_sign_in_tenant(
                             &inner,
+                            &store,
+                            &*credential_store,
                             &sign_in_id_for_task,
                             &tenant_id_for_task,
                             arm_bundle,
@@ -1086,6 +1205,8 @@ pub async fn start_entra_discovery_login(
     }
 
     let inner = state.inner.clone();
+    let store = state.store.clone();
+    let credential_store = state.credential_store.clone();
     tauri::async_runtime::spawn(async move {
         let poll_result = poll_for_token(
             &client,
@@ -1119,6 +1240,13 @@ pub async fn start_entra_discovery_login(
                 match discovery_result {
                     Ok(sign_in) => {
                         let sign_in_id = sign_in.id.clone();
+                        if let Err(error) = persist_sign_in_session_snapshot(
+                            &store,
+                            &*credential_store,
+                            &sign_in,
+                        ) {
+                            eprintln!("failed to persist Azure sign-in `{sign_in_id}`: {error}");
+                        }
                         guard.sign_ins.insert(sign_in_id.clone(), sign_in);
                         if let Some(pending) = guard.pending_discovery_logins.get_mut(&login_id) {
                             pending.status = PendingLoginStatus::Complete { id: sign_in_id };
@@ -1219,7 +1347,11 @@ pub async fn connect_discovered_storage_account(
         sign_in_id: sign_in_id.clone(),
         subscription_id: subscription_id.clone(),
     });
-    let mut shared_key_error: Option<String> = None;
+    // If ARM listKeys succeeds, attach the AccountKey connection directly
+    // without probing a data-plane call. This matches Storage Explorer's
+    // attach-time behavior: probe only at real use, so activation-time
+    // quirks (service-level listing rules, edge auth paths) don't prevent
+    // per-container operations that would otherwise succeed.
     let fallback_note =
         match try_fetch_storage_account_key(&sign_in, &target_tenant_id, &account).await {
             Ok(account_key) => {
@@ -1232,27 +1364,16 @@ pub async fn connect_discovered_storage_account(
                     key: account_key,
                     origin: origin.clone(),
                 };
-
-                match validate_browsable_connection(&connection).await {
-                    Ok(()) => {
-                        let summary = connection_summary(connection.clone());
-                        let mut guard = state.inner.lock().unwrap();
-                        if let Some(existing_id) = existing
-                            .as_ref()
-                            .and_then(|value| discovered_connection_id(value))
-                        {
-                            guard.connections.remove(existing_id);
-                        }
-                        guard.connections.insert(summary.id.clone(), connection);
-                        return Ok(summary);
-                    }
-                    Err(error) => {
-                        shared_key_error = Some(error);
-                        Some(compact_shared_key_fallback_error(
-                            shared_key_error.as_deref().expect("set above"),
-                        ))
-                    }
+                let summary = connection_summary(connection.clone());
+                let mut guard = state.inner.lock().unwrap();
+                if let Some(existing_id) = existing
+                    .as_ref()
+                    .and_then(|value| discovered_connection_id(value))
+                {
+                    guard.connections.remove(existing_id);
                 }
+                guard.connections.insert(summary.id.clone(), connection);
+                return Ok(summary);
             }
             Err(error) => Some(error),
         };
@@ -1274,7 +1395,7 @@ pub async fn connect_discovered_storage_account(
         return Err(compact_discovered_account_error(
             &account.name,
             &error,
-            fallback_note.as_deref().or(shared_key_error.as_deref()),
+            fallback_note.as_deref(),
         ));
     }
     let summary = connection_summary(connection.clone());
@@ -1369,6 +1490,11 @@ pub fn disconnect_connection(
         .connections
         .remove(&connection_id);
     if removed.is_some() {
+        if let Some(connection) = removed.as_ref() {
+            if let Err(error) = remove_persisted_direct_connection(&state, connection) {
+                eprintln!("failed to remove persisted connection `{connection_id}`: {error}");
+            }
+        }
         Ok(())
     } else {
         Err(format!("unknown connection id `{connection_id}`"))
@@ -1383,6 +1509,347 @@ pub fn list_activities() -> Vec<Activity> {
 #[tauri::command]
 pub fn agent_transcript() -> serde_json::Value {
     serde_json::json!([])
+}
+
+fn keychain_ref_for_connection(connection_id: &str) -> String {
+    format!("{KEYCHAIN_CONNECTION_PREFIX}{connection_id}")
+}
+
+fn connection_id(connection: &LiveConnection) -> &str {
+    match connection {
+        LiveConnection::ConnectionString { id, .. }
+        | LiveConnection::AccountKey { id, .. }
+        | LiveConnection::Sas { id, .. }
+        | LiveConnection::Azurite { id, .. }
+        | LiveConnection::Entra { id, .. } => id,
+    }
+}
+
+fn replace_connection_id(connection: LiveConnection, next_id: String) -> LiveConnection {
+    match connection {
+        LiveConnection::ConnectionString {
+            display_name,
+            endpoint,
+            raw,
+            fixed_container,
+            ..
+        } => LiveConnection::ConnectionString {
+            id: next_id,
+            display_name,
+            endpoint,
+            raw,
+            fixed_container,
+        },
+        LiveConnection::AccountKey {
+            display_name,
+            endpoint,
+            account_name,
+            auth_kind,
+            key,
+            origin,
+            ..
+        } => LiveConnection::AccountKey {
+            id: next_id,
+            display_name,
+            endpoint,
+            account_name,
+            auth_kind,
+            key,
+            origin,
+        },
+        LiveConnection::Sas {
+            display_name,
+            endpoint,
+            sas,
+            fixed_container,
+            ..
+        } => LiveConnection::Sas {
+            id: next_id,
+            display_name,
+            endpoint,
+            sas,
+            fixed_container,
+        },
+        LiveConnection::Azurite { display_name, .. } => LiveConnection::Azurite {
+            id: next_id,
+            display_name,
+        },
+        LiveConnection::Entra {
+            display_name,
+            endpoint,
+            account_name,
+            tenant,
+            auth_kind,
+            origin,
+            fallback_note,
+            bundle,
+            ..
+        } => LiveConnection::Entra {
+            id: next_id,
+            display_name,
+            endpoint,
+            account_name,
+            tenant,
+            auth_kind,
+            origin,
+            fallback_note,
+            bundle,
+        },
+    }
+}
+
+fn persist_sign_in_session_snapshot(
+    store: &Store,
+    credential_store: &dyn CredentialStore,
+    sign_in: &SignInSession,
+) -> Result<(), String> {
+    let existing = store
+        .sign_in_get(&sign_in.id)
+        .map_err(|error| format!("failed to inspect persisted sign-in `{}`: {error}", sign_in.id))?;
+    if existing.is_some() {
+        store
+            .sign_in_delete(&sign_in.id)
+            .map_err(|error| format!("failed to replace persisted sign-in `{}`: {error}", sign_in.id))?;
+    }
+
+    store
+        .sign_in_insert(&SignIn {
+            id: sign_in.id.clone(),
+            display_name: sign_in.display_name.clone(),
+            tenant_id: sign_in.login_tenant.clone(),
+            environment: sign_in.environment.clone(),
+            user_principal: sign_in.display_name.clone(),
+            added_at: existing.map(|value| value.added_at).unwrap_or_else(Utc::now),
+        })
+        .map_err(|error| format!("failed to persist sign-in `{}`: {error}", sign_in.id))?;
+
+    let refresh_context = sign_in
+        .arm_bundle
+        .refresh_context
+        .as_ref()
+        .ok_or_else(|| format!("sign-in `{}` is missing refresh context", sign_in.id))?;
+    let refresh_token = sign_in
+        .arm_bundle
+        .refresh_token
+        .clone()
+        .ok_or_else(|| format!("sign-in `{}` is missing refresh token", sign_in.id))?;
+    let cache = RefreshCache::new(credential_store);
+    cache
+        .put(
+            &sign_in.id,
+            &CachedRefresh {
+                refresh_token,
+                tenant: refresh_context.tenant.clone(),
+                client_id: refresh_context.client_id.clone(),
+                scope: refresh_context.scope.clone(),
+                obtained_at: OffsetDateTime::now_utc(),
+            },
+        )
+        .map_err(|error| format!("failed to cache refresh token for `{}`: {error}", sign_in.id))?;
+
+    Ok(())
+}
+
+async fn restore_sign_in_session(
+    credential_store: &dyn CredentialStore,
+    persisted: SignIn,
+) -> Result<SignInSession, String> {
+    let cache = RefreshCache::new(credential_store);
+    let cached = cache
+        .get(&persisted.id)
+        .map_err(|error| format!("failed to read refresh token for `{}`: {error}", persisted.id))?
+        .ok_or_else(|| format!("missing refresh token for `{}`", persisted.display_name))?;
+
+    let client = reqwest::Client::new();
+    let refreshed = refresh_access_token(
+        &client,
+        &cached.tenant,
+        &cached.client_id,
+        &cached.refresh_token,
+        &cached.scope,
+    )
+    .await
+    .map_err(error_to_string)?;
+
+    discover_sign_in_session_with_id(
+        persisted.id,
+        persisted.display_name,
+        persisted.tenant_id,
+        ENTRA_INTERACTIVE_AUTH_KIND,
+        TokenBundle {
+            access_token: refreshed.access_token,
+            refresh_token: refreshed.refresh_token.or(Some(cached.refresh_token)),
+            expires_at: OffsetDateTime::now_utc()
+                + TimeDuration::seconds(refreshed.expires_in as i64),
+            refresh_context: Some(RefreshContext {
+                client,
+                tenant: cached.tenant,
+                client_id: cached.client_id,
+                scope: cached.scope,
+            }),
+        },
+    )
+    .await
+}
+
+fn persist_direct_connection(state: &AppState, connection: &LiveConnection) -> Result<(), String> {
+    let id = connection_id(connection);
+    let keychain_ref = keychain_ref_for_connection(id);
+    let (display_name, endpoint, auth_kind, secret_payload) = match connection {
+        LiveConnection::ConnectionString {
+            display_name,
+            endpoint,
+            raw,
+            ..
+        } => (
+            display_name.clone(),
+            endpoint.clone(),
+            AuthKind::ConnectionString,
+            Some(raw.clone()),
+        ),
+        LiveConnection::AccountKey {
+            display_name,
+            endpoint,
+            account_name,
+            key,
+            origin: None,
+            ..
+        } => (
+            display_name.clone(),
+            endpoint.clone(),
+            AuthKind::AccountKey,
+            Some(
+                serde_json::to_string(&PersistedAccountKeySecret {
+                    account_name: account_name.clone(),
+                    account_key: key.clone(),
+                })
+                .map_err(|error| format!("failed to serialize shared-key connection `{id}`: {error}"))?,
+            ),
+        ),
+        LiveConnection::Sas {
+            display_name,
+            endpoint,
+            sas,
+            fixed_container,
+            ..
+        } => (
+            display_name.clone(),
+            endpoint.clone(),
+            AuthKind::SasToken,
+            Some(
+                serde_json::to_string(&PersistedSasSecret {
+                    sas: sas.clone(),
+                    fixed_container: fixed_container.clone(),
+                })
+                .map_err(|error| format!("failed to serialize SAS connection `{id}`: {error}"))?,
+            ),
+        ),
+        LiveConnection::Azurite { display_name, .. } => (
+            display_name.clone(),
+            arkived_core::auth::azurite::AZURITE_BLOB_ENDPOINT.to_string(),
+            AuthKind::AzuriteEmulator,
+            None,
+        ),
+        _ => return Ok(()),
+    };
+
+    if let Some(secret_payload) = secret_payload {
+        state
+            .credential_store
+            .put(&keychain_ref, &SecretString::new(secret_payload))
+            .map_err(|error| format!("failed to cache connection secret `{id}`: {error}"))?;
+    }
+
+    let _ = state.store.attached_resource_delete(id);
+    state
+        .store
+        .attached_resource_insert(&AttachedResource {
+            id: id.to_string(),
+            display_name,
+            resource_kind: ResourceKind::StorageAccount,
+            endpoint,
+            auth_kind,
+            keychain_ref,
+        })
+        .map_err(|error| format!("failed to persist connection `{id}`: {error}"))?;
+
+    Ok(())
+}
+
+fn remove_persisted_direct_connection(
+    state: &AppState,
+    connection: &LiveConnection,
+) -> Result<(), String> {
+    match connection {
+        LiveConnection::ConnectionString { .. }
+        | LiveConnection::Sas { .. }
+        | LiveConnection::Azurite { .. }
+        | LiveConnection::AccountKey { origin: None, .. } => {
+            let id = connection_id(connection);
+            state
+                .store
+                .attached_resource_delete(id)
+                .map_err(|error| format!("failed to delete persisted connection `{id}`: {error}"))?;
+            state
+                .credential_store
+                .delete(&keychain_ref_for_connection(id))
+                .map_err(|error| format!("failed to delete cached secret for `{id}`: {error}"))?;
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+async fn restore_direct_attachment(
+    credential_store: &dyn CredentialStore,
+    attachment: AttachedResource,
+) -> Result<LiveConnection, String> {
+    let connection = match attachment.auth_kind {
+        AuthKind::ConnectionString => {
+            let secret = credential_store
+                .get(&attachment.keychain_ref)
+                .map_err(|error| format!("failed to read connection string for `{}`: {error}", attachment.display_name))?;
+            build_connection_string_connection(attachment.display_name.clone(), secret.expose_secret().to_string()).await?
+        }
+        AuthKind::AccountKey => {
+            let secret = credential_store
+                .get(&attachment.keychain_ref)
+                .map_err(|error| format!("failed to read shared key for `{}`: {error}", attachment.display_name))?;
+            let payload: PersistedAccountKeySecret = serde_json::from_str(secret.expose_secret())
+                .map_err(|error| format!("failed to parse shared-key secret for `{}`: {error}", attachment.display_name))?;
+            build_account_key_connection(
+                attachment.display_name.clone(),
+                payload.account_name,
+                payload.account_key,
+                Some(attachment.endpoint.clone()),
+            )?
+        }
+        AuthKind::SasToken => {
+            let secret = credential_store
+                .get(&attachment.keychain_ref)
+                .map_err(|error| format!("failed to read SAS token for `{}`: {error}", attachment.display_name))?;
+            let payload: PersistedSasSecret = serde_json::from_str(secret.expose_secret())
+                .map_err(|error| format!("failed to parse SAS secret for `{}`: {error}", attachment.display_name))?;
+            build_sas_connection(
+                attachment.display_name.clone(),
+                attachment.endpoint.clone(),
+                payload.sas,
+                payload.fixed_container,
+            )?
+        }
+        AuthKind::AzuriteEmulator => LiveConnection::Azurite {
+            id: attachment.id.clone(),
+            display_name: attachment.display_name.clone(),
+        },
+        _ => {
+            return Err(format!(
+                "auth kind `{:?}` is not supported for persisted direct attachments",
+                attachment.auth_kind
+            ))
+        }
+    };
+
+    Ok(replace_connection_id(connection, attachment.id))
 }
 
 fn get_connection(
@@ -1720,6 +2187,23 @@ async fn discover_sign_in_session(
     auth_kind: &str,
     arm_bundle: TokenBundle,
 ) -> Result<SignInSession, String> {
+    discover_sign_in_session_with_id(
+        Uuid::new_v4().to_string(),
+        display_name,
+        tenant,
+        auth_kind,
+        arm_bundle,
+    )
+    .await
+}
+
+async fn discover_sign_in_session_with_id(
+    sign_in_id: String,
+    display_name: String,
+    tenant: String,
+    auth_kind: &str,
+    arm_bundle: TokenBundle,
+) -> Result<SignInSession, String> {
     if arm_bundle.refresh_token.is_none() {
         return Err(
             "Azure did not return a refresh token for this sign-in. Use browser OAuth sign-in or sign in again with offline access."
@@ -1736,7 +2220,7 @@ async fn discover_sign_in_session(
     tenants.sort_by(|a, b| a.display_name.cmp(&b.display_name));
 
     Ok(SignInSession {
-        id: Uuid::new_v4().to_string(),
+        id: sign_in_id,
         display_name,
         login_tenant: tenant,
         environment: "azure".into(),
@@ -2115,6 +2599,8 @@ fn read_authorization_code<S: Read + Write>(
 
 async fn refresh_sign_in_tenant(
     inner: &Arc<Mutex<InnerState>>,
+    store: &Store,
+    credential_store: &dyn CredentialStore,
     sign_in_id: &str,
     tenant_id: &str,
     arm_bundle: TokenBundle,
@@ -2148,7 +2634,7 @@ async fn refresh_sign_in_tenant(
         .find(|tenant| tenant.id == tenant_id)
         .ok_or_else(|| format!("unknown tenant `{tenant_id}` for sign-in `{sign_in_id}`"))?;
 
-    match subscriptions_result {
+    let outcome = match subscriptions_result {
         Ok(mut subscriptions) => {
             subscriptions.sort_by(|a, b| a.name.cmp(&b.name));
             tenant.selected = !subscriptions.is_empty();
@@ -2168,7 +2654,15 @@ async fn refresh_sign_in_tenant(
             tenant.subscriptions.clear();
             Err(message)
         }
+    };
+    let sign_in_snapshot = sign_in.clone();
+    drop(guard);
+
+    if let Err(error) = persist_sign_in_session_snapshot(store, credential_store, &sign_in_snapshot) {
+        eprintln!("failed to refresh persisted sign-in `{sign_in_id}`: {error}");
     }
+
+    outcome
 }
 
 fn write_oauth_callback_response(stream: &mut impl Write, ok: bool, title: &str, message: &str) {
@@ -2341,20 +2835,6 @@ fn compact_live_browse_error(
     }
 
     error.to_string()
-}
-
-fn compact_shared_key_fallback_error(error: &str) -> String {
-    if error.contains("KeyBasedAuthenticationNotPermitted") {
-        return "Azure Resource Manager returned a storage key, but this storage account disables Shared Key access.".into();
-    }
-    if error.contains("AuthenticationFailed") && error.contains("Signature") {
-        return "Azure Resource Manager returned a storage key, but the storage service rejected Arkived's Shared Key request signature.".into();
-    }
-    if is_storage_auth_error(error) {
-        return "Azure Resource Manager returned a storage key, but the storage service still denied Shared Key browsing for this account.".into();
-    }
-
-    format!("Azure Resource Manager returned a storage key, but Arkived could not validate Shared Key browsing: {error}")
 }
 
 fn compact_key_fallback_note(errors: &[String]) -> String {
