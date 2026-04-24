@@ -32,6 +32,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::net::TcpListener;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration as StdDuration, Instant};
 use tauri::State;
@@ -50,6 +51,7 @@ pub struct AppState {
     inner: Arc<Mutex<InnerState>>,
     store: Arc<Store>,
     credential_store: Arc<dyn CredentialStore>,
+    snapshot_path: PathBuf,
 }
 
 #[derive(Default)]
@@ -122,7 +124,23 @@ struct SignInSession {
     tenants: Vec<DiscoveredTenant>,
 }
 
-#[derive(Clone)]
+#[derive(Serialize, Deserialize, Default)]
+struct PersistedShellState {
+    #[serde(default)]
+    sign_ins: Vec<PersistedSignInSnapshot>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct PersistedSignInSnapshot {
+    id: String,
+    display_name: String,
+    login_tenant: String,
+    environment: String,
+    auth_kind: String,
+    tenants: Vec<DiscoveredTenant>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 struct DiscoveredTenant {
     id: String,
     display_name: String,
@@ -133,7 +151,7 @@ struct DiscoveredTenant {
     subscriptions: Vec<DiscoveredSubscription>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 struct DiscoveredSubscription {
     id: String,
     name: String,
@@ -142,7 +160,7 @@ struct DiscoveredSubscription {
     storage_accounts: Vec<DiscoveredStorageAccount>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 struct DiscoveredStorageAccount {
     name: String,
     subscription_id: String,
@@ -399,39 +417,101 @@ struct IdTokenClaims {
 }
 
 impl AppState {
-    pub fn new(store: Arc<Store>, credential_store: Arc<dyn CredentialStore>) -> Self {
+    pub fn new(
+        store: Arc<Store>,
+        credential_store: Arc<dyn CredentialStore>,
+        snapshot_path: PathBuf,
+    ) -> Self {
         Self {
             inner: Arc::new(Mutex::new(InnerState::default())),
             store,
             credential_store,
+            snapshot_path,
         }
     }
 
     pub async fn restore(
         store: Arc<Store>,
         credential_store: Arc<dyn CredentialStore>,
+        snapshot_path: PathBuf,
     ) -> Result<Self, String> {
-        let state = Self::new(store, credential_store);
+        let state = Self::new(store, credential_store, snapshot_path);
         state.restore_sign_ins().await?;
         state.restore_direct_attachments().await?;
         Ok(state)
     }
 
     async fn restore_sign_ins(&self) -> Result<(), String> {
+        let snapshot_index: HashMap<_, _> = match load_persisted_shell_state(&self.snapshot_path)
+        {
+            Ok(state) => state
+                .sign_ins
+                .into_iter()
+                .map(|snapshot| (snapshot.id.clone(), snapshot))
+                .collect(),
+            Err(error) => {
+                eprintln!(
+                    "failed to load persisted sign-in snapshots `{}`: {error}",
+                    self.snapshot_path.display()
+                );
+                HashMap::new()
+            }
+        };
         let persisted = self
             .store
             .sign_in_list()
             .map_err(|error| format!("failed to list persisted sign-ins: {error}"))?;
 
         for persisted_sign_in in persisted {
-            if let Ok(sign_in) =
-                restore_sign_in_session(&*self.credential_store, persisted_sign_in.clone()).await
-            {
-                self.inner
-                    .lock()
-                    .unwrap()
-                    .sign_ins
-                    .insert(sign_in.id.clone(), sign_in);
+            let snapshot = snapshot_index.get(&persisted_sign_in.id).cloned();
+            let restored = match snapshot {
+                Some(snapshot) => match restore_sign_in_session_from_snapshot(
+                    &*self.credential_store,
+                    persisted_sign_in.clone(),
+                    snapshot,
+                ) {
+                    Ok(sign_in) => Ok(sign_in),
+                    Err(snapshot_error) => restore_sign_in_session(
+                        &*self.credential_store,
+                        persisted_sign_in.clone(),
+                    )
+                    .await
+                    .map_err(|live_error| {
+                        format!(
+                            "failed to restore sign-in `{}` from snapshot ({snapshot_error}) or live refresh ({live_error})",
+                            persisted_sign_in.display_name
+                        )
+                    }),
+                },
+                None => restore_sign_in_session(&*self.credential_store, persisted_sign_in.clone())
+                    .await,
+            };
+
+            match restored {
+                Ok(sign_in) => {
+                    if let Err(error) = persist_sign_in_session_snapshot(
+                        &self.store,
+                        &*self.credential_store,
+                        &self.snapshot_path,
+                        &sign_in,
+                    ) {
+                        eprintln!(
+                            "failed to refresh persisted sign-in snapshot `{}`: {error}",
+                            sign_in.id
+                        );
+                    }
+                    self.inner
+                        .lock()
+                        .unwrap()
+                        .sign_ins
+                        .insert(sign_in.id.clone(), sign_in);
+                }
+                Err(error) => {
+                    eprintln!(
+                        "failed to restore persisted sign-in `{}`: {error}",
+                        persisted_sign_in.display_name
+                    );
+                }
             }
         }
 
@@ -525,7 +605,20 @@ pub fn update_sign_in_filter(
         }
     }
 
-    Ok(sign_in_summary(sign_in.clone()))
+    let sign_in_snapshot = sign_in.clone();
+    let summary = sign_in_summary(sign_in.clone());
+    drop(guard);
+
+    if let Err(error) = persist_sign_in_session_snapshot(
+        &state.store,
+        &*state.credential_store,
+        &state.snapshot_path,
+        &sign_in_snapshot,
+    ) {
+        eprintln!("failed to persist Azure sign-in filter `{sign_in_id}`: {error}");
+    }
+
+    Ok(summary)
 }
 
 #[tauri::command]
@@ -856,6 +949,7 @@ pub async fn start_entra_browser_login(
     let inner = state.inner.clone();
     let store = state.store.clone();
     let credential_store = state.credential_store.clone();
+    let snapshot_path = state.snapshot_path.clone();
     let login_id_for_task = login_id.clone();
     tauri::async_runtime::spawn(async move {
         let callback_result = tauri::async_runtime::spawn_blocking(move || {
@@ -906,6 +1000,7 @@ pub async fn start_entra_browser_login(
                                 if let Err(error) = persist_sign_in_session_snapshot(
                                     &store,
                                     &*credential_store,
+                                    &snapshot_path,
                                     &sign_in,
                                 ) {
                                     eprintln!("failed to persist Azure sign-in `{sign_in_id}`: {error}");
@@ -1046,6 +1141,7 @@ pub async fn start_sign_in_tenant_reauth(
     let inner = state.inner.clone();
     let store = state.store.clone();
     let credential_store = state.credential_store.clone();
+    let snapshot_path = state.snapshot_path.clone();
     let login_id_for_task = login_id.clone();
     let sign_in_id_for_task = sign_in_id.clone();
     let tenant_id_for_task = tenant.id.clone();
@@ -1081,6 +1177,7 @@ pub async fn start_sign_in_tenant_reauth(
                             &inner,
                             &store,
                             &*credential_store,
+                            &snapshot_path,
                             &sign_in_id_for_task,
                             &tenant_id_for_task,
                             arm_bundle,
@@ -1207,6 +1304,7 @@ pub async fn start_entra_discovery_login(
     let inner = state.inner.clone();
     let store = state.store.clone();
     let credential_store = state.credential_store.clone();
+    let snapshot_path = state.snapshot_path.clone();
     tauri::async_runtime::spawn(async move {
         let poll_result = poll_for_token(
             &client,
@@ -1243,6 +1341,7 @@ pub async fn start_entra_discovery_login(
                         if let Err(error) = persist_sign_in_session_snapshot(
                             &store,
                             &*credential_store,
+                            &snapshot_path,
                             &sign_in,
                         ) {
                             eprintln!("failed to persist Azure sign-in `{sign_in_id}`: {error}");
@@ -1601,6 +1700,7 @@ fn replace_connection_id(connection: LiveConnection, next_id: String) -> LiveCon
 fn persist_sign_in_session_snapshot(
     store: &Store,
     credential_store: &dyn CredentialStore,
+    snapshot_path: &Path,
     sign_in: &SignInSession,
 ) -> Result<(), String> {
     let existing = store
@@ -1647,7 +1747,59 @@ fn persist_sign_in_session_snapshot(
         )
         .map_err(|error| format!("failed to cache refresh token for `{}`: {error}", sign_in.id))?;
 
+    persist_sign_in_snapshot_metadata(snapshot_path, sign_in)?;
+
     Ok(())
+}
+
+fn persist_sign_in_snapshot_metadata(snapshot_path: &Path, sign_in: &SignInSession) -> Result<(), String> {
+    let mut shell_state = load_persisted_shell_state(snapshot_path)?;
+    let snapshot = PersistedSignInSnapshot {
+        id: sign_in.id.clone(),
+        display_name: sign_in.display_name.clone(),
+        login_tenant: sign_in.login_tenant.clone(),
+        environment: sign_in.environment.clone(),
+        auth_kind: sign_in.auth_kind.clone(),
+        tenants: sign_in.tenants.clone(),
+    };
+
+    if let Some(existing) = shell_state
+        .sign_ins
+        .iter_mut()
+        .find(|existing| existing.id == snapshot.id)
+    {
+        *existing = snapshot;
+    } else {
+        shell_state.sign_ins.push(snapshot);
+    }
+
+    write_persisted_shell_state(snapshot_path, &shell_state)
+}
+
+fn load_persisted_shell_state(snapshot_path: &Path) -> Result<PersistedShellState, String> {
+    match std::fs::read_to_string(snapshot_path) {
+        Ok(json) => serde_json::from_str(&json)
+            .map_err(|error| format!("failed to parse shell state `{}`: {error}", snapshot_path.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(PersistedShellState::default()),
+        Err(error) => Err(format!(
+            "failed to read shell state `{}`: {error}",
+            snapshot_path.display()
+        )),
+    }
+}
+
+fn write_persisted_shell_state(
+    snapshot_path: &Path,
+    shell_state: &PersistedShellState,
+) -> Result<(), String> {
+    let json = serde_json::to_string_pretty(shell_state)
+        .map_err(|error| format!("failed to serialize shell state: {error}"))?;
+    std::fs::write(snapshot_path, json).map_err(|error| {
+        format!(
+            "failed to write shell state `{}`: {error}",
+            snapshot_path.display()
+        )
+    })
 }
 
 async fn restore_sign_in_session(
@@ -1690,6 +1842,59 @@ async fn restore_sign_in_session(
         },
     )
     .await
+}
+
+fn restore_sign_in_session_from_snapshot(
+    credential_store: &dyn CredentialStore,
+    persisted: SignIn,
+    snapshot: PersistedSignInSnapshot,
+) -> Result<SignInSession, String> {
+    let cache = RefreshCache::new(credential_store);
+    let cached = cache
+        .get(&persisted.id)
+        .map_err(|error| format!("failed to read refresh token for `{}`: {error}", persisted.id))?
+        .ok_or_else(|| format!("missing refresh token for `{}`", persisted.display_name))?;
+
+    let client = reqwest::Client::new();
+    let mut tenants = snapshot.tenants;
+    tenants.sort_by(|a, b| a.display_name.cmp(&b.display_name));
+
+    Ok(SignInSession {
+        id: persisted.id,
+        display_name: if snapshot.display_name.trim().is_empty() {
+            persisted.display_name
+        } else {
+            snapshot.display_name
+        },
+        login_tenant: if snapshot.login_tenant.trim().is_empty() {
+            persisted.tenant_id
+        } else {
+            snapshot.login_tenant
+        },
+        environment: if snapshot.environment.trim().is_empty() {
+            persisted.environment
+        } else {
+            snapshot.environment
+        },
+        auth_kind: if snapshot.auth_kind.trim().is_empty() {
+            ENTRA_INTERACTIVE_AUTH_KIND.into()
+        } else {
+            snapshot.auth_kind
+        },
+        arm_bundle: TokenBundle {
+            access_token: String::new(),
+            refresh_token: Some(cached.refresh_token),
+            expires_at: OffsetDateTime::now_utc() - TimeDuration::minutes(5),
+            refresh_context: Some(RefreshContext {
+                client,
+                tenant: cached.tenant,
+                client_id: cached.client_id,
+                scope: cached.scope,
+            }),
+        },
+        tenant_bundles: HashMap::new(),
+        tenants,
+    })
 }
 
 fn persist_direct_connection(state: &AppState, connection: &LiveConnection) -> Result<(), String> {
@@ -2601,6 +2806,7 @@ async fn refresh_sign_in_tenant(
     inner: &Arc<Mutex<InnerState>>,
     store: &Store,
     credential_store: &dyn CredentialStore,
+    snapshot_path: &Path,
     sign_in_id: &str,
     tenant_id: &str,
     arm_bundle: TokenBundle,
@@ -2658,7 +2864,9 @@ async fn refresh_sign_in_tenant(
     let sign_in_snapshot = sign_in.clone();
     drop(guard);
 
-    if let Err(error) = persist_sign_in_session_snapshot(store, credential_store, &sign_in_snapshot) {
+    if let Err(error) =
+        persist_sign_in_session_snapshot(store, credential_store, snapshot_path, &sign_in_snapshot)
+    {
         eprintln!("failed to refresh persisted sign-in `{sign_in_id}`: {error}");
     }
 

@@ -35,11 +35,6 @@ export function TitleBar({
   return (
     <div className="titlebar" style={titlebarStyles.root}>
       <div style={titlebarStyles.left}>
-        <div style={titlebarStyles.dots}>
-          <div style={{ ...titlebarStyles.dot, background: "#3a3a44" }} />
-          <div style={{ ...titlebarStyles.dot, background: "#3a3a44" }} />
-          <div style={{ ...titlebarStyles.dot, background: "#3a3a44" }} />
-        </div>
         <div style={titlebarStyles.brandBlock}>
           <IconLogo size={14} color="var(--accent)" />
           <span style={titlebarStyles.brandName}>arkived</span>
@@ -112,8 +107,6 @@ const titlebarStyles: Record<string, CSSProperties> = {
   left: { display: "flex", alignItems: "center", gap: 10, flexShrink: 0 },
   center: { flex: 1, display: "flex", justifyContent: "center", maxWidth: 480 },
   right: { display: "flex", alignItems: "center", gap: 6, flexShrink: 0, marginLeft: "auto" },
-  dots: { display: "flex", gap: 6, marginRight: 4 },
-  dot: { width: 10, height: 10, borderRadius: "50%" },
   brandBlock: { display: "flex", alignItems: "center", gap: 6 },
   brandName: { color: "var(--fg-0)", fontWeight: 600, letterSpacing: "0.02em" },
   version: { color: "var(--fg-3)", fontSize: 10 },

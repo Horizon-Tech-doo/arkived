@@ -98,12 +98,20 @@ interface BrowserTabState {
   selectedIndices: number[];
 }
 
-interface ContextMenuItem {
+interface ContextMenuAction {
+  kind?: "action";
   label: string;
-  action: () => void;
+  action: () => void | Promise<void>;
   danger?: boolean;
   disabled?: boolean;
+  hint?: string;
 }
+
+interface ContextMenuSeparator {
+  kind: "separator";
+}
+
+type ContextMenuItem = ContextMenuAction | ContextMenuSeparator;
 
 interface ContextMenuState {
   x: number;
@@ -783,14 +791,22 @@ function App() {
       return;
     }
 
-    const blockedTenantIds = (tenantsBySignIn[manageSignInId] ?? [])
+    await reauthenticateBlockedTenantsFor(manageSignInId);
+  }
+
+  async function reauthenticateBlockedTenantsFor(signInId: string) {
+    if (tenantReauthBusy || manageBusy) {
+      return;
+    }
+
+    const blockedTenantIds = (tenantsBySignIn[signInId] ?? [])
       .filter((tenant) => tenant.needs_reauth)
       .map((tenant) => tenant.id);
     if (blockedTenantIds.length === 0) {
       return;
     }
 
-    await launchTenantReauth(manageSignInId, blockedTenantIds[0], blockedTenantIds.slice(1));
+    await launchTenantReauth(signInId, blockedTenantIds[0], blockedTenantIds.slice(1));
   }
 
   async function handleApplyTenantFilter(tenants: BrowserTenant[]) {
@@ -945,6 +961,33 @@ function App() {
     await navigator.clipboard.writeText(value);
   }
 
+  function previewResource(url: string | null) {
+    if (!url) {
+      return;
+    }
+    window.open(url, "_blank", "noopener,noreferrer");
+  }
+
+  function menuSeparator(): ContextMenuSeparator {
+    return { kind: "separator" };
+  }
+
+  function normalizeContextMenuItems(items: ContextMenuItem[]) {
+    return items.filter((item, index, source) => {
+      if (item.kind !== "separator") {
+        return true;
+      }
+      const previous = source[index - 1];
+      const next = source[index + 1];
+      return (
+        index > 0 &&
+        index < source.length - 1 &&
+        previous?.kind !== "separator" &&
+        next?.kind !== "separator"
+      );
+    });
+  }
+
   function closeContextMenu() {
     setContextMenu(null);
   }
@@ -955,14 +998,15 @@ function App() {
   ) {
     event.preventDefault();
     event.stopPropagation();
-    if (items.length === 0) {
+    const normalizedItems = normalizeContextMenuItems(items);
+    if (normalizedItems.length === 0) {
       return;
     }
 
     setContextMenu({
       x: event.clientX,
       y: event.clientY,
-      items,
+      items: normalizedItems,
     });
   }
 
@@ -1317,6 +1361,9 @@ function App() {
 
             {signIns.map((signIn) => {
               const subscriptions = subscriptionsBySignIn[signIn.id] ?? [];
+              const blockedTenantCount = (tenantsBySignIn[signIn.id] ?? []).filter(
+                (tenant) => tenant.needs_reauth,
+              ).length;
               const signInExpanded = expandedSignIns[signIn.id] ?? true;
 
               return (
@@ -1339,9 +1386,30 @@ function App() {
                           },
                         },
                         {
+                          label: "Refresh discovery",
+                          action: () => {
+                            void refreshDiscoveryTree(signIn.id);
+                          },
+                        },
+                        {
+                          label: "Authenticate blocked tenants",
+                          disabled: blockedTenantCount === 0,
+                          hint: blockedTenantCount > 0 ? `${blockedTenantCount}` : undefined,
+                          action: () => {
+                            void reauthenticateBlockedTenantsFor(signIn.id);
+                          },
+                        },
+                        menuSeparator(),
+                        {
                           label: signInExpanded ? "Collapse account" : "Expand account",
                           action: () => {
                             toggleSignIn(signIn.id);
+                          },
+                        },
+                        {
+                          label: "Copy account name",
+                          action: () => {
+                            void copyText(signIn.display_name);
                           },
                         },
                       ])
@@ -1367,6 +1435,25 @@ function App() {
                                 label: subscriptionExpanded ? "Collapse subscription" : "Expand subscription",
                                 action: () => {
                                   toggleSubscription(subscription.id);
+                                },
+                              },
+                              {
+                                label: "Refresh subscription tree",
+                                action: () => {
+                                  void refreshDiscoveryTree(signIn.id);
+                                },
+                              },
+                              menuSeparator(),
+                              {
+                                label: "Copy subscription name",
+                                action: () => {
+                                  void copyText(subscription.name);
+                                },
+                              },
+                              {
+                                label: "Copy subscription ID",
+                                action: () => {
+                                  void copyText(subscription.id);
                                 },
                               },
                             ])
@@ -1419,6 +1506,26 @@ function App() {
                                         }
                                         void ensureContainersLoaded(connection.id, true);
                                       },
+                                    },
+                                    menuSeparator(),
+                                    {
+                                      label: "Copy account name",
+                                      action: () => {
+                                        void copyText(account.name);
+                                      },
+                                    },
+                                    {
+                                      label: "Copy endpoint",
+                                      action: () => {
+                                        void copyText(account.endpoint);
+                                      },
+                                    },
+                                    menuSeparator(),
+                                    {
+                                      label: "Properties",
+                                      disabled: true,
+                                      hint: "soon",
+                                      action: () => undefined,
                                     },
                                   ])
                                 }
@@ -1480,6 +1587,20 @@ function App() {
                             void ensureContainersLoaded(connection.id, true);
                           },
                         },
+                        menuSeparator(),
+                        {
+                          label: "Copy account name",
+                          action: () => {
+                            void copyText(connection.display_name);
+                          },
+                        },
+                        {
+                          label: "Copy endpoint",
+                          action: () => {
+                            void copyText(connection.endpoint);
+                          },
+                        },
+                        menuSeparator(),
                         {
                           label: "Detach",
                           danger: true,
@@ -1722,17 +1843,67 @@ function App() {
                               selectedIndices: [index],
                             }));
                           }
+                          const rowUrl =
+                            activeConnection && activeContainer && row.path
+                              ? buildResourceUrl(activeConnection.endpoint, activeContainer, row.path)
+                              : null;
                           openContextMenu(event, [
                             {
-                              label: row.kind === "dir" ? "Open folder" : "Select blob",
+                              label: row.kind === "dir" ? "Open" : "Open",
                               action: () => {
                                 if (row.kind === "dir") {
                                   handleActivateRow(index);
                                 } else {
-                                  handleToggleSelection(index);
+                                  previewResource(rowUrl);
                                 }
                               },
                             },
+                            {
+                              label: "Download",
+                              disabled: row.kind === "dir" || !rowUrl,
+                              hint: row.kind === "dir" ? undefined : "browser",
+                              action: () => {
+                                previewResource(rowUrl);
+                              },
+                            },
+                            {
+                              label: "Preview",
+                              disabled: row.kind === "dir" || !rowUrl,
+                              action: () => {
+                                previewResource(rowUrl);
+                              },
+                            },
+                            menuSeparator(),
+                            {
+                              label: "Copy",
+                              action: () => {
+                                void copyText(row.name);
+                              },
+                            },
+                            {
+                              label: "Paste",
+                              disabled: true,
+                              action: () => undefined,
+                            },
+                            {
+                              label: "Clone…",
+                              disabled: true,
+                              action: () => undefined,
+                            },
+                            menuSeparator(),
+                            {
+                              label: "Delete",
+                              disabled: true,
+                              danger: true,
+                              action: () => undefined,
+                            },
+                            {
+                              label: "Undelete",
+                              disabled: true,
+                              hint: "›",
+                              action: () => undefined,
+                            },
+                            menuSeparator(),
                             {
                               label: "Copy path",
                               action: () => {
@@ -1741,13 +1912,90 @@ function App() {
                             },
                             {
                               label: "Copy URL",
-                              disabled: !(activeConnection && row.path),
+                              disabled: !rowUrl,
                               action: () => {
-                                if (activeConnection && row.path) {
-                                  void copyText(buildResourceUrl(activeConnection.endpoint, activeContainer, row.path));
+                                if (rowUrl) {
+                                  void copyText(rowUrl);
                                 }
                               },
                             },
+                            {
+                              label: "Copy direct link",
+                              disabled: !rowUrl,
+                              action: () => {
+                                if (rowUrl) {
+                                  void copyText(rowUrl);
+                                }
+                              },
+                            },
+                            menuSeparator(),
+                            {
+                              label: "Clone and Rehydrate…",
+                              disabled: true,
+                              action: () => undefined,
+                            },
+                            {
+                              label: "Change Access Tier…",
+                              disabled: true,
+                              action: () => undefined,
+                            },
+                            menuSeparator(),
+                            {
+                              label: "Get Shared Access Signature…",
+                              disabled: true,
+                              action: () => undefined,
+                            },
+                            {
+                              label: "Acquire Lease",
+                              disabled: true,
+                              action: () => undefined,
+                            },
+                            {
+                              label: "Break Lease",
+                              disabled: true,
+                              action: () => undefined,
+                            },
+                            menuSeparator(),
+                            {
+                              label: "Create Snapshot",
+                              disabled: true,
+                              action: () => undefined,
+                            },
+                            {
+                              label: "Manage History",
+                              disabled: true,
+                              hint: "›",
+                              action: () => undefined,
+                            },
+                            {
+                              label: "Selection Statistics",
+                              action: () => {
+                                void copyText(
+                                  `${selectedRows.size || 1} selected • ${row.size ?? "size unavailable"}`,
+                                );
+                              },
+                            },
+                            menuSeparator(),
+                            {
+                              label: "Edit Tags…",
+                              disabled: true,
+                              action: () => undefined,
+                            },
+                            {
+                              label: "Properties…",
+                              action: () => {
+                                updateTab(activeTab.id, (tab) => ({
+                                  ...tab,
+                                  selectedIndices: [index],
+                                }));
+                              },
+                            },
+                            {
+                              label: "Pin to Quick Access",
+                              disabled: true,
+                              action: () => undefined,
+                            },
+                            menuSeparator(),
                             {
                               label: "Refresh listing",
                               action: () => {
@@ -1868,35 +2116,49 @@ function App() {
           }}
           onClick={(event) => event.stopPropagation()}
         >
-          {contextMenu.items.map((item) => (
-            <button
-              key={item.label}
-              type="button"
-              disabled={item.disabled}
-              style={{
-                width: "100%",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: 12,
-                padding: "8px 10px",
-                borderRadius: 8,
-                color: item.disabled ? "var(--fg-4)" : item.danger ? "var(--red)" : "var(--fg-1)",
-                fontFamily: "var(--sans)",
-                fontSize: 12,
-                textAlign: "left",
-                cursor: item.disabled ? "not-allowed" : "pointer",
-              }}
-              onClick={() => {
-                closeContextMenu();
-                if (!item.disabled) {
-                  void item.action();
-                }
-              }}
-            >
-              <span>{item.label}</span>
-            </button>
-          ))}
+          {contextMenu.items.map((item, index) =>
+            item.kind === "separator" ? (
+              <div
+                key={`separator-${index}`}
+                style={{
+                  height: 1,
+                  margin: "6px 6px",
+                  background: "var(--border-0)",
+                }}
+              />
+            ) : (
+              <button
+                key={`${item.label}-${index}`}
+                type="button"
+                disabled={item.disabled}
+                style={{
+                  width: "100%",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 12,
+                  padding: "8px 10px",
+                  borderRadius: 8,
+                  color: item.disabled ? "var(--fg-4)" : item.danger ? "var(--red)" : "var(--fg-1)",
+                  fontFamily: "var(--sans)",
+                  fontSize: 12,
+                  textAlign: "left",
+                  cursor: item.disabled ? "not-allowed" : "pointer",
+                }}
+                onClick={() => {
+                  closeContextMenu();
+                  if (!item.disabled) {
+                    void item.action();
+                  }
+                }}
+              >
+                <span>{item.label}</span>
+                {item.hint && (
+                  <span style={{ color: "var(--fg-3)", fontSize: 11 }}>{item.hint}</span>
+                )}
+              </button>
+            ),
+          )}
         </div>
       )}
     </div>
@@ -1951,22 +2213,69 @@ function App() {
         onContextMenu={(event) =>
           openContextMenu(event, [
             {
-              label: "Open in tab",
+              label: "Open",
               action: () => {
                 handleSelectContainer(connectionId, container.name);
               },
             },
+            {
+              label: "Open in new tab",
+              hint: "tab",
+              action: () => {
+                handleSelectContainer(connectionId, container.name);
+              },
+            },
+            menuSeparator(),
             {
               label: "Refresh account containers",
               action: () => {
                 void ensureContainersLoaded(connectionId, true);
               },
             },
+            menuSeparator(),
             {
               label: "Copy container name",
               action: () => {
                 void copyText(container.name);
               },
+            },
+            {
+              label: "Copy container URL",
+              action: () => {
+                const connection = connectionsRef.current.find(
+                  (candidate) => candidate.id === connectionId,
+                );
+                if (connection) {
+                  void copyText(new URL(`${container.name}/`, connection.endpoint).toString());
+                }
+              },
+            },
+            menuSeparator(),
+            {
+              label: "Properties",
+              disabled: true,
+              hint: "soon",
+              action: () => undefined,
+            },
+            {
+              label: "Manage Stored Access Policies…",
+              disabled: true,
+              action: () => undefined,
+            },
+            {
+              label: "Get Shared Access Signature…",
+              disabled: true,
+              action: () => undefined,
+            },
+            {
+              label: "Set Public Access Level…",
+              disabled: true,
+              action: () => undefined,
+            },
+            {
+              label: "Pin to Quick Access",
+              disabled: true,
+              action: () => undefined,
             },
           ])
         }

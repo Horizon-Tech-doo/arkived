@@ -27,6 +27,7 @@ pub fn run() {
             })?;
 
             let store_path = app_data_dir.join("arkived-state.sqlite3");
+            let snapshot_path = app_data_dir.join("arkived-shell-state.json");
             let store = Arc::new(Store::open(&store_path).map_err(|error| {
                 std::io::Error::other(format!(
                     "open persistent state store `{}`: {error}",
@@ -39,6 +40,7 @@ pub fn run() {
             let state = tauri::async_runtime::block_on(commands::AppState::restore(
                 store,
                 credential_store,
+                snapshot_path,
             ))
             .map_err(std::io::Error::other)?;
 
