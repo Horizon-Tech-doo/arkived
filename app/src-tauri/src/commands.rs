@@ -290,6 +290,13 @@ pub struct BlobUploadResult {
     pub etag: String,
 }
 
+#[derive(Serialize)]
+pub struct BlobBulkResult {
+    pub path: String,
+    pub bytes: u64,
+    pub item_count: u64,
+}
+
 #[derive(Serialize, Clone)]
 pub struct DeviceCodePrompt {
     pub login_id: String,
@@ -1727,6 +1734,64 @@ pub async fn download_blob(
 }
 
 #[tauri::command]
+pub async fn download_blob_prefix(
+    state: State<'_, AppState>,
+    connection_id: String,
+    container: String,
+    prefix: String,
+) -> Result<BlobBulkResult, String> {
+    let connection = get_connection(&state, &connection_id)?;
+    let container = resolved_container_name(&connection, &container)?;
+    let prefix = ensure_blob_prefix(&prefix)?;
+    let backend = build_backend(&connection).await?;
+    let blob_names = list_blob_names_with_prefix(&backend, &container, &prefix)
+        .await
+        .map_err(|error| {
+            compact_live_browse_error(
+                &connection,
+                "Folder download",
+                Some(container.as_str()),
+                &error,
+            )
+        })?;
+    if blob_names.is_empty() {
+        return Err(format!("prefix `{prefix}` does not contain any blobs"));
+    }
+
+    let target_dir = unique_download_dir(&prefix)?;
+    let mut bytes = 0u64;
+    let mut item_count = 0u64;
+    for blob_name in blob_names {
+        let relative = blob_name
+            .strip_prefix(&prefix)
+            .unwrap_or(blob_name.as_str())
+            .trim_start_matches('/');
+        if relative.is_empty() {
+            continue;
+        }
+
+        let target_path = target_dir.join(sanitize_relative_path(relative));
+        bytes += stream_blob_to_file(&backend, &container, &blob_name, &target_path)
+            .await
+            .map_err(|error| {
+                compact_live_browse_error(
+                    &connection,
+                    "Folder download",
+                    Some(container.as_str()),
+                    &error,
+                )
+            })?;
+        item_count += 1;
+    }
+
+    Ok(BlobBulkResult {
+        path: target_dir.to_string_lossy().into_owned(),
+        bytes,
+        item_count,
+    })
+}
+
+#[tauri::command]
 pub async fn delete_blob(
     state: State<'_, AppState>,
     connection_id: String,
@@ -1754,6 +1819,59 @@ pub async fn delete_blob(
                 &error_to_string(error),
             )
         })
+}
+
+#[tauri::command]
+pub async fn delete_blob_prefix(
+    state: State<'_, AppState>,
+    connection_id: String,
+    container: String,
+    prefix: String,
+    include_snapshots: bool,
+) -> Result<BlobBulkResult, String> {
+    let connection = get_connection(&state, &connection_id)?;
+    let container = resolved_container_name(&connection, &container)?;
+    let prefix = ensure_blob_prefix(&prefix)?;
+    let backend = build_backend(&connection).await?;
+    let blob_names = list_blob_names_with_prefix(&backend, &container, &prefix)
+        .await
+        .map_err(|error| {
+            compact_live_browse_error(
+                &connection,
+                "Folder delete",
+                Some(container.as_str()),
+                &error,
+            )
+        })?;
+    if blob_names.is_empty() {
+        return Err(format!("prefix `{prefix}` does not contain any blobs"));
+    }
+
+    let ctx = app_operation_ctx();
+    let item_count = blob_names.len() as u64;
+    for blob_name in blob_names {
+        backend
+            .delete_blob(
+                &ctx,
+                &BlobPath::new(container.clone(), blob_name),
+                DeleteOpts { include_snapshots },
+            )
+            .await
+            .map_err(|error| {
+                compact_live_browse_error(
+                    &connection,
+                    "Folder delete",
+                    Some(container.as_str()),
+                    &error_to_string(error),
+                )
+            })?;
+    }
+
+    Ok(BlobBulkResult {
+        path: prefix,
+        bytes: 0,
+        item_count,
+    })
 }
 
 #[tauri::command]
@@ -2483,6 +2601,37 @@ async fn stream_blob_to_file(
     Ok(total)
 }
 
+async fn list_blob_names_with_prefix(
+    backend: &AzureBlobBackend,
+    container: &str,
+    prefix: &str,
+) -> Result<Vec<String>, String> {
+    let mut continuation = None;
+    let mut names = Vec::new();
+
+    loop {
+        let Page {
+            items,
+            continuation: next,
+        } = backend
+            .list_blobs(container, Some(prefix), None, continuation)
+            .await
+            .map_err(error_to_string)?;
+
+        names.extend(items.into_iter().filter_map(|entry| match entry {
+            BlobEntry::Blob { name, .. } => Some(name),
+            BlobEntry::Prefix { .. } => None,
+        }));
+
+        if next.is_none() {
+            break;
+        }
+        continuation = next;
+    }
+
+    Ok(names)
+}
+
 fn unique_download_path(blob_path: &str) -> Result<PathBuf, String> {
     let downloads_dir = default_downloads_dir()?;
     let file_name = blob_path
@@ -2518,6 +2667,32 @@ fn unique_download_path(blob_path: &str) -> Result<PathBuf, String> {
     ))
 }
 
+fn unique_download_dir(prefix: &str) -> Result<PathBuf, String> {
+    let downloads_dir = default_downloads_dir()?;
+    let folder_name = prefix
+        .trim_end_matches('/')
+        .rsplit('/')
+        .find(|segment| !segment.trim().is_empty())
+        .unwrap_or("download");
+    let sanitized = sanitize_file_name(folder_name);
+    let candidate = downloads_dir.join(&sanitized);
+    if !candidate.exists() {
+        return Ok(candidate);
+    }
+
+    for index in 1..1000 {
+        let next = downloads_dir.join(format!("{sanitized} ({index})"));
+        if !next.exists() {
+            return Ok(next);
+        }
+    }
+
+    Err(format!(
+        "could not choose a unique download folder for `{}`",
+        sanitized
+    ))
+}
+
 fn default_downloads_dir() -> Result<PathBuf, String> {
     let home = std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
@@ -2541,6 +2716,24 @@ fn sanitize_file_name(name: &str) -> String {
     } else {
         trimmed
     }
+}
+
+fn ensure_blob_prefix(path: &str) -> Result<String, String> {
+    let normalized = normalize_blob_path(path)?;
+    Ok(if normalized.ends_with('/') {
+        normalized
+    } else {
+        format!("{normalized}/")
+    })
+}
+
+fn sanitize_relative_path(path: &str) -> PathBuf {
+    path.split('/')
+        .filter(|segment| !segment.trim().is_empty())
+        .fold(PathBuf::new(), |mut output, segment| {
+            output.push(sanitize_file_name(segment));
+            output
+        })
 }
 
 fn infer_content_type(path: &Path) -> Option<String> {

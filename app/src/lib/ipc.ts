@@ -93,6 +93,12 @@ export interface BlobUploadResult {
   etag: string;
 }
 
+export interface BlobBulkResult {
+  path: string;
+  bytes: number;
+  item_count: number;
+}
+
 export interface DeviceCodeLoginStatus {
   status: "pending" | "complete" | "error";
   connection_id?: string | null;
@@ -324,6 +330,18 @@ export async function downloadBlob(
   });
 }
 
+export async function downloadBlobPrefix(
+  connectionId: string,
+  container: string,
+  prefix: string,
+): Promise<BlobBulkResult> {
+  return callTauri<BlobBulkResult>("download_blob_prefix", {
+    connectionId,
+    container,
+    prefix,
+  });
+}
+
 export async function deleteBlob(
   connectionId: string,
   container: string,
@@ -334,6 +352,20 @@ export async function deleteBlob(
     connectionId,
     container,
     path,
+    includeSnapshots,
+  });
+}
+
+export async function deleteBlobPrefix(
+  connectionId: string,
+  container: string,
+  prefix: string,
+  includeSnapshots = false,
+): Promise<BlobBulkResult> {
+  return callTauri<BlobBulkResult>("delete_blob_prefix", {
+    connectionId,
+    container,
+    prefix,
     includeSnapshots,
   });
 }

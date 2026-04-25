@@ -38,8 +38,10 @@ import {
   connectWithConnectionString,
   connectWithSas,
   deleteBlob,
+  deleteBlobPrefix,
   disconnectConnection,
   downloadBlob,
+  downloadBlobPrefix,
   fetchBlobs,
   listConnections,
   listContainers,
@@ -1124,6 +1126,22 @@ function App() {
     }
   }
 
+  async function handleDownloadPrefix(row: BlobRow) {
+    if (!activeConnection || !activeContainer || !row.path || row.kind !== "dir") {
+      return;
+    }
+
+    setShellError(null);
+    try {
+      const result = await downloadBlobPrefix(activeConnection.id, activeContainer, row.path);
+      setShellError(
+        `Downloaded ${result.item_count} blob${result.item_count === 1 ? "" : "s"} from ${row.name} to ${result.path}`,
+      );
+    } catch (error) {
+      setShellError(getErrorMessage(error));
+    }
+  }
+
   async function handleDeleteBlob(row: BlobRow) {
     if (!activeConnection || !activeContainer || !activeTab || !row.path || row.kind === "dir") {
       return;
@@ -1137,6 +1155,30 @@ function App() {
     setShellError(null);
     try {
       await deleteBlob(activeConnection.id, activeContainer, row.path, false);
+      updateTab(activeTab.id, (tab) => ({
+        ...tab,
+        loaded: false,
+        selectedIndices: [],
+      }));
+    } catch (error) {
+      setShellError(getErrorMessage(error));
+    }
+  }
+
+  async function handleDeletePrefix(row: BlobRow) {
+    if (!activeConnection || !activeContainer || !activeTab || !row.path || row.kind !== "dir") {
+      return;
+    }
+
+    const confirmed = window.confirm(`Delete all blobs under "${row.path}" from "${activeContainer}"?`);
+    if (!confirmed) {
+      return;
+    }
+
+    setShellError(null);
+    try {
+      const result = await deleteBlobPrefix(activeConnection.id, activeContainer, row.path, false);
+      setShellError(`Deleted ${result.item_count} blob${result.item_count === 1 ? "" : "s"} under ${row.name}`);
       updateTab(activeTab.id, (tab) => ({
         ...tab,
         loaded: false,
@@ -2207,9 +2249,12 @@ function App() {
                             },
                             {
                               label: "Download",
-                              disabled: row.kind === "dir",
                               action: () => {
-                                void handleDownloadBlob(row, false);
+                                if (row.kind === "dir") {
+                                  void handleDownloadPrefix(row);
+                                } else {
+                                  void handleDownloadBlob(row, false);
+                                }
                               },
                             },
                             {
@@ -2239,10 +2284,13 @@ function App() {
                             menuSeparator(),
                             {
                               label: "Delete",
-                              disabled: row.kind === "dir",
                               danger: true,
                               action: () => {
-                                void handleDeleteBlob(row);
+                                if (row.kind === "dir") {
+                                  void handleDeletePrefix(row);
+                                } else {
+                                  void handleDeleteBlob(row);
+                                }
                               },
                             },
                             {
