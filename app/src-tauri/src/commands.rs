@@ -17,13 +17,16 @@ use arkived_core::auth::{
     AccountKeyProvider, AuthProvider, AzuriteEmulatorProvider, ConnectionStringParts,
     ConnectionStringProvider, ResolvedCredential, SasTokenProvider,
 };
-use arkived_core::backend::{AzureBlobBackend, BlobEntry, Page};
+use arkived_core::backend::{AzureBlobBackend, BlobEntry, BlobPath, DeleteOpts, Page};
+use arkived_core::policy::AllowAllPolicy;
+use arkived_core::Ctx;
 use arkived_core::store::{AttachedResource, SignIn};
 use arkived_core::types::{AuthKind, AzureEnvironment, ResourceKind};
 use arkived_core::Store;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use chrono::Utc;
+use futures::StreamExt;
 use secrecy::SecretString;
 use secrecy::ExposeSecret;
 use serde::de::DeserializeOwned;
@@ -268,6 +271,13 @@ pub struct BrowserBlobRow {
     pub etag: Option<String>,
     pub lease: Option<String>,
     pub icon: String,
+}
+
+#[derive(Serialize)]
+pub struct BlobDownloadResult {
+    pub path: String,
+    pub bytes: u64,
+    pub opened: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -1578,6 +1588,84 @@ pub async fn list_blobs(
 }
 
 #[tauri::command]
+pub async fn download_blob(
+    state: State<'_, AppState>,
+    connection_id: String,
+    container: String,
+    path: String,
+    open_after_download: bool,
+) -> Result<BlobDownloadResult, String> {
+    let connection = get_connection(&state, &connection_id)?;
+    let container = resolved_container_name(&connection, &container)?;
+    let blob_path = normalize_blob_path(&path)?;
+    let backend = build_backend(&connection).await?;
+    let target_path = unique_download_path(&blob_path)?;
+    let bytes = stream_blob_to_file(&backend, &container, &blob_path, &target_path)
+        .await
+        .map_err(|error| {
+            compact_live_browse_error(
+                &connection,
+                "Blob download",
+                Some(container.as_str()),
+                &error,
+            )
+        })?;
+
+    let mut opened = false;
+    if open_after_download {
+        match url::Url::from_file_path(&target_path) {
+            Ok(file_url) => match webbrowser::open(file_url.as_str()) {
+                Ok(()) => opened = true,
+                Err(error) => eprintln!(
+                    "failed to open downloaded blob `{}`: {error}",
+                    target_path.display()
+                ),
+            },
+            Err(()) => eprintln!(
+                "failed to convert downloaded blob path `{}` to a file URL",
+                target_path.display()
+            ),
+        }
+    }
+
+    Ok(BlobDownloadResult {
+        path: target_path.to_string_lossy().into_owned(),
+        bytes,
+        opened,
+    })
+}
+
+#[tauri::command]
+pub async fn delete_blob(
+    state: State<'_, AppState>,
+    connection_id: String,
+    container: String,
+    path: String,
+    include_snapshots: bool,
+) -> Result<(), String> {
+    let connection = get_connection(&state, &connection_id)?;
+    let container = resolved_container_name(&connection, &container)?;
+    let blob_path = normalize_blob_path(&path)?;
+    let backend = build_backend(&connection).await?;
+    let ctx = app_operation_ctx();
+    backend
+        .delete_blob(
+            &ctx,
+            &BlobPath::new(container.clone(), blob_path.clone()),
+            DeleteOpts { include_snapshots },
+        )
+        .await
+        .map_err(|error| {
+            compact_live_browse_error(
+                &connection,
+                "Blob delete",
+                Some(container.as_str()),
+                &error_to_string(error),
+            )
+        })
+}
+
+#[tauri::command]
 pub fn disconnect_connection(
     state: State<'_, AppState>,
     connection_id: String,
@@ -2239,6 +2327,129 @@ async fn validate_browsable_connection(connection: &LiveConnection) -> Result<()
     // Storage Explorer still lets the account activate before a specific
     // container is chosen.
     validate_connection(connection).await
+}
+
+fn app_operation_ctx() -> Ctx {
+    Ctx::new(
+        Arc::new(AzuriteEmulatorProvider::new()),
+        Arc::new(AllowAllPolicy),
+    )
+}
+
+fn normalize_blob_path(path: &str) -> Result<String, String> {
+    let normalized = path.trim().trim_start_matches('/').replace('\\', "/");
+    if normalized.is_empty() {
+        Err("blob path is required".into())
+    } else {
+        Ok(normalized)
+    }
+}
+
+async fn stream_blob_to_file(
+    backend: &AzureBlobBackend,
+    container: &str,
+    blob_path: &str,
+    target_path: &Path,
+) -> Result<u64, String> {
+    if let Some(parent) = target_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "failed to create download directory `{}`: {error}",
+                parent.display()
+            )
+        })?;
+    }
+
+    let mut file = std::fs::File::create(target_path).map_err(|error| {
+        format!(
+            "failed to create download file `{}`: {error}",
+            target_path.display()
+        )
+    })?;
+    let mut stream = backend
+        .read_blob(&BlobPath::new(container, blob_path), None)
+        .await
+        .map_err(error_to_string)?;
+    let mut total = 0u64;
+
+    while let Some(chunk) = stream.next().await {
+        let bytes = chunk.map_err(error_to_string)?;
+        file.write_all(&bytes).map_err(|error| {
+            format!(
+                "failed to write download file `{}`: {error}",
+                target_path.display()
+            )
+        })?;
+        total += bytes.len() as u64;
+    }
+    file.flush().map_err(|error| {
+        format!(
+            "failed to flush download file `{}`: {error}",
+            target_path.display()
+        )
+    })?;
+
+    Ok(total)
+}
+
+fn unique_download_path(blob_path: &str) -> Result<PathBuf, String> {
+    let downloads_dir = default_downloads_dir()?;
+    let file_name = blob_path
+        .rsplit('/')
+        .find(|segment| !segment.trim().is_empty())
+        .unwrap_or("download");
+    let sanitized = sanitize_file_name(file_name);
+    let candidate = downloads_dir.join(&sanitized);
+    if !candidate.exists() {
+        return Ok(candidate);
+    }
+
+    let path = Path::new(&sanitized);
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("download");
+    let extension = path.extension().and_then(|value| value.to_str());
+    for index in 1..1000 {
+        let next_name = match extension {
+            Some(extension) if !extension.is_empty() => format!("{stem} ({index}).{extension}"),
+            _ => format!("{stem} ({index})"),
+        };
+        let next = downloads_dir.join(next_name);
+        if !next.exists() {
+            return Ok(next);
+        }
+    }
+
+    Err(format!(
+        "could not choose a unique download path for `{}`",
+        sanitized
+    ))
+}
+
+fn default_downloads_dir() -> Result<PathBuf, String> {
+    let home = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
+        .ok_or_else(|| "could not locate the user home directory for downloads".to_string())?;
+    Ok(home.join("Downloads"))
+}
+
+fn sanitize_file_name(name: &str) -> String {
+    let sanitized: String = name
+        .chars()
+        .map(|ch| match ch {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
+            ch if ch.is_control() => '_',
+            ch => ch,
+        })
+        .collect();
+    let trimmed = sanitized.trim().trim_matches('.').to_string();
+    if trimmed.is_empty() {
+        "download".into()
+    } else {
+        trimmed
+    }
 }
 
 async fn try_fetch_storage_account_key(

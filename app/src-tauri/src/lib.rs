@@ -69,6 +69,8 @@ pub fn run() {
             commands::connect_discovered_storage_account,
             commands::list_containers,
             commands::list_blobs,
+            commands::download_blob,
+            commands::delete_blob,
             commands::disconnect_connection,
             commands::list_activities,
             commands::agent_transcript,

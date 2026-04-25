@@ -77,6 +77,7 @@ dependencies = [
  "arkived-core",
  "base64 0.22.1",
  "chrono",
+ "futures",
  "reqwest 0.12.28",
  "secrecy",
  "serde",

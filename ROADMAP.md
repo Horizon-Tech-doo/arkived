@@ -7,6 +7,11 @@ with no calendar dates — we ship when the exit criteria are met.
 For context on the architectural principles that shape this plan, see
 [`docs/architecture.md`](./docs/architecture.md).
 
+The product target has moved from "Blob client with a Storage Explorer-like
+shell" to **full Azure Storage Explorer parity, then beyond parity**. The
+capability contract lives in
+[`docs/storage-explorer-parity-and-beyond.md`](./docs/storage-explorer-parity-and-beyond.md).
+
 ---
 
 ## Where we are
@@ -24,9 +29,12 @@ and the repository hosts the workspace layout plus project docs.
 
 ### 🟡 Stage 3 (partial) — Desktop app shell
 
-The Tauri 2 + React + TypeScript app in `app/` is scaffolded with the design
-ported pixel-for-pixel, but it runs on **mock data**. Exit criteria for a real
-`0.3.0` release are in the Stage 3 section below.
+The Tauri 2 + React + TypeScript app in `app/` now has live Azure account
+sign-in, ARM discovery, storage account activation, container tabs, context
+menus, and persisted account metadata. It is not Storage Explorer parity yet:
+most write operations, File Shares, Queues, Tables, managed disks, transfer
+jobs, SAS workflows, direct links, and advanced Blob/ADLS features are still
+planned work.
 
 ---
 
@@ -110,6 +118,55 @@ page, run it, authenticate once, and browse their storage. No CLI required.
 
 ---
 
+## v0.6.0 — Storage Explorer parity
+
+This milestone supersedes the old "defer Files, Queues, Tables" posture. It is
+done only when the workflows in
+[`docs/storage-explorer-parity-and-beyond.md`](./docs/storage-explorer-parity-and-beyond.md)
+are implemented deeply enough that a daily Storage Explorer user can move to
+Arkived without losing required functionality.
+
+- [ ] Blob container parity: create/delete, public access, leases, properties,
+      stored access policies, SAS, soft-delete policy, deleted container flows
+- [ ] Blob parity: upload/download/open/copy/rename/delete, properties,
+      metadata, tags, tiers, rehydrate, snapshots, versions, soft delete,
+      undelete, immutability, legal hold
+- [ ] ADLS Gen2 parity: HNS directory operations, ACL view/edit, recursive ACL
+      propagation, DFS/blob endpoint handling
+- [ ] Azure Files parity: shares, directories, files, quotas, snapshots, SAS,
+      stored access policies, SMB helper
+- [ ] Queue parity: queues, messages, peek/dequeue/delete, clear, metadata,
+      SAS, stored access policies
+- [ ] Table parity: tables, OData query, add/edit/delete entities, CSV
+      import/export, SAS, stored access policies
+- [ ] Managed disk parity: VHD upload/download, disk copy, snapshots
+- [ ] Direct links and SAS direct links
+- [ ] Activities pane with cancel/retry/progress/logs for all transfer jobs
+- [ ] Settings/diagnostics/accessibility parity: proxy, token cache,
+      high-contrast themes, key-usage control, signed-in identity diagnostics
+
+**Exit criteria:** the parity checklist is green in desktop UI and the same
+operations are available through reusable core APIs and CLI commands where
+appropriate.
+
+---
+
+## v0.7.0 — Beyond Storage Explorer
+
+Once parity is real, Arkived differentiates on safety, automation, diagnostics,
+and agent-native workflows.
+
+- [ ] Dry-run plans for bulk delete/copy/tier/ACL/metadata operations
+- [ ] Cost and risk estimates before destructive or billable operations
+- [ ] Auth/network/RBAC/private-endpoint diagnostics that explain failures in
+      actionable language
+- [ ] Agent-readable job plans and operation graphs
+- [ ] MCP server and ACP host integrated with the same Policy gates
+- [ ] Saved workspaces, global resource search, and repeatable transfer recipes
+- [ ] Local audit log for destructive operations and generated SAS links
+
+---
+
 ## v0.4.0 — ACP host
 
 Coding agents can run inside Arkived via the [Agent Client Protocol](https://agentclientprotocol.com).
@@ -148,9 +205,6 @@ least one real workflow is validated end-to-end against the non-Azure backend.
 
 Listed here so we remember we considered them and consciously deferred:
 
-- Queue, Table, and File Share operations (Azure). Scope is in `arkived-core`
-  from the start, but CLI/app surfaces land after v0.1.0 Blob support stabilizes.
-- Azurite local-emulator connection.
 - Team / multi-user policy presets.
 - Managed cloud hosting (`arkived.app` as a service, not just a download page).
 

@@ -113,8 +113,18 @@ interface ActionBarProps {
   selectedCount: number;
   onDelete: () => void;
   onUpload: () => void;
+  onDownload: () => void;
+  onPreview: () => void;
+  onRefresh: () => void;
 }
-export function ActionBar({ selectedCount, onDelete, onUpload }: ActionBarProps) {
+export function ActionBar({
+  selectedCount,
+  onDelete,
+  onUpload,
+  onDownload,
+  onPreview,
+  onRefresh,
+}: ActionBarProps) {
   interface BtnOpts {
     disabled?: boolean;
     onClick?: () => void;
@@ -155,8 +165,14 @@ export function ActionBar({ selectedCount, onDelete, onUpload }: ActionBarProps)
       flexShrink: 0,
     }}>
       {btn(<IconUpload size={12} />, "Upload", { onClick: onUpload, kbd: "⌘U" })}
-      {btn(<IconDownload size={12} />, "Download", { disabled: selectedCount === 0 })}
-      {btn(<IconEye size={12} />, "Preview", { disabled: selectedCount !== 1 })}
+      {btn(<IconDownload size={12} />, "Download", {
+        disabled: selectedCount === 0,
+        onClick: onDownload,
+      })}
+      {btn(<IconEye size={12} />, "Preview", {
+        disabled: selectedCount !== 1,
+        onClick: onPreview,
+      })}
       {sep}
       {btn(<IconPlus size={12} />, "New folder")}
       {btn(<IconCopy size={12} />, "Copy", { disabled: selectedCount === 0, kbd: "⌘C" })}
@@ -173,7 +189,7 @@ export function ActionBar({ selectedCount, onDelete, onUpload }: ActionBarProps)
       })}
       <span style={{ flex: 1 }} />
       {btn(<IconSparkle size={12} />, "Ask Agent", { title: "Ask the agent about the selection" })}
-      {btn(<IconRefresh size={12} />, "", { title: "Refresh", kbd: "⌘R" })}
+      {btn(<IconRefresh size={12} />, "", { title: "Refresh", kbd: "⌘R", onClick: onRefresh })}
     </div>
   );
 }

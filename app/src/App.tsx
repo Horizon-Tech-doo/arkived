@@ -1,6 +1,6 @@
 import React, { CSSProperties, FormEvent, ReactNode, useEffect, useRef, useState } from "react";
 import { GroupHeader, TitleBar, TreeRow } from "./chrome";
-import { BlobTable, Inspector, TabsBar } from "./content";
+import { ActionBar, BlobTable, Inspector, TabsBar } from "./content";
 import type { BlobRow } from "./data";
 import {
   IconAlert,
@@ -36,7 +36,9 @@ import {
   connectWithAccountKey,
   connectWithConnectionString,
   connectWithSas,
+  deleteBlob,
   disconnectConnection,
+  downloadBlob,
   fetchBlobs,
   listConnections,
   listContainers,
@@ -225,6 +227,9 @@ function App() {
   const selectedRows = new Set(selectedIndices);
   const selectedIndex = selectedIndices.length > 0 ? [...selectedIndices].sort((a, b) => a - b)[0] : null;
   const selectedRow = selectedIndex == null ? null : activeRows[selectedIndex] ?? null;
+  const selectedBlobRows = selectedIndices
+    .map((index) => activeRows[index])
+    .filter((row): row is BlobRow => Boolean(row) && row.kind !== "dir");
   const prefix = activeTab?.prefix ?? "";
   const breadcrumbSegments = splitPrefix(prefix);
   const resourceUrl =
@@ -961,11 +966,91 @@ function App() {
     await navigator.clipboard.writeText(value);
   }
 
-  function previewResource(url: string | null) {
-    if (!url) {
+  async function handleDownloadBlob(row: BlobRow, openAfterDownload = false) {
+    if (!activeConnection || !activeContainer || !row.path || row.kind === "dir") {
       return;
     }
-    window.open(url, "_blank", "noopener,noreferrer");
+
+    setShellError(null);
+    try {
+      const result = await downloadBlob(
+        activeConnection.id,
+        activeContainer,
+        row.path,
+        openAfterDownload,
+      );
+      setShellError(
+        openAfterDownload && result.opened
+          ? `Opened ${row.name} from ${result.path}`
+          : `Downloaded ${row.name} to ${result.path}`,
+      );
+    } catch (error) {
+      setShellError(getErrorMessage(error));
+    }
+  }
+
+  async function handleDeleteBlob(row: BlobRow) {
+    if (!activeConnection || !activeContainer || !activeTab || !row.path || row.kind === "dir") {
+      return;
+    }
+
+    const confirmed = window.confirm(`Delete blob "${row.path}" from "${activeContainer}"?`);
+    if (!confirmed) {
+      return;
+    }
+
+    setShellError(null);
+    try {
+      await deleteBlob(activeConnection.id, activeContainer, row.path, false);
+      updateTab(activeTab.id, (tab) => ({
+        ...tab,
+        loaded: false,
+        selectedIndices: [],
+      }));
+    } catch (error) {
+      setShellError(getErrorMessage(error));
+    }
+  }
+
+  async function handleDownloadSelection(openAfterDownload = false) {
+    if (selectedBlobRows.length === 0) {
+      return;
+    }
+
+    for (const row of selectedBlobRows) {
+      await handleDownloadBlob(row, openAfterDownload && selectedBlobRows.length === 1);
+    }
+  }
+
+  async function handleDeleteSelection() {
+    if (!activeConnection || !activeContainer || !activeTab || selectedBlobRows.length === 0) {
+      return;
+    }
+
+    const label =
+      selectedBlobRows.length === 1
+        ? `"${selectedBlobRows[0].path ?? selectedBlobRows[0].name}"`
+        : `${selectedBlobRows.length} blobs`;
+    const confirmed = window.confirm(`Delete ${label} from "${activeContainer}"?`);
+    if (!confirmed) {
+      return;
+    }
+
+    setShellError(null);
+    try {
+      for (const row of selectedBlobRows) {
+        if (row.path) {
+          await deleteBlob(activeConnection.id, activeContainer, row.path, false);
+        }
+      }
+      updateTab(activeTab.id, (tab) => ({
+        ...tab,
+        loaded: false,
+        selectedIndices: [],
+      }));
+    } catch (error) {
+      setShellError(getErrorMessage(error));
+    }
   }
 
   function menuSeparator(): ContextMenuSeparator {
@@ -1811,6 +1896,25 @@ function App() {
                 </div>
               </div>
 
+              <ActionBar
+                selectedCount={selectedBlobRows.length}
+                onUpload={() => {
+                  setShellError("Upload is the next Blob parity slice.");
+                }}
+                onDownload={() => {
+                  void handleDownloadSelection(false);
+                }}
+                onPreview={() => {
+                  void handleDownloadSelection(true);
+                }}
+                onDelete={() => {
+                  void handleDeleteSelection();
+                }}
+                onRefresh={() => {
+                  updateTab(activeTab.id, (tab) => ({ ...tab, loaded: false }));
+                }}
+              />
+
               {activeTab.error ? (
                 <MainEmptyState
                   title="Blob listing failed"
@@ -1854,23 +1958,22 @@ function App() {
                                 if (row.kind === "dir") {
                                   handleActivateRow(index);
                                 } else {
-                                  previewResource(rowUrl);
+                                  void handleDownloadBlob(row, true);
                                 }
                               },
                             },
                             {
                               label: "Download",
-                              disabled: row.kind === "dir" || !rowUrl,
-                              hint: row.kind === "dir" ? undefined : "browser",
+                              disabled: row.kind === "dir",
                               action: () => {
-                                previewResource(rowUrl);
+                                void handleDownloadBlob(row, false);
                               },
                             },
                             {
                               label: "Preview",
-                              disabled: row.kind === "dir" || !rowUrl,
+                              disabled: row.kind === "dir",
                               action: () => {
-                                previewResource(rowUrl);
+                                void handleDownloadBlob(row, true);
                               },
                             },
                             menuSeparator(),
@@ -1893,9 +1996,11 @@ function App() {
                             menuSeparator(),
                             {
                               label: "Delete",
-                              disabled: true,
+                              disabled: row.kind === "dir",
                               danger: true,
-                              action: () => undefined,
+                              action: () => {
+                                void handleDeleteBlob(row);
+                              },
                             },
                             {
                               label: "Undelete",

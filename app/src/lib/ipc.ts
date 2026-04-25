@@ -81,6 +81,12 @@ export interface BrowserLoginPrompt {
   redirect_uri: string;
 }
 
+export interface BlobDownloadResult {
+  path: string;
+  bytes: number;
+  opened: boolean;
+}
+
 export interface DeviceCodeLoginStatus {
   status: "pending" | "complete" | "error";
   connection_id?: string | null;
@@ -279,6 +285,34 @@ export async function fetchBlobs(
     connectionId,
     container,
     prefix,
+  });
+}
+
+export async function downloadBlob(
+  connectionId: string,
+  container: string,
+  path: string,
+  openAfterDownload: boolean,
+): Promise<BlobDownloadResult> {
+  return callTauri<BlobDownloadResult>("download_blob", {
+    connectionId,
+    container,
+    path,
+    openAfterDownload,
+  });
+}
+
+export async function deleteBlob(
+  connectionId: string,
+  container: string,
+  path: string,
+  includeSnapshots = false,
+): Promise<void> {
+  return callTauri<void>("delete_blob", {
+    connectionId,
+    container,
+    path,
+    includeSnapshots,
   });
 }
 
