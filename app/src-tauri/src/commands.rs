@@ -594,6 +594,46 @@ pub fn list_sign_ins(state: State<'_, AppState>) -> Vec<BrowserSignIn> {
 }
 
 #[tauri::command]
+pub fn remove_sign_in(state: State<'_, AppState>, sign_in_id: String) -> Result<(), String> {
+    let mut guard = state.inner.lock().unwrap();
+    let removed = guard.sign_ins.remove(&sign_in_id);
+    guard.connections.retain(|_, connection| {
+        !matches!(
+            connection,
+            LiveConnection::AccountKey {
+                origin: Some(ConnectionOrigin {
+                    sign_in_id: origin_sign_in_id,
+                    ..
+                }),
+                ..
+            } | LiveConnection::Entra {
+                origin: Some(ConnectionOrigin {
+                    sign_in_id: origin_sign_in_id,
+                    ..
+                }),
+                ..
+            } if origin_sign_in_id == &sign_in_id
+        )
+    });
+    drop(guard);
+
+    state
+        .store
+        .sign_in_delete(&sign_in_id)
+        .map_err(|error| format!("failed to remove persisted sign-in `{sign_in_id}`: {error}"))?;
+    RefreshCache::new(&*state.credential_store)
+        .delete(&sign_in_id)
+        .map_err(|error| format!("failed to remove cached sign-in token `{sign_in_id}`: {error}"))?;
+    remove_persisted_sign_in_snapshot(&state.snapshot_path, &sign_in_id)?;
+
+    if removed.is_some() {
+        Ok(())
+    } else {
+        Err(format!("unknown sign-in id `{sign_in_id}`"))
+    }
+}
+
+#[tauri::command]
 pub fn list_sign_in_tenants(
     state: State<'_, AppState>,
     sign_in_id: String,
@@ -2070,6 +2110,14 @@ fn persist_sign_in_snapshot_metadata(snapshot_path: &Path, sign_in: &SignInSessi
         shell_state.sign_ins.push(snapshot);
     }
 
+    write_persisted_shell_state(snapshot_path, &shell_state)
+}
+
+fn remove_persisted_sign_in_snapshot(snapshot_path: &Path, sign_in_id: &str) -> Result<(), String> {
+    let mut shell_state = load_persisted_shell_state(snapshot_path)?;
+    shell_state
+        .sign_ins
+        .retain(|snapshot| snapshot.id != sign_in_id);
     write_persisted_shell_state(snapshot_path, &shell_state)
 }
 

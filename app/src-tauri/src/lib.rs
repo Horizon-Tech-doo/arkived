@@ -51,6 +51,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::list_connections,
             commands::list_sign_ins,
+            commands::remove_sign_in,
             commands::list_sign_in_tenants,
             commands::update_sign_in_filter,
             commands::list_subscriptions,

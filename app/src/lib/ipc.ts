@@ -131,6 +131,12 @@ export async function listSignIns(): Promise<BrowserSignIn[]> {
   return callTauri<BrowserSignIn[]>("list_sign_ins");
 }
 
+export async function removeSignIn(signInId: string): Promise<void> {
+  return callTauri<void>("remove_sign_in", {
+    signInId,
+  });
+}
+
 export async function listSignInTenants(signInId: string): Promise<BrowserTenant[]> {
   return callTauri<BrowserTenant[]>("list_sign_in_tenants", {
     signInId,

@@ -51,6 +51,7 @@ import {
   pollEntraBrowserLogin,
   pollEntraDiscoveryLogin,
   pollSignInTenantReauth,
+  removeSignIn,
   startEntraBrowserLogin,
   startEntraDiscoveryLogin,
   startSignInTenantReauth,
@@ -597,6 +598,38 @@ function App() {
       setShellError(getErrorMessage(error));
     } finally {
       setDisconnectBusy(false);
+    }
+  }
+
+  async function handleRemoveSignIn(signIn: BrowserSignIn) {
+    const confirmed = window.confirm(`Remove Azure account "${signIn.display_name}" from Arkived?`);
+    if (!confirmed) {
+      return;
+    }
+
+    setSignInsBusy(true);
+    setShellError(null);
+    setDiscoveryError(null);
+
+    try {
+      await removeSignIn(signIn.id);
+      setManageSignInId((current) => (current === signIn.id ? null : current));
+      setExpandedSignIns((current) => {
+        const next = { ...current };
+        delete next[signIn.id];
+        return next;
+      });
+      setBrowserTabs((current) =>
+        current.filter((tab) => {
+          const connection = connectionsRef.current.find((candidate) => candidate.id === tab.connectionId);
+          return connection?.origin_sign_in_id !== signIn.id;
+        }),
+      );
+      await Promise.all([refreshConnections(), refreshDiscoveryTree()]);
+    } catch (error) {
+      setDiscoveryError(getErrorMessage(error));
+    } finally {
+      setSignInsBusy(false);
     }
   }
 
@@ -1781,6 +1814,14 @@ function App() {
                           label: "Copy account name",
                           action: () => {
                             void copyText(signIn.display_name);
+                          },
+                        },
+                        menuSeparator(),
+                        {
+                          label: "Remove account",
+                          danger: true,
+                          action: () => {
+                            void handleRemoveSignIn(signIn);
                           },
                         },
                       ])
