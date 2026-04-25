@@ -234,6 +234,7 @@ function App() {
   const [copiedCode, setCopiedCode] = useState(false);
   const [shellInitialized, setShellInitialized] = useState(false);
   const [shellPersistenceReady, setShellPersistenceReady] = useState(false);
+  const [sidebarPanelTab, setSidebarPanelTab] = useState<"actions" | "properties">("actions");
 
   const containerRequestIds = useRef<Record<string, number>>({});
   const blobRequestIds = useRef<Record<string, number>>({});
@@ -1988,12 +1989,7 @@ function App() {
             })}
           </div>
 
-          <div style={styles.sidebarFooter}>
-            <span style={styles.sidebarFooterLabel}>Mode</span>
-            <span style={styles.sidebarFooterText}>
-              Azure sign-in discovers subscriptions and storage accounts first, then activates the selected account into the live blob browser.
-            </span>
-          </div>
+          {renderSidebarDetailsPanel()}
         </aside>
 
         <main style={styles.main}>
@@ -2559,6 +2555,143 @@ function App() {
       )}
     </div>
   );
+
+  function renderSidebarDetailsPanel() {
+    const containerUrl =
+      activeConnection && activeContainer
+        ? new URL(`${activeContainer}/`, activeConnection.endpoint).toString()
+        : null;
+    const selectedUrl =
+      activeConnection && activeContainer && selectedRow?.path
+        ? buildResourceUrl(activeConnection.endpoint, activeContainer, selectedRow.path)
+        : null;
+    const resourceName =
+      selectedRow?.name ?? activeContainer ?? activeConnection?.display_name ?? "No resource selected";
+    const resourceType = selectedRow
+      ? selectedRow.kind === "dir"
+        ? "Virtual directory"
+        : "Blob"
+      : activeContainer
+        ? "Blob container"
+        : activeConnection
+          ? "Storage account"
+          : "Explorer";
+
+    const action = (
+      label: string,
+      onClick: () => void,
+      disabled = false,
+      danger = false,
+    ) => (
+      <button
+        key={label}
+        type="button"
+        style={{
+          ...styles.sidebarActionButton,
+          ...(disabled ? styles.sidebarActionButtonDisabled : {}),
+          ...(danger && !disabled ? styles.sidebarActionButtonDanger : {}),
+        }}
+        disabled={disabled}
+        onClick={onClick}
+      >
+        {label}
+      </button>
+    );
+    const property = (label: string, value?: ReactNode | null) => (
+      <div key={label} style={styles.sidebarPropertyRow}>
+        <span style={styles.sidebarPropertyLabel}>{label}</span>
+        <span style={styles.sidebarPropertyValue}>{value || "—"}</span>
+      </div>
+    );
+
+    return (
+      <div style={styles.sidebarDetailsPanel}>
+        <div style={styles.sidebarPanelTabs}>
+          <button
+            type="button"
+            style={{
+              ...styles.sidebarPanelTab,
+              ...(sidebarPanelTab === "actions" ? styles.sidebarPanelTabActive : {}),
+            }}
+            onClick={() => setSidebarPanelTab("actions")}
+          >
+            Actions
+          </button>
+          <button
+            type="button"
+            style={{
+              ...styles.sidebarPanelTab,
+              ...(sidebarPanelTab === "properties" ? styles.sidebarPanelTabActive : {}),
+            }}
+            onClick={() => setSidebarPanelTab("properties")}
+          >
+            Properties
+          </button>
+        </div>
+
+        {sidebarPanelTab === "actions" ? (
+          <div style={styles.sidebarPanelBody}>
+            {action("Open", () => {
+              if (selectedRow?.kind === "dir") {
+                const index = activeRows.findIndex((row) => row.path === selectedRow.path);
+                if (index >= 0) {
+                  handleActivateRow(index);
+                }
+              }
+            }, !selectedRow || selectedRow.kind !== "dir")}
+            {action("Upload files…", () => {
+              void handleUploadFiles();
+            }, !activeConnection || !activeContainer)}
+            {action("Download", () => {
+              if (!selectedRow) {
+                return;
+              }
+              if (selectedRow.kind === "dir") {
+                void handleDownloadPrefix(selectedRow);
+              } else {
+                void handleDownloadBlob(selectedRow, false);
+              }
+            }, !selectedRow)}
+            {action("Delete", () => {
+              if (!selectedRow) {
+                return;
+              }
+              if (selectedRow.kind === "dir") {
+                void handleDeletePrefix(selectedRow);
+              } else {
+                void handleDeleteBlob(selectedRow);
+              }
+            }, !selectedRow, true)}
+            {action("Copy URL", () => {
+              void copyText(selectedUrl ?? containerUrl ?? activeConnection?.endpoint ?? "");
+            }, !selectedUrl && !containerUrl && !activeConnection)}
+            {action("Refresh", () => {
+              if (activeTab) {
+                updateTab(activeTab.id, (tab) => ({ ...tab, loaded: false }));
+              } else if (activeConnectionId) {
+                void ensureContainersLoaded(activeConnectionId, true);
+              } else {
+                void handleRefresh();
+              }
+            })}
+          </div>
+        ) : (
+          <div style={styles.sidebarPanelBody}>
+            {property("Name", resourceName)}
+            {property("Type", resourceType)}
+            {property("Account", activeConnection?.account_name)}
+            {property("Container", activeContainer)}
+            {property("Path", selectedRow?.path)}
+            {property("URL", selectedUrl ?? containerUrl ?? activeConnection?.endpoint)}
+            {property("Auth", activeConnection ? authLabel(activeConnection.auth_kind) : null)}
+            {property("Modified", selectedRow?.modified)}
+            {property("Size", selectedRow?.size)}
+            {property("ETag", selectedRow?.etag)}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   function renderContainerBranch(connectionId: string | null, depth: number, connecting = false) {
     if (!connectionId) {
@@ -3769,6 +3902,77 @@ const styles: Record<string, CSSProperties> = {
     fontSize: 11,
     color: "var(--fg-2)",
     lineHeight: 1.5,
+  },
+  sidebarDetailsPanel: {
+    minHeight: 168,
+    maxHeight: 240,
+    borderTop: "1px solid var(--border-0)",
+    background: "rgba(12, 12, 15, 0.94)",
+    display: "flex",
+    flexDirection: "column",
+    flexShrink: 0,
+  },
+  sidebarPanelTabs: {
+    display: "flex",
+    alignItems: "center",
+    height: 30,
+    borderBottom: "1px solid var(--border-0)",
+  },
+  sidebarPanelTab: {
+    height: 30,
+    padding: "0 12px",
+    color: "var(--fg-2)",
+    fontFamily: "var(--mono)",
+    fontSize: 10,
+    borderRight: "1px solid var(--border-0)",
+  },
+  sidebarPanelTabActive: {
+    color: "var(--fg-0)",
+    background: "var(--bg-1)",
+  },
+  sidebarPanelBody: {
+    padding: "8px 10px",
+    display: "flex",
+    flexDirection: "column",
+    gap: 5,
+    overflow: "auto",
+  },
+  sidebarActionButton: {
+    minHeight: 20,
+    color: "var(--accent)",
+    textAlign: "left",
+    fontFamily: "var(--sans)",
+    fontSize: 11,
+    borderRadius: 3,
+    padding: "2px 6px",
+  },
+  sidebarActionButtonDanger: {
+    color: "var(--red)",
+  },
+  sidebarActionButtonDisabled: {
+    color: "var(--fg-4)",
+    cursor: "not-allowed",
+  },
+  sidebarPropertyRow: {
+    display: "grid",
+    gridTemplateColumns: "86px minmax(0, 1fr)",
+    gap: 8,
+    minHeight: 18,
+    alignItems: "center",
+    fontSize: 10,
+    fontFamily: "var(--mono)",
+  },
+  sidebarPropertyLabel: {
+    color: "var(--fg-3)",
+    textTransform: "uppercase",
+    letterSpacing: "0.04em",
+    fontWeight: 600,
+  },
+  sidebarPropertyValue: {
+    color: "var(--fg-1)",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
   },
   sidebarEmptyCard: {
     margin: "8px 12px 0",
