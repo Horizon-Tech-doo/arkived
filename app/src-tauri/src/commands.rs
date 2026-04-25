@@ -313,6 +313,11 @@ pub struct BlobPreviewResult {
     pub path: String,
     pub byte_count: u64,
     pub truncated: bool,
+    pub row_offset: u64,
+    pub row_limit: u64,
+    pub total_rows: Option<u64>,
+    pub has_previous_page: bool,
+    pub has_next_page: bool,
     pub columns: Vec<String>,
     pub rows: Vec<Vec<String>>,
     pub text: Option<String>,
@@ -1847,16 +1852,24 @@ pub async fn preview_blob(
     connection_id: String,
     container: String,
     path: String,
+    row_offset: Option<u64>,
+    row_limit: Option<u64>,
 ) -> Result<BlobPreviewResult, String> {
     const TEXT_PREVIEW_MAX_BYTES: usize = 2 * 1024 * 1024;
     const IMAGE_PREVIEW_MAX_BYTES: usize = 8 * 1024 * 1024;
     const PARQUET_PREVIEW_MAX_BYTES: usize = 64 * 1024 * 1024;
+    const DEFAULT_PREVIEW_ROW_LIMIT: usize = 100;
+    const MAX_PREVIEW_ROW_LIMIT: usize = 500;
 
     let connection = get_connection(&state, &connection_id)?;
     let container = resolved_container_name(&connection, &container)?;
     let blob_path = normalize_blob_path(&path)?;
     let backend = build_backend(&connection).await?;
     let extension = file_extension(&blob_path);
+    let row_offset = row_offset.unwrap_or(0);
+    let row_limit = row_limit
+        .unwrap_or(DEFAULT_PREVIEW_ROW_LIMIT as u64)
+        .clamp(1, MAX_PREVIEW_ROW_LIMIT as u64) as usize;
 
     let max_bytes = match extension.as_deref() {
         Some("parquet") => PARQUET_PREVIEW_MAX_BYTES,
@@ -1875,7 +1888,7 @@ pub async fn preview_blob(
             )
         })?;
 
-    build_blob_preview(&blob_path, bytes, truncated)
+    build_blob_preview(&blob_path, bytes, truncated, row_offset, row_limit)
 }
 
 #[tauri::command]
@@ -3284,16 +3297,26 @@ fn build_blob_preview(
     blob_path: &str,
     bytes: Vec<u8>,
     truncated: bool,
+    row_offset: u64,
+    row_limit: usize,
 ) -> Result<BlobPreviewResult, String> {
     let title = path_leaf(blob_path).unwrap_or_else(|| blob_path.to_string());
     let extension = file_extension(blob_path);
 
     match extension.as_deref() {
-        Some("csv") => preview_delimited_blob(blob_path, &title, bytes, truncated, b',', "CSV"),
-        Some("tsv") => preview_delimited_blob(blob_path, &title, bytes, truncated, b'\t', "TSV"),
+        Some("csv") => preview_delimited_blob(
+            blob_path, &title, bytes, truncated, b',', "CSV", row_offset, row_limit,
+        ),
+        Some("tsv") => preview_delimited_blob(
+            blob_path, &title, bytes, truncated, b'\t', "TSV", row_offset, row_limit,
+        ),
         Some("json") => preview_json_blob(blob_path, &title, bytes, truncated),
-        Some("jsonl" | "ndjson") => preview_json_lines_blob(blob_path, &title, bytes, truncated),
-        Some("parquet") => preview_parquet_blob(blob_path, &title, bytes, truncated),
+        Some("jsonl" | "ndjson") => {
+            preview_json_lines_blob(blob_path, &title, bytes, truncated, row_offset, row_limit)
+        }
+        Some("parquet") => {
+            preview_parquet_blob(blob_path, &title, bytes, truncated, row_offset, row_limit)
+        }
         Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "svg") => {
             preview_image_blob(blob_path, &title, bytes, truncated, extension.as_deref())
         }
@@ -3317,9 +3340,9 @@ fn preview_delimited_blob(
     truncated: bool,
     delimiter: u8,
     label: &str,
+    row_offset: u64,
+    row_limit: usize,
 ) -> Result<BlobPreviewResult, String> {
-    const MAX_PREVIEW_ROWS: usize = 200;
-
     let text = decode_preview_text(&bytes);
     let mut reader = csv::ReaderBuilder::new()
         .delimiter(delimiter)
@@ -3343,7 +3366,8 @@ fn preview_delimited_blob(
     };
 
     let mut rows = Vec::new();
-    for record in reader.records().take(MAX_PREVIEW_ROWS) {
+    let mut total_rows = 0u64;
+    for record in reader.records() {
         let record = match record {
             Ok(record) => record,
             Err(error) => {
@@ -3356,8 +3380,12 @@ fn preview_delimited_blob(
                 ));
             }
         };
-        rows.push(record.iter().map(sanitize_preview_cell).collect());
+        if total_rows >= row_offset && rows.len() < row_limit {
+            rows.push(record.iter().map(sanitize_preview_cell).collect());
+        }
+        total_rows += 1;
     }
+    let shown_end = row_offset.saturating_add(rows.len() as u64);
 
     let mut metadata = preview_metadata(blob_path, bytes.len(), truncated);
     metadata.push(meta("Format", label));
@@ -3370,6 +3398,11 @@ fn preview_delimited_blob(
         path: blob_path.into(),
         byte_count: bytes.len() as u64,
         truncated,
+        row_offset,
+        row_limit: row_limit as u64,
+        total_rows: (!truncated).then_some(total_rows),
+        has_previous_page: row_offset > 0,
+        has_next_page: shown_end < total_rows,
         columns,
         rows,
         text: None,
@@ -3425,18 +3458,15 @@ fn preview_json_lines_blob(
     title: &str,
     bytes: Vec<u8>,
     truncated: bool,
+    row_offset: u64,
+    row_limit: usize,
 ) -> Result<BlobPreviewResult, String> {
-    const MAX_PREVIEW_ROWS: usize = 200;
-
     let text = decode_preview_text(&bytes);
     let mut columns = Vec::<String>::new();
     let mut rows = Vec::<Vec<String>>::new();
+    let mut total_rows = 0u64;
 
-    for line in text
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .take(MAX_PREVIEW_ROWS)
-    {
+    for line in text.lines().filter(|line| !line.trim().is_empty()) {
         let value: serde_json::Value = match serde_json::from_str(line) {
             Ok(value) => value,
             Err(error) => {
@@ -3458,19 +3488,25 @@ fn preview_json_lines_blob(
                     columns.push(key.clone());
                 }
             }
-            rows.push(
-                columns
-                    .iter()
-                    .map(|column| object.get(column).map(json_cell_value).unwrap_or_default())
-                    .collect(),
-            );
+            if total_rows >= row_offset && rows.len() < row_limit {
+                rows.push(
+                    columns
+                        .iter()
+                        .map(|column| object.get(column).map(json_cell_value).unwrap_or_default())
+                        .collect(),
+                );
+            }
         } else {
             if columns.is_empty() {
                 columns.push("value".into());
             }
-            rows.push(vec![json_cell_value(&value)]);
+            if total_rows >= row_offset && rows.len() < row_limit {
+                rows.push(vec![json_cell_value(&value)]);
+            }
         }
+        total_rows += 1;
     }
+    let shown_end = row_offset.saturating_add(rows.len() as u64);
 
     let mut metadata = preview_metadata(blob_path, bytes.len(), truncated);
     metadata.push(meta("Format", "JSON Lines"));
@@ -3483,6 +3519,11 @@ fn preview_json_lines_blob(
         path: blob_path.into(),
         byte_count: bytes.len() as u64,
         truncated,
+        row_offset,
+        row_limit: row_limit as u64,
+        total_rows: (!truncated).then_some(total_rows),
+        has_previous_page: row_offset > 0,
+        has_next_page: shown_end < total_rows,
         columns,
         rows,
         text: None,
@@ -3502,9 +3543,9 @@ fn preview_parquet_blob(
     title: &str,
     bytes: Vec<u8>,
     truncated: bool,
+    row_offset: u64,
+    row_limit: usize,
 ) -> Result<BlobPreviewResult, String> {
-    const MAX_PREVIEW_ROWS: usize = 100;
-
     if truncated {
         return Ok(preview_binary_blob(
             blob_path,
@@ -3529,7 +3570,8 @@ fn preview_parquet_blob(
 
     match reader.get_row_iter(None) {
         Ok(iterator) => {
-            for row in iterator.take(MAX_PREVIEW_ROWS) {
+            let skip = usize::try_from(row_offset).unwrap_or(usize::MAX);
+            for row in iterator.skip(skip).take(row_limit) {
                 let row = row.map_err(|error| format!("failed to read Parquet row: {error}"))?;
                 rows.push(
                     row.get_column_iter()
@@ -3569,17 +3611,18 @@ fn preview_parquet_blob(
         path: blob_path.into(),
         byte_count: bytes.len() as u64,
         truncated: false,
+        row_offset,
+        row_limit: row_limit as u64,
+        total_rows: Some(file_metadata.num_rows().max(0) as u64),
+        has_previous_page: row_offset > 0,
+        has_next_page: row_offset.saturating_add(rows.len() as u64)
+            < file_metadata.num_rows().max(0) as u64,
         columns,
         rows,
         text: None,
         image_data_url: None,
         metadata,
-        warning: (file_metadata.num_rows() as usize > MAX_PREVIEW_ROWS).then(|| {
-            format!(
-                "Showing the first {MAX_PREVIEW_ROWS} of {} rows.",
-                file_metadata.num_rows()
-            )
-        }),
+        warning: None,
     })
 }
 
@@ -3618,6 +3661,11 @@ fn preview_image_blob(
         path: blob_path.into(),
         byte_count: bytes.len() as u64,
         truncated: false,
+        row_offset: 0,
+        row_limit: 0,
+        total_rows: None,
+        has_previous_page: false,
+        has_next_page: false,
         columns: Vec::new(),
         rows: Vec::new(),
         text: None,
@@ -3665,6 +3713,11 @@ fn preview_text_result(
         path: blob_path.into(),
         byte_count: byte_count as u64,
         truncated,
+        row_offset: 0,
+        row_limit: 0,
+        total_rows: None,
+        has_previous_page: false,
+        has_next_page: false,
         columns: Vec::new(),
         rows: Vec::new(),
         text: Some(text),
@@ -3687,6 +3740,11 @@ fn preview_binary_blob(
         path: blob_path.into(),
         byte_count: bytes.len() as u64,
         truncated,
+        row_offset: 0,
+        row_limit: 0,
+        total_rows: None,
+        has_previous_page: false,
+        has_next_page: false,
         columns: Vec::new(),
         rows: Vec::new(),
         text: None,

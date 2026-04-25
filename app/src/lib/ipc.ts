@@ -110,6 +110,11 @@ export interface BlobPreviewResult {
   path: string;
   byte_count: number;
   truncated: boolean;
+  row_offset: number;
+  row_limit: number;
+  total_rows?: number | null;
+  has_previous_page: boolean;
+  has_next_page: boolean;
   columns: string[];
   rows: string[][];
   text?: string | null;
@@ -359,11 +364,15 @@ export async function previewBlob(
   connectionId: string,
   container: string,
   path: string,
+  rowOffset = 0,
+  rowLimit = 100,
 ): Promise<BlobPreviewResult> {
   return callTauri<BlobPreviewResult>("preview_blob", {
     connectionId,
     container,
     path,
+    rowOffset,
+    rowLimit,
   });
 }
 

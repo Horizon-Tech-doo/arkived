@@ -147,6 +147,8 @@ interface BlobClipboardState {
 interface PreviewDialogState {
   row: BlobRow;
   result: BlobPreviewResult | null;
+  rowOffset: number;
+  rowLimit: number;
   busy: boolean;
   error: string | null;
 }
@@ -1214,7 +1216,7 @@ function App() {
     }
   }
 
-  async function handlePreviewBlob(row: BlobRow) {
+  async function handlePreviewBlob(row: BlobRow, rowOffset = 0, rowLimit = 100) {
     if (!activeConnection || !activeContainer || !row.path || row.kind === "dir") {
       return;
     }
@@ -1223,15 +1225,19 @@ function App() {
     setPreviewDialog({
       row,
       result: null,
+      rowOffset,
+      rowLimit,
       busy: true,
       error: null,
     });
 
     try {
-      const result = await previewBlob(activeConnection.id, activeContainer, row.path);
+      const result = await previewBlob(activeConnection.id, activeContainer, row.path, rowOffset, rowLimit);
       setPreviewDialog({
         row,
         result,
+        rowOffset: result.row_offset,
+        rowLimit: result.row_limit || rowLimit,
         busy: false,
         error: null,
       });
@@ -1241,6 +1247,8 @@ function App() {
       setPreviewDialog({
         row,
         result: null,
+        rowOffset,
+        rowLimit,
         busy: false,
         error: message,
       });
@@ -2755,6 +2763,9 @@ function App() {
                       <BlobPreviewPane
                         state={previewDialog}
                         onClose={() => setPreviewDialog(null)}
+                        onPage={(rowOffset, rowLimit) => {
+                          void handlePreviewBlob(previewDialog.row, rowOffset, rowLimit);
+                        }}
                         onDownload={() => {
                           void handleDownloadBlob(previewDialog.row, false);
                         }}
@@ -3935,13 +3946,19 @@ function MainEmptyState({ title, body, primaryLabel, onPrimary, secondaryLabel }
 interface BlobPreviewPaneProps {
   state: PreviewDialogState;
   onClose: () => void;
+  onPage: (rowOffset: number, rowLimit: number) => void;
   onDownload: () => void;
   onOpenExternal: () => void;
 }
 
-function BlobPreviewPane({ state, onClose, onDownload, onOpenExternal }: BlobPreviewPaneProps) {
+function BlobPreviewPane({ state, onClose, onPage, onDownload, onOpenExternal }: BlobPreviewPaneProps) {
   const result = state.result;
   const columns = result ? previewColumns(result) : [];
+  const canPage = Boolean(result && columns.length > 0 && (result.has_previous_page || result.has_next_page || result.total_rows != null));
+  const rowLimit = result?.row_limit || state.rowLimit || 100;
+  const currentStart = result && result.rows.length > 0 ? result.row_offset + 1 : 0;
+  const currentEnd = result ? result.row_offset + result.rows.length : 0;
+  const totalRowsLabel = result?.total_rows != null ? formatNumber(result.total_rows) : "sample";
 
   return (
     <aside style={styles.previewPane}>
@@ -3984,10 +4001,34 @@ function BlobPreviewPane({ state, onClose, onDownload, onOpenExternal }: BlobPre
           <>
             <div style={styles.previewMetaStrip}>
               <span>{previewKindLabel(result.kind)}</span>
-              <span>{formatNumber(result.rows.length)} shown</span>
+              <span>
+                {currentStart > 0
+                  ? `${formatNumber(currentStart)}-${formatNumber(currentEnd)} of ${totalRowsLabel}`
+                  : "0 rows"}
+              </span>
               <span>{formatNumber(result.columns.length)} columns</span>
               <span>{formatBytesLabel(result.byte_count)}</span>
               {result.truncated && <span>sampled</span>}
+              {canPage && (
+                <span style={styles.previewPager}>
+                  <button
+                    type="button"
+                    style={styles.previewPagerButton}
+                    disabled={state.busy || !result.has_previous_page}
+                    onClick={() => onPage(Math.max(0, result.row_offset - rowLimit), rowLimit)}
+                  >
+                    Prev
+                  </button>
+                  <button
+                    type="button"
+                    style={styles.previewPagerButton}
+                    disabled={state.busy || !result.has_next_page}
+                    onClick={() => onPage(result.row_offset + rowLimit, rowLimit)}
+                  >
+                    Next
+                  </button>
+                </span>
+              )}
             </div>
 
             {result.warning && (
@@ -4003,36 +4044,23 @@ function BlobPreviewPane({ state, onClose, onDownload, onOpenExternal }: BlobPre
               </div>
             ) : columns.length > 0 ? (
               <div style={styles.previewTableWrap}>
-                <div
-                  style={{
-                    ...styles.previewTableHeader,
-                    gridTemplateColumns: previewTableGrid(columns.length),
-                  }}
-                >
-                  {columns.map((column, index) => (
-                    <div key={`${column}-${index}`} style={styles.previewTableCellHeader}>
-                      {column || `column ${index + 1}`}
-                    </div>
-                  ))}
-                </div>
                 {result.rows.length === 0 ? (
                   <div style={styles.previewEmpty}>No rows were available in the preview sample.</div>
                 ) : (
-                  result.rows.map((row, rowIndex) => (
-                    <div
-                      key={`row-${rowIndex}`}
-                      style={{
-                        ...styles.previewTableRow,
-                        gridTemplateColumns: previewTableGrid(columns.length),
-                      }}
-                    >
-                      {columns.map((_, columnIndex) => (
+                  <div style={{ ...styles.previewTableGrid, gridTemplateColumns: previewTableGrid(columns, result.rows) }}>
+                    {columns.map((column, index) => (
+                      <div key={`${column}-${index}`} style={styles.previewTableCellHeader}>
+                        {column || `column ${index + 1}`}
+                      </div>
+                    ))}
+                    {result.rows.map((row, rowIndex) =>
+                      columns.map((_, columnIndex) => (
                         <div key={`${rowIndex}-${columnIndex}`} style={styles.previewTableCell} title={row[columnIndex] ?? ""}>
                           {row[columnIndex] ?? ""}
                         </div>
-                      ))}
-                    </div>
-                  ))
+                      )),
+                    )}
+                  </div>
                 )}
               </div>
             ) : result.text != null ? (
@@ -4075,8 +4103,16 @@ function previewKindLabel(kind: BlobPreviewResult["kind"]): string {
   }
 }
 
-function previewTableGrid(columnCount: number): string {
-  return `repeat(${Math.max(columnCount, 1)}, minmax(118px, max-content))`;
+function previewTableGrid(columns: string[], rows: string[][]): string {
+  const widths = columns.map((column, columnIndex) => {
+    const longest = rows.reduce(
+      (max, row) => Math.max(max, (row[columnIndex] ?? "").length),
+      column.length,
+    );
+    const ch = Math.min(48, Math.max(12, longest + 2));
+    return `minmax(${ch}ch, ${ch}ch)`;
+  });
+  return widths.length > 0 ? widths.join(" ") : "minmax(12ch, 12ch)";
 }
 
 function formatNumber(value: number): string {
@@ -5321,6 +5357,24 @@ const styles: Record<string, CSSProperties> = {
     letterSpacing: "0.04em",
     flexShrink: 0,
   },
+  previewPager: {
+    marginLeft: "auto",
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 4,
+  },
+  previewPagerButton: {
+    height: 18,
+    padding: "0 7px",
+    borderRadius: 4,
+    border: "1px solid var(--border-1)",
+    background: "var(--bg-1)",
+    color: "var(--fg-1)",
+    fontFamily: "var(--mono)",
+    fontSize: 9,
+    textTransform: "uppercase",
+    letterSpacing: "0.04em",
+  },
   previewWarning: {
     flexShrink: 0,
     display: "flex",
@@ -5344,27 +5398,23 @@ const styles: Record<string, CSSProperties> = {
     fontFamily: "var(--mono)",
     fontSize: 10,
   },
-  previewTableHeader: {
+  previewTableGrid: {
     display: "grid",
+    minWidth: "max-content",
+  },
+  previewTableCellHeader: {
     position: "sticky",
     top: 0,
-    zIndex: 1,
+    zIndex: 2,
+    padding: "5px 7px",
+    borderRight: "1px solid var(--border-0)",
+    borderBottom: "1px solid var(--border-1)",
     background: "var(--bg-2)",
     color: "var(--fg-2)",
     textTransform: "uppercase",
     letterSpacing: "0.035em",
     fontSize: 9,
     fontWeight: 700,
-    minWidth: "max-content",
-  },
-  previewTableRow: {
-    display: "grid",
-    minWidth: "max-content",
-    borderTop: "1px solid var(--border-0)",
-  },
-  previewTableCellHeader: {
-    padding: "5px 7px",
-    borderRight: "1px solid var(--border-0)",
     overflow: "hidden",
     textOverflow: "ellipsis",
     whiteSpace: "nowrap",

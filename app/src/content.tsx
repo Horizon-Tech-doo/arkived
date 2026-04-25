@@ -1,6 +1,6 @@
 // Arkived — Tabs bar, Action bar, Breadcrumb, Blob table, Inspector
 // (ported from design/main.jsx — renamed to avoid clashing with main.tsx entry)
-import React, { CSSProperties, ReactNode } from "react";
+import React, { CSSProperties, ReactNode, useEffect, useRef, useState } from "react";
 import {
   IconX, IconPlus, IconUpload, IconDownload, IconEye, IconInfo, IconCopy,
   IconTrash, IconRefresh,
@@ -312,22 +312,99 @@ export function BlobTable({
   onActivateRow,
   onContextMenuRow,
 }: BlobTableProps) {
-  const cols = [
-    { key: "name",     label: "Name",                sortable: true },
-    { key: "tier",     label: "Access Tier" },
-    { key: "tierMod",  label: "Tier Last Modified" },
-    { key: "mod",      label: "Last Modified",       sortable: true, sorted: "desc" as const },
-    { key: "size",     label: "Size",                align: "right" as const },
-    { key: "blobType", label: "Blob Type" },
-    { key: "etag",     label: "ETag" },
-    { key: "lease",    label: "Lease" },
-  ];
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const [tableWidth, setTableWidth] = useState(0);
 
-  const gridTemplate = "24px minmax(520px, 2.8fr) 96px 148px 156px 96px 92px minmax(140px, 1fr) 76px";
+  useEffect(() => {
+    const node = rootRef.current;
+    if (!node) {
+      return;
+    }
+
+    const update = () => setTableWidth(node.clientWidth);
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+
+  const availableWidth = tableWidth || 900;
+  const cols = [
+    { key: "name", label: "Name", sortable: true, template: "minmax(180px, 2.4fr)", minWidth: 0 },
+    { key: "mod", label: "Last Modified", sortable: true, sorted: "desc" as const, template: "minmax(132px, 0.9fr)", minWidth: 420 },
+    { key: "size", label: "Size", align: "right" as const, template: "minmax(72px, 0.38fr)", minWidth: 560 },
+    { key: "tier", label: "Access Tier", template: "minmax(82px, 0.42fr)", minWidth: 680 },
+    { key: "blobType", label: "Blob Type", template: "minmax(78px, 0.42fr)", minWidth: 800 },
+    { key: "tierMod", label: "Tier Last Modified", template: "minmax(132px, 0.7fr)", minWidth: 960 },
+    { key: "lease", label: "Lease", template: "minmax(72px, 0.34fr)", minWidth: 1120 },
+    { key: "etag", label: "ETag", template: "minmax(132px, 0.65fr)", minWidth: 1280 },
+  ].filter((column) => availableWidth >= column.minWidth);
+
+  const gridTemplate = `24px ${cols.map((column) => column.template).join(" ")}`;
   const allSelected = rows.length > 0 && selected.size === rows.length;
 
+  const renderCell = (r: BlobRow, key: string, isSelected: boolean) => {
+    switch (key) {
+      case "name":
+        return (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "0 10px", overflow: "hidden", minWidth: 0 }}>
+            <span style={{ display: "flex", alignItems: "center", justifyContent: "center", color: r.kind === "dir" ? "var(--yellow)" : "var(--fg-2)" }}>
+              {blobIcon(r.icon)}
+            </span>
+            <span style={{
+              flex: 1,
+              minWidth: 0,
+              overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+              color: isSelected ? "#ffffff" : r.kind === "dir" ? "#f5f8ff" : "var(--fg-0)",
+              fontFamily: "var(--sans)",
+              fontSize: 12.5,
+              letterSpacing: "0.01em",
+              fontWeight: isSelected || r.kind === "dir" ? 650 : 520,
+            }} title={r.name}>{r.name}</span>
+            {r.kind === "dir" && <IconChevronRight size={9} style={{ color: "var(--fg-3)" }} />}
+          </div>
+        );
+      case "tier":
+        return (
+          <div style={{ display: "flex", alignItems: "center", padding: "0 8px" }}>
+            <TierPill tier={r.tier} />
+          </div>
+        );
+      case "tierMod":
+        return <div style={{ display: "flex", alignItems: "center", padding: "0 8px", color: "var(--fg-3)" }}>{r.tier ? r.modified || "—" : "—"}</div>;
+      case "mod":
+        return <div style={{ display: "flex", alignItems: "center", padding: "0 8px", color: "var(--fg-2)", overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{r.modified || "—"}</div>;
+      case "size":
+        return <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", padding: "0 8px", color: r.size ? "var(--fg-1)" : "var(--fg-3)" }}>{r.size || "—"}</div>;
+      case "blobType":
+        return <div style={{ display: "flex", alignItems: "center", padding: "0 8px", color: "var(--fg-3)" }}>{r.kind === "blob" ? "Block" : "—"}</div>;
+      case "etag":
+        return (
+          <div style={{ display: "flex", alignItems: "center", padding: "0 8px", color: "var(--fg-3)", overflow: "hidden" }}>
+            {r.etag ? <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.etag}</span> : "—"}
+          </div>
+        );
+      case "lease":
+        return (
+          <div style={{ display: "flex", alignItems: "center", padding: "0 8px", color: "var(--fg-3)" }}>
+            {r.lease === "avail" ? (
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                <IconUnlock size={10} style={{ color: "var(--green)" }} /> avail
+              </span>
+            ) : r.lease === "leased" ? (
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 4, color: "var(--yellow)" }}>
+                <IconLock size={10} /> leased
+              </span>
+            ) : "—"}
+          </div>
+        );
+      default:
+        return null;
+    }
+  };
+
   return (
-    <div style={{
+    <div ref={rootRef} style={{
       flex: 1,
       overflow: "auto",
       background: "var(--bg-1)",
@@ -384,58 +461,9 @@ export function BlobTable({
               <Checkbox checked={isSelected} onChange={() => onToggleSelect(i)} />
             </div>
 
-            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "0 10px", overflow: "hidden", minWidth: 0 }}>
-              <span style={{ display: "flex", alignItems: "center", justifyContent: "center", color: r.kind === "dir" ? "var(--yellow)" : "var(--fg-2)" }}>
-                {blobIcon(r.icon)}
-              </span>
-              <span style={{
-                flex: 1,
-                minWidth: 0,
-                overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-                color: isSelected ? "#ffffff" : r.kind === "dir" ? "#f5f8ff" : "var(--fg-0)",
-                fontFamily: "var(--sans)",
-                fontSize: 12.5,
-                letterSpacing: "0.01em",
-                fontWeight: isSelected || r.kind === "dir" ? 650 : 520,
-              }} title={r.name}>{r.name}</span>
-              {r.kind === "dir" && <IconChevronRight size={9} style={{ color: "var(--fg-3)" }} />}
-            </div>
-
-            <div style={{ display: "flex", alignItems: "center", padding: "0 8px" }}>
-              <TierPill tier={r.tier} />
-            </div>
-
-            <div style={{ display: "flex", alignItems: "center", padding: "0 8px", color: "var(--fg-3)" }}>
-              {r.tier ? r.modified || "—" : "—"}
-            </div>
-
-            <div style={{ display: "flex", alignItems: "center", padding: "0 8px", color: "var(--fg-2)" }}>
-              {r.modified || "—"}
-            </div>
-
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", padding: "0 8px", color: r.size ? "var(--fg-1)" : "var(--fg-3)" }}>
-              {r.size || "—"}
-            </div>
-
-            <div style={{ display: "flex", alignItems: "center", padding: "0 8px", color: "var(--fg-3)" }}>
-              {r.kind === "blob" ? "Block" : "—"}
-            </div>
-
-            <div style={{ display: "flex", alignItems: "center", padding: "0 8px", color: "var(--fg-3)", overflow: "hidden" }}>
-              {r.etag ? <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.etag}</span> : "—"}
-            </div>
-
-            <div style={{ display: "flex", alignItems: "center", padding: "0 8px", color: "var(--fg-3)" }}>
-              {r.lease === "avail" ? (
-                <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-                  <IconUnlock size={10} style={{ color: "var(--green)" }} /> avail
-                </span>
-              ) : r.lease === "leased" ? (
-                <span style={{ display: "inline-flex", alignItems: "center", gap: 4, color: "var(--yellow)" }}>
-                  <IconLock size={10} /> leased
-                </span>
-              ) : "—"}
-            </div>
+            {cols.map((column) => (
+              <React.Fragment key={column.key}>{renderCell(r, column.key, isSelected)}</React.Fragment>
+            ))}
           </div>
         );
       })}
