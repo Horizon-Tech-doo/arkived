@@ -99,6 +99,25 @@ export interface BlobBulkResult {
   item_count: number;
 }
 
+export interface BlobPreviewMetadata {
+  label: string;
+  value: string;
+}
+
+export interface BlobPreviewResult {
+  kind: "table" | "json" | "text" | "image" | "parquet" | "binary";
+  title: string;
+  path: string;
+  byte_count: number;
+  truncated: boolean;
+  columns: string[];
+  rows: string[][];
+  text?: string | null;
+  image_data_url?: string | null;
+  metadata: BlobPreviewMetadata[];
+  warning?: string | null;
+}
+
 export interface DeviceCodeLoginStatus {
   status: "pending" | "complete" | "error";
   connection_id?: string | null;
@@ -333,6 +352,18 @@ export async function downloadBlob(
     container,
     path,
     openAfterDownload,
+  });
+}
+
+export async function previewBlob(
+  connectionId: string,
+  container: string,
+  path: string,
+): Promise<BlobPreviewResult> {
+  return callTauri<BlobPreviewResult>("preview_blob", {
+    connectionId,
+    container,
+    path,
   });
 }
 

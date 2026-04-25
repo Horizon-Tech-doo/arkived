@@ -21,17 +21,18 @@ use arkived_core::backend::{
     AzureBlobBackend, BlobEntry, BlobPath, ByteStream, DeleteOpts, Page, WriteOpts,
 };
 use arkived_core::policy::AllowAllPolicy;
-use arkived_core::Ctx;
 use arkived_core::store::{AttachedResource, SignIn};
 use arkived_core::types::{AuthKind, AzureEnvironment, ResourceKind};
+use arkived_core::Ctx;
 use arkived_core::Store;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
-use chrono::Utc;
 use bytes::Bytes;
+use chrono::Utc;
 use futures::{stream, StreamExt};
-use secrecy::SecretString;
+use parquet::file::reader::{FileReader, SerializedFileReader};
 use secrecy::ExposeSecret;
+use secrecy::SecretString;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -299,6 +300,27 @@ pub struct BlobBulkResult {
     pub item_count: u64,
 }
 
+#[derive(Serialize)]
+pub struct BlobPreviewMetadata {
+    pub label: String,
+    pub value: String,
+}
+
+#[derive(Serialize)]
+pub struct BlobPreviewResult {
+    pub kind: String,
+    pub title: String,
+    pub path: String,
+    pub byte_count: u64,
+    pub truncated: bool,
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<String>>,
+    pub text: Option<String>,
+    pub image_data_url: Option<String>,
+    pub metadata: Vec<BlobPreviewMetadata>,
+    pub warning: Option<String>,
+}
+
 #[derive(Serialize, Clone)]
 pub struct DeviceCodePrompt {
     pub login_id: String,
@@ -471,8 +493,7 @@ impl AppState {
     }
 
     async fn restore_sign_ins(&self) -> Result<(), String> {
-        let snapshot_index: HashMap<_, _> = match load_persisted_shell_state(&self.snapshot_path)
-        {
+        let snapshot_index: HashMap<_, _> = match load_persisted_shell_state(&self.snapshot_path) {
             Ok(state) => state
                 .sign_ins
                 .into_iter()
@@ -625,7 +646,9 @@ pub fn remove_sign_in(state: State<'_, AppState>, sign_in_id: String) -> Result<
         .map_err(|error| format!("failed to remove persisted sign-in `{sign_in_id}`: {error}"))?;
     RefreshCache::new(&*state.credential_store)
         .delete(&sign_in_id)
-        .map_err(|error| format!("failed to remove cached sign-in token `{sign_in_id}`: {error}"))?;
+        .map_err(|error| {
+            format!("failed to remove cached sign-in token `{sign_in_id}`: {error}")
+        })?;
     remove_persisted_sign_in_snapshot(&state.snapshot_path, &sign_in_id)?;
 
     if removed.is_some() {
@@ -1431,7 +1454,8 @@ pub async fn start_entra_discovery_login(
                                 if let Some(pending) =
                                     guard.pending_discovery_logins.get_mut(&login_id)
                                 {
-                                    pending.status = PendingLoginStatus::Complete { id: sign_in_id };
+                                    pending.status =
+                                        PendingLoginStatus::Complete { id: sign_in_id };
                                 }
                             }
                             Err(error) => {
@@ -1691,7 +1715,12 @@ pub async fn upload_blob(
     let file_name = source_path
         .file_name()
         .and_then(|value| value.to_str())
-        .ok_or_else(|| format!("upload path `{}` does not contain a file name", source_path.display()))?
+        .ok_or_else(|| {
+            format!(
+                "upload path `{}` does not contain a file name",
+                source_path.display()
+            )
+        })?
         .to_string();
     let metadata = std::fs::metadata(&source_path).map_err(|error| {
         format!(
@@ -1810,6 +1839,43 @@ pub async fn download_blob(
         bytes,
         opened,
     })
+}
+
+#[tauri::command]
+pub async fn preview_blob(
+    state: State<'_, AppState>,
+    connection_id: String,
+    container: String,
+    path: String,
+) -> Result<BlobPreviewResult, String> {
+    const TEXT_PREVIEW_MAX_BYTES: usize = 2 * 1024 * 1024;
+    const IMAGE_PREVIEW_MAX_BYTES: usize = 8 * 1024 * 1024;
+    const PARQUET_PREVIEW_MAX_BYTES: usize = 64 * 1024 * 1024;
+
+    let connection = get_connection(&state, &connection_id)?;
+    let container = resolved_container_name(&connection, &container)?;
+    let blob_path = normalize_blob_path(&path)?;
+    let backend = build_backend(&connection).await?;
+    let extension = file_extension(&blob_path);
+
+    let max_bytes = match extension.as_deref() {
+        Some("parquet") => PARQUET_PREVIEW_MAX_BYTES,
+        Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "svg") => IMAGE_PREVIEW_MAX_BYTES,
+        _ => TEXT_PREVIEW_MAX_BYTES,
+    };
+
+    let (bytes, truncated) = read_blob_preview_bytes(&backend, &container, &blob_path, max_bytes)
+        .await
+        .map_err(|error| {
+            compact_live_browse_error(
+                &connection,
+                "Blob preview",
+                Some(container.as_str()),
+                &error,
+            )
+        })?;
+
+    build_blob_preview(&blob_path, bytes, truncated)
 }
 
 #[tauri::command]
@@ -2096,7 +2162,9 @@ pub async fn rename_blob_item(
                 )
             })?;
         if blob_names.is_empty() {
-            return Err(format!("prefix `{source_prefix}` does not contain any blobs"));
+            return Err(format!(
+                "prefix `{source_prefix}` does not contain any blobs"
+            ));
         }
 
         for blob_name in &blob_names {
@@ -2257,7 +2325,9 @@ pub async fn copy_blob_item(
                 )
             })?;
         if blob_names.is_empty() {
-            return Err(format!("prefix `{source_prefix}` does not contain any blobs"));
+            return Err(format!(
+                "prefix `{source_prefix}` does not contain any blobs"
+            ));
         }
 
         for blob_name in &blob_names {
@@ -2512,9 +2582,12 @@ fn persist_sign_in_session_snapshot(
     snapshot_path: &Path,
     sign_in: &SignInSession,
 ) -> Result<(), String> {
-    let existing = store
-        .sign_in_get(&sign_in.id)
-        .map_err(|error| format!("failed to inspect persisted sign-in `{}`: {error}", sign_in.id))?;
+    let existing = store.sign_in_get(&sign_in.id).map_err(|error| {
+        format!(
+            "failed to inspect persisted sign-in `{}`: {error}",
+            sign_in.id
+        )
+    })?;
     let refresh_context = sign_in
         .arm_bundle
         .refresh_context
@@ -2537,7 +2610,12 @@ fn persist_sign_in_session_snapshot(
                 obtained_at: OffsetDateTime::now_utc(),
             },
         )
-        .map_err(|error| format!("failed to cache refresh token for `{}`: {error}", sign_in.id))?;
+        .map_err(|error| {
+            format!(
+                "failed to cache refresh token for `{}`: {error}",
+                sign_in.id
+            )
+        })?;
 
     let added_at = existing
         .as_ref()
@@ -2545,7 +2623,10 @@ fn persist_sign_in_session_snapshot(
         .unwrap_or_else(Utc::now);
     if existing.is_some() {
         store.sign_in_delete(&sign_in.id).map_err(|error| {
-            format!("failed to replace persisted sign-in `{}`: {error}", sign_in.id)
+            format!(
+                "failed to replace persisted sign-in `{}`: {error}",
+                sign_in.id
+            )
         })?;
     }
 
@@ -2565,7 +2646,10 @@ fn persist_sign_in_session_snapshot(
     Ok(())
 }
 
-fn persist_sign_in_snapshot_metadata(snapshot_path: &Path, sign_in: &SignInSession) -> Result<(), String> {
+fn persist_sign_in_snapshot_metadata(
+    snapshot_path: &Path,
+    sign_in: &SignInSession,
+) -> Result<(), String> {
     let mut shell_state = load_persisted_shell_state(snapshot_path)?;
     let snapshot = PersistedSignInSnapshot {
         id: sign_in.id.clone(),
@@ -2599,9 +2683,15 @@ fn remove_persisted_sign_in_snapshot(snapshot_path: &Path, sign_in_id: &str) -> 
 
 fn load_persisted_shell_state(snapshot_path: &Path) -> Result<PersistedShellState, String> {
     match std::fs::read_to_string(snapshot_path) {
-        Ok(json) => serde_json::from_str(&json)
-            .map_err(|error| format!("failed to parse shell state `{}`: {error}", snapshot_path.display())),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(PersistedShellState::default()),
+        Ok(json) => serde_json::from_str(&json).map_err(|error| {
+            format!(
+                "failed to parse shell state `{}`: {error}",
+                snapshot_path.display()
+            )
+        }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Ok(PersistedShellState::default())
+        }
         Err(error) => Err(format!(
             "failed to read shell state `{}`: {error}",
             snapshot_path.display()
@@ -2630,7 +2720,12 @@ async fn restore_sign_in_session(
     let cache = RefreshCache::new(credential_store);
     let cached = cache
         .get(&persisted.id)
-        .map_err(|error| format!("failed to read refresh token for `{}`: {error}", persisted.id))?
+        .map_err(|error| {
+            format!(
+                "failed to read refresh token for `{}`: {error}",
+                persisted.id
+            )
+        })?
         .ok_or_else(|| format!("missing refresh token for `{}`", persisted.display_name))?;
 
     let client = reqwest::Client::new();
@@ -2673,7 +2768,12 @@ fn restore_sign_in_session_from_snapshot(
     let cache = RefreshCache::new(credential_store);
     let cached = cache
         .get(&persisted.id)
-        .map_err(|error| format!("failed to read refresh token for `{}`: {error}", persisted.id))?
+        .map_err(|error| {
+            format!(
+                "failed to read refresh token for `{}`: {error}",
+                persisted.id
+            )
+        })?
         .ok_or_else(|| format!("missing refresh token for `{}`", persisted.display_name))?;
 
     let client = reqwest::Client::new();
@@ -2749,7 +2849,9 @@ fn persist_direct_connection(state: &AppState, connection: &LiveConnection) -> R
                     account_name: account_name.clone(),
                     account_key: key.clone(),
                 })
-                .map_err(|error| format!("failed to serialize shared-key connection `{id}`: {error}"))?,
+                .map_err(|error| {
+                    format!("failed to serialize shared-key connection `{id}`: {error}")
+                })?,
             ),
         ),
         LiveConnection::Sas {
@@ -2812,10 +2914,9 @@ fn remove_persisted_direct_connection(
         | LiveConnection::Azurite { .. }
         | LiveConnection::AccountKey { origin: None, .. } => {
             let id = connection_id(connection);
-            state
-                .store
-                .attached_resource_delete(id)
-                .map_err(|error| format!("failed to delete persisted connection `{id}`: {error}"))?;
+            state.store.attached_resource_delete(id).map_err(|error| {
+                format!("failed to delete persisted connection `{id}`: {error}")
+            })?;
             state
                 .credential_store
                 .delete(&keychain_ref_for_connection(id))
@@ -2834,15 +2935,34 @@ async fn restore_direct_attachment(
         AuthKind::ConnectionString => {
             let secret = credential_store
                 .get(&attachment.keychain_ref)
-                .map_err(|error| format!("failed to read connection string for `{}`: {error}", attachment.display_name))?;
-            build_connection_string_connection(attachment.display_name.clone(), secret.expose_secret().to_string()).await?
+                .map_err(|error| {
+                    format!(
+                        "failed to read connection string for `{}`: {error}",
+                        attachment.display_name
+                    )
+                })?;
+            build_connection_string_connection(
+                attachment.display_name.clone(),
+                secret.expose_secret().to_string(),
+            )
+            .await?
         }
         AuthKind::AccountKey => {
             let secret = credential_store
                 .get(&attachment.keychain_ref)
-                .map_err(|error| format!("failed to read shared key for `{}`: {error}", attachment.display_name))?;
+                .map_err(|error| {
+                    format!(
+                        "failed to read shared key for `{}`: {error}",
+                        attachment.display_name
+                    )
+                })?;
             let payload: PersistedAccountKeySecret = serde_json::from_str(secret.expose_secret())
-                .map_err(|error| format!("failed to parse shared-key secret for `{}`: {error}", attachment.display_name))?;
+                .map_err(|error| {
+                format!(
+                    "failed to parse shared-key secret for `{}`: {error}",
+                    attachment.display_name
+                )
+            })?;
             build_account_key_connection(
                 attachment.display_name.clone(),
                 payload.account_name,
@@ -2853,9 +2973,19 @@ async fn restore_direct_attachment(
         AuthKind::SasToken => {
             let secret = credential_store
                 .get(&attachment.keychain_ref)
-                .map_err(|error| format!("failed to read SAS token for `{}`: {error}", attachment.display_name))?;
+                .map_err(|error| {
+                    format!(
+                        "failed to read SAS token for `{}`: {error}",
+                        attachment.display_name
+                    )
+                })?;
             let payload: PersistedSasSecret = serde_json::from_str(secret.expose_secret())
-                .map_err(|error| format!("failed to parse SAS secret for `{}`: {error}", attachment.display_name))?;
+                .map_err(|error| {
+                    format!(
+                        "failed to parse SAS secret for `{}`: {error}",
+                        attachment.display_name
+                    )
+                })?;
             build_sas_connection(
                 attachment.display_name.clone(),
                 attachment.endpoint.clone(),
@@ -3125,6 +3255,521 @@ async fn stream_blob_to_file(
     Ok(total)
 }
 
+async fn read_blob_preview_bytes(
+    backend: &AzureBlobBackend,
+    container: &str,
+    blob_path: &str,
+    max_bytes: usize,
+) -> Result<(Vec<u8>, bool), String> {
+    let mut stream = backend
+        .read_blob(&BlobPath::new(container, blob_path), None)
+        .await
+        .map_err(error_to_string)?;
+    let mut output = Vec::new();
+
+    while let Some(chunk) = stream.next().await {
+        let bytes = chunk.map_err(error_to_string)?;
+        let remaining = max_bytes.saturating_sub(output.len());
+        if bytes.len() > remaining {
+            output.extend_from_slice(&bytes[..remaining]);
+            return Ok((output, true));
+        }
+        output.extend_from_slice(&bytes);
+    }
+
+    Ok((output, false))
+}
+
+fn build_blob_preview(
+    blob_path: &str,
+    bytes: Vec<u8>,
+    truncated: bool,
+) -> Result<BlobPreviewResult, String> {
+    let title = path_leaf(blob_path).unwrap_or_else(|| blob_path.to_string());
+    let extension = file_extension(blob_path);
+
+    match extension.as_deref() {
+        Some("csv") => preview_delimited_blob(blob_path, &title, bytes, truncated, b',', "CSV"),
+        Some("tsv") => preview_delimited_blob(blob_path, &title, bytes, truncated, b'\t', "TSV"),
+        Some("json") => preview_json_blob(blob_path, &title, bytes, truncated),
+        Some("jsonl" | "ndjson") => preview_json_lines_blob(blob_path, &title, bytes, truncated),
+        Some("parquet") => preview_parquet_blob(blob_path, &title, bytes, truncated),
+        Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "svg") => {
+            preview_image_blob(blob_path, &title, bytes, truncated, extension.as_deref())
+        }
+        Some(
+            "txt" | "log" | "md" | "markdown" | "xml" | "html" | "htm" | "css" | "js" | "mjs"
+            | "ts" | "tsx" | "yaml" | "yml" | "toml" | "sql",
+        ) => Ok(preview_text_blob(blob_path, &title, bytes, truncated, None)),
+        _ if looks_like_text(&bytes) => {
+            Ok(preview_text_blob(blob_path, &title, bytes, truncated, None))
+        }
+        _ => Ok(preview_binary_blob(
+            blob_path, &title, bytes, truncated, None,
+        )),
+    }
+}
+
+fn preview_delimited_blob(
+    blob_path: &str,
+    title: &str,
+    bytes: Vec<u8>,
+    truncated: bool,
+    delimiter: u8,
+    label: &str,
+) -> Result<BlobPreviewResult, String> {
+    const MAX_PREVIEW_ROWS: usize = 200;
+
+    let text = decode_preview_text(&bytes);
+    let mut reader = csv::ReaderBuilder::new()
+        .delimiter(delimiter)
+        .flexible(true)
+        .from_reader(text.as_bytes());
+
+    let columns = match reader.headers() {
+        Ok(headers) => headers
+            .iter()
+            .map(sanitize_preview_cell)
+            .collect::<Vec<_>>(),
+        Err(error) => {
+            return Ok(preview_text_blob(
+                blob_path,
+                title,
+                bytes,
+                truncated,
+                Some(format!("Could not parse {label} header: {error}")),
+            ));
+        }
+    };
+
+    let mut rows = Vec::new();
+    for record in reader.records().take(MAX_PREVIEW_ROWS) {
+        let record = match record {
+            Ok(record) => record,
+            Err(error) => {
+                return Ok(preview_text_blob(
+                    blob_path,
+                    title,
+                    bytes,
+                    truncated,
+                    Some(format!("Could not parse {label} row: {error}")),
+                ));
+            }
+        };
+        rows.push(record.iter().map(sanitize_preview_cell).collect());
+    }
+
+    let mut metadata = preview_metadata(blob_path, bytes.len(), truncated);
+    metadata.push(meta("Format", label));
+    metadata.push(meta("Rows shown", rows.len().to_string()));
+    metadata.push(meta("Columns", columns.len().to_string()));
+
+    Ok(BlobPreviewResult {
+        kind: "table".into(),
+        title: title.into(),
+        path: blob_path.into(),
+        byte_count: bytes.len() as u64,
+        truncated,
+        columns,
+        rows,
+        text: None,
+        image_data_url: None,
+        metadata,
+        warning: truncated.then(|| {
+            format!(
+                "Only the first {} were read for preview.",
+                format_bytes(bytes.len() as u64)
+            )
+        }),
+    })
+}
+
+fn preview_json_blob(
+    blob_path: &str,
+    title: &str,
+    bytes: Vec<u8>,
+    truncated: bool,
+) -> Result<BlobPreviewResult, String> {
+    let text = if truncated {
+        decode_preview_text(&bytes)
+    } else {
+        match serde_json::from_slice::<serde_json::Value>(&bytes) {
+            Ok(value) => serde_json::to_string_pretty(&value)
+                .map_err(|error| format!("failed to render JSON preview: {error}"))?,
+            Err(error) => {
+                return Ok(preview_text_blob(
+                    blob_path,
+                    title,
+                    bytes,
+                    truncated,
+                    Some(format!("Could not parse JSON; showing raw text. {error}")),
+                ));
+            }
+        }
+    };
+
+    let mut result = preview_text_result(blob_path, title, bytes.len(), truncated, text);
+    result.kind = "json".into();
+    result.metadata.push(meta("Format", "JSON"));
+    if truncated {
+        result.warning = Some(format!(
+            "Only the first {} were read, so JSON formatting was skipped.",
+            format_bytes(bytes.len() as u64)
+        ));
+    }
+    Ok(result)
+}
+
+fn preview_json_lines_blob(
+    blob_path: &str,
+    title: &str,
+    bytes: Vec<u8>,
+    truncated: bool,
+) -> Result<BlobPreviewResult, String> {
+    const MAX_PREVIEW_ROWS: usize = 200;
+
+    let text = decode_preview_text(&bytes);
+    let mut columns = Vec::<String>::new();
+    let mut rows = Vec::<Vec<String>>::new();
+
+    for line in text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .take(MAX_PREVIEW_ROWS)
+    {
+        let value: serde_json::Value = match serde_json::from_str(line) {
+            Ok(value) => value,
+            Err(error) => {
+                return Ok(preview_text_blob(
+                    blob_path,
+                    title,
+                    bytes,
+                    truncated,
+                    Some(format!(
+                        "Could not parse JSON lines; showing raw text. {error}"
+                    )),
+                ));
+            }
+        };
+
+        if let serde_json::Value::Object(object) = value {
+            for key in object.keys() {
+                if !columns.iter().any(|column| column == key) {
+                    columns.push(key.clone());
+                }
+            }
+            rows.push(
+                columns
+                    .iter()
+                    .map(|column| object.get(column).map(json_cell_value).unwrap_or_default())
+                    .collect(),
+            );
+        } else {
+            if columns.is_empty() {
+                columns.push("value".into());
+            }
+            rows.push(vec![json_cell_value(&value)]);
+        }
+    }
+
+    let mut metadata = preview_metadata(blob_path, bytes.len(), truncated);
+    metadata.push(meta("Format", "JSON Lines"));
+    metadata.push(meta("Rows shown", rows.len().to_string()));
+    metadata.push(meta("Columns", columns.len().to_string()));
+
+    Ok(BlobPreviewResult {
+        kind: "table".into(),
+        title: title.into(),
+        path: blob_path.into(),
+        byte_count: bytes.len() as u64,
+        truncated,
+        columns,
+        rows,
+        text: None,
+        image_data_url: None,
+        metadata,
+        warning: truncated.then(|| {
+            format!(
+                "Only the first {} were read for preview.",
+                format_bytes(bytes.len() as u64)
+            )
+        }),
+    })
+}
+
+fn preview_parquet_blob(
+    blob_path: &str,
+    title: &str,
+    bytes: Vec<u8>,
+    truncated: bool,
+) -> Result<BlobPreviewResult, String> {
+    const MAX_PREVIEW_ROWS: usize = 100;
+
+    if truncated {
+        return Ok(preview_binary_blob(
+            blob_path,
+            title,
+            bytes,
+            true,
+            Some("Parquet preview needs the file footer. This blob is larger than Arkived's inline preview cap.".into()),
+        ));
+    }
+
+    let reader = SerializedFileReader::new(Bytes::from(bytes.clone()))
+        .map_err(|error| format!("failed to read Parquet file: {error}"))?;
+    let parquet_metadata = reader.metadata();
+    let file_metadata = parquet_metadata.file_metadata();
+    let schema = file_metadata.schema_descr();
+    let columns = schema
+        .columns()
+        .iter()
+        .map(|column| column.name().to_string())
+        .collect::<Vec<_>>();
+    let mut rows = Vec::new();
+
+    match reader.get_row_iter(None) {
+        Ok(iterator) => {
+            for row in iterator.take(MAX_PREVIEW_ROWS) {
+                let row = row.map_err(|error| format!("failed to read Parquet row: {error}"))?;
+                rows.push(
+                    row.get_column_iter()
+                        .map(|(_, field)| sanitize_preview_cell(&field.to_string()))
+                        .collect(),
+                );
+            }
+        }
+        Err(error) => {
+            return Ok(preview_binary_blob(
+                blob_path,
+                title,
+                bytes,
+                false,
+                Some(format!(
+                    "Parquet metadata loaded, but rows could not be sampled: {error}"
+                )),
+            ));
+        }
+    }
+
+    let mut metadata = preview_metadata(blob_path, bytes.len(), false);
+    metadata.push(meta("Format", "Parquet"));
+    metadata.push(meta("Rows", file_metadata.num_rows().to_string()));
+    metadata.push(meta(
+        "Row groups",
+        parquet_metadata.num_row_groups().to_string(),
+    ));
+    metadata.push(meta("Columns", columns.len().to_string()));
+    if let Some(created_by) = file_metadata.created_by() {
+        metadata.push(meta("Created by", created_by));
+    }
+
+    Ok(BlobPreviewResult {
+        kind: "parquet".into(),
+        title: title.into(),
+        path: blob_path.into(),
+        byte_count: bytes.len() as u64,
+        truncated: false,
+        columns,
+        rows,
+        text: None,
+        image_data_url: None,
+        metadata,
+        warning: (file_metadata.num_rows() as usize > MAX_PREVIEW_ROWS).then(|| {
+            format!(
+                "Showing the first {MAX_PREVIEW_ROWS} of {} rows.",
+                file_metadata.num_rows()
+            )
+        }),
+    })
+}
+
+fn preview_image_blob(
+    blob_path: &str,
+    title: &str,
+    bytes: Vec<u8>,
+    truncated: bool,
+    extension: Option<&str>,
+) -> Result<BlobPreviewResult, String> {
+    if truncated {
+        return Ok(preview_binary_blob(
+            blob_path,
+            title,
+            bytes,
+            true,
+            Some("Image is larger than Arkived's inline preview cap.".into()),
+        ));
+    }
+
+    let mime = match extension {
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("png") => "image/png",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        Some("bmp") => "image/bmp",
+        Some("svg") => "image/svg+xml",
+        _ => "application/octet-stream",
+    };
+    let mut metadata = preview_metadata(blob_path, bytes.len(), false);
+    metadata.push(meta("Format", mime));
+
+    Ok(BlobPreviewResult {
+        kind: "image".into(),
+        title: title.into(),
+        path: blob_path.into(),
+        byte_count: bytes.len() as u64,
+        truncated: false,
+        columns: Vec::new(),
+        rows: Vec::new(),
+        text: None,
+        image_data_url: Some(format!("data:{mime};base64,{}", STANDARD.encode(&bytes))),
+        metadata,
+        warning: None,
+    })
+}
+
+fn preview_text_blob(
+    blob_path: &str,
+    title: &str,
+    bytes: Vec<u8>,
+    truncated: bool,
+    warning: Option<String>,
+) -> BlobPreviewResult {
+    let mut result = preview_text_result(
+        blob_path,
+        title,
+        bytes.len(),
+        truncated,
+        decode_preview_text(&bytes),
+    );
+    result.warning = warning.or_else(|| {
+        truncated.then(|| {
+            format!(
+                "Only the first {} were read for preview.",
+                format_bytes(bytes.len() as u64)
+            )
+        })
+    });
+    result
+}
+
+fn preview_text_result(
+    blob_path: &str,
+    title: &str,
+    byte_count: usize,
+    truncated: bool,
+    text: String,
+) -> BlobPreviewResult {
+    BlobPreviewResult {
+        kind: "text".into(),
+        title: title.into(),
+        path: blob_path.into(),
+        byte_count: byte_count as u64,
+        truncated,
+        columns: Vec::new(),
+        rows: Vec::new(),
+        text: Some(text),
+        image_data_url: None,
+        metadata: preview_metadata(blob_path, byte_count, truncated),
+        warning: None,
+    }
+}
+
+fn preview_binary_blob(
+    blob_path: &str,
+    title: &str,
+    bytes: Vec<u8>,
+    truncated: bool,
+    warning: Option<String>,
+) -> BlobPreviewResult {
+    BlobPreviewResult {
+        kind: "binary".into(),
+        title: title.into(),
+        path: blob_path.into(),
+        byte_count: bytes.len() as u64,
+        truncated,
+        columns: Vec::new(),
+        rows: Vec::new(),
+        text: None,
+        image_data_url: None,
+        metadata: preview_metadata(blob_path, bytes.len(), truncated),
+        warning: warning.or_else(|| {
+            Some("No built-in preview is available for this binary format yet.".into())
+        }),
+    }
+}
+
+fn preview_metadata(
+    blob_path: &str,
+    byte_count: usize,
+    truncated: bool,
+) -> Vec<BlobPreviewMetadata> {
+    let mut metadata = vec![
+        meta("Path", blob_path),
+        meta("Bytes read", format_bytes(byte_count as u64)),
+    ];
+    if truncated {
+        metadata.push(meta("Read mode", "truncated sample"));
+    } else {
+        metadata.push(meta("Read mode", "complete file"));
+    }
+    metadata
+}
+
+fn meta(label: impl Into<String>, value: impl Into<String>) -> BlobPreviewMetadata {
+    BlobPreviewMetadata {
+        label: label.into(),
+        value: value.into(),
+    }
+}
+
+fn decode_preview_text(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
+fn sanitize_preview_cell(value: &str) -> String {
+    const MAX_CELL_CHARS: usize = 400;
+
+    let normalized = value.replace('\r', "\\r").replace('\n', "\\n");
+    if normalized.chars().count() <= MAX_CELL_CHARS {
+        return normalized;
+    }
+
+    let mut truncated = normalized.chars().take(MAX_CELL_CHARS).collect::<String>();
+    truncated.push_str("...");
+    truncated
+}
+
+fn json_cell_value(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Null => String::new(),
+        serde_json::Value::Bool(value) => value.to_string(),
+        serde_json::Value::Number(value) => value.to_string(),
+        serde_json::Value::String(value) => sanitize_preview_cell(value),
+        _ => sanitize_preview_cell(&value.to_string()),
+    }
+}
+
+fn looks_like_text(bytes: &[u8]) -> bool {
+    if bytes.is_empty() {
+        return true;
+    }
+
+    let sample_len = bytes.len().min(4096);
+    let sample = &bytes[..sample_len];
+    let control_count = sample
+        .iter()
+        .filter(|byte| matches!(byte, 0..=8 | 14..=31))
+        .count();
+    control_count * 100 / sample_len < 5
+}
+
+fn file_extension(path: &str) -> Option<String> {
+    path.rsplit('/')
+        .next()
+        .and_then(|name| name.rsplit_once('.').map(|(_, extension)| extension))
+        .map(|extension| extension.to_ascii_lowercase())
+}
+
 async fn file_byte_stream(source_path: &Path) -> Result<ByteStream, String> {
     const READ_CHUNK_BYTES: usize = 8 * 1024 * 1024;
 
@@ -3135,23 +3780,25 @@ async fn file_byte_stream(source_path: &Path) -> Result<ByteStream, String> {
         )
     })?;
     let path_label = source_path.display().to_string();
-    Ok(stream::unfold((file, path_label), |(mut file, path_label)| async move {
-        let mut buffer = vec![0u8; READ_CHUNK_BYTES];
-        match file.read(&mut buffer).await {
-            Ok(0) => None,
-            Ok(read) => {
-                buffer.truncate(read);
-                Some((Ok(Bytes::from(buffer)), (file, path_label)))
+    Ok(
+        stream::unfold((file, path_label), |(mut file, path_label)| async move {
+            let mut buffer = vec![0u8; READ_CHUNK_BYTES];
+            match file.read(&mut buffer).await {
+                Ok(0) => None,
+                Ok(read) => {
+                    buffer.truncate(read);
+                    Some((Ok(Bytes::from(buffer)), (file, path_label)))
+                }
+                Err(error) => Some((
+                    Err(arkived_core::Error::Backend(format!(
+                        "failed to read upload source `{path_label}`: {error}"
+                    ))),
+                    (file, path_label),
+                )),
             }
-            Err(error) => Some((
-                Err(arkived_core::Error::Backend(format!(
-                    "failed to read upload source `{path_label}`: {error}"
-                ))),
-                (file, path_label),
-            )),
-        }
-    })
-    .boxed())
+        })
+        .boxed(),
+    )
 }
 
 fn empty_byte_stream() -> ByteStream {
@@ -3998,12 +4645,9 @@ async fn refresh_sign_in_tenant(
     let sign_in_snapshot = sign_in.clone();
     drop(guard);
 
-    if let Err(error) = persist_sign_in_session_snapshot(
-        store,
-        credential_store,
-        snapshot_path,
-        &sign_in_snapshot,
-    ) {
+    if let Err(error) =
+        persist_sign_in_session_snapshot(store, credential_store, snapshot_path, &sign_in_snapshot)
+    {
         return match outcome {
             Ok(()) => Err(format!(
                 "Tenant sign-in succeeded, but Arkived could not persist it: {error}"

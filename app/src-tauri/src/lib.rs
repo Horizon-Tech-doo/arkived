@@ -73,6 +73,7 @@ pub fn run() {
             commands::list_blobs,
             commands::upload_blob,
             commands::download_blob,
+            commands::preview_blob,
             commands::download_blob_prefix,
             commands::delete_blob,
             commands::delete_blob_prefix,

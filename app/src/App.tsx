@@ -10,6 +10,8 @@ import {
   IconAzure,
   IconContainer,
   IconCopy,
+  IconDownload,
+  IconEye,
   IconExternal,
   IconFolderOpen,
   IconInfo,
@@ -23,6 +25,7 @@ import {
   IconSparkle,
   IconTerminal,
   IconUser,
+  IconX,
 } from "./icons";
 import {
   BrowserConnection,
@@ -32,6 +35,7 @@ import {
   BrowserStorageAccount,
   BrowserSubscription,
   BrowserTenant,
+  BlobPreviewResult,
   DeviceCodePrompt,
   connectAzurite,
   connectDiscoveredStorageAccount,
@@ -55,6 +59,7 @@ import {
   pollEntraBrowserLogin,
   pollEntraDiscoveryLogin,
   pollSignInTenantReauth,
+  previewBlob,
   removeSignIn,
   renameBlobItem,
   startEntraBrowserLogin,
@@ -137,6 +142,13 @@ interface BlobClipboardState {
   path: string;
   name: string;
   kind: string;
+}
+
+interface PreviewDialogState {
+  row: BlobRow;
+  result: BlobPreviewResult | null;
+  busy: boolean;
+  error: string | null;
 }
 
 interface PersistedBrowserTab {
@@ -240,6 +252,7 @@ function App() {
   const [discoveryError, setDiscoveryError] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [blobClipboard, setBlobClipboard] = useState<BlobClipboardState | null>(null);
+  const [previewDialog, setPreviewDialog] = useState<PreviewDialogState | null>(null);
   const [activities, setActivities] = useState<Activity[]>([]);
   const [activityExpanded, setActivityExpanded] = useState(false);
   const [connectionsBusy, setConnectionsBusy] = useState(false);
@@ -1192,6 +1205,47 @@ function App() {
     } catch (error) {
       setShellError(getErrorMessage(error));
     }
+  }
+
+  async function handlePreviewBlob(row: BlobRow) {
+    if (!activeConnection || !activeContainer || !row.path || row.kind === "dir") {
+      return;
+    }
+
+    setShellError(null);
+    setPreviewDialog({
+      row,
+      result: null,
+      busy: true,
+      error: null,
+    });
+
+    try {
+      const result = await previewBlob(activeConnection.id, activeContainer, row.path);
+      setPreviewDialog({
+        row,
+        result,
+        busy: false,
+        error: null,
+      });
+    } catch (error) {
+      const message = getErrorMessage(error);
+      setShellError(message);
+      setPreviewDialog({
+        row,
+        result: null,
+        busy: false,
+        error: message,
+      });
+    }
+  }
+
+  async function handlePreviewSelection() {
+    if (selectedBlobRows.length !== 1) {
+      return;
+    }
+
+    await handlePreviewBlob(selectedBlobRows[0]);
   }
 
   async function handleDownloadPrefix(row: BlobRow) {
@@ -2397,7 +2451,7 @@ function App() {
                   void handleDownloadSelection(false);
                 }}
                 onPreview={() => {
-                  void handleDownloadSelection(true);
+                  void handlePreviewSelection();
                 }}
                 onCreateFolder={() => {
                   void handleCreateFolder();
@@ -2481,7 +2535,7 @@ function App() {
                               label: "Preview",
                               disabled: row.kind === "dir",
                               action: () => {
-                                void handleDownloadBlob(row, true);
+                                void handlePreviewBlob(row);
                               },
                             },
                             {
@@ -2732,6 +2786,19 @@ function App() {
         />
       )}
 
+      {previewDialog && (
+        <BlobPreviewDialog
+          state={previewDialog}
+          onClose={() => setPreviewDialog(null)}
+          onDownload={() => {
+            void handleDownloadBlob(previewDialog.row, false);
+          }}
+          onOpenExternal={() => {
+            void handleDownloadBlob(previewDialog.row, true);
+          }}
+        />
+      )}
+
       {contextMenu && (
         <div
           style={{
@@ -2892,6 +2959,11 @@ function App() {
                 void handleDownloadBlob(selectedRow, false);
               }
             }, !selectedRow)}
+            {action("Preview", () => {
+              if (selectedRow && selectedRow.kind === "blob") {
+                void handlePreviewBlob(selectedRow);
+              }
+            }, !selectedRow || selectedRow.kind !== "blob")}
             {action("Delete", () => {
               if (!selectedRow) {
                 return;
@@ -3795,6 +3867,157 @@ function MainEmptyState({ title, body, primaryLabel, onPrimary, secondaryLabel }
       </div>
     </div>
   );
+}
+
+interface BlobPreviewDialogProps {
+  state: PreviewDialogState;
+  onClose: () => void;
+  onDownload: () => void;
+  onOpenExternal: () => void;
+}
+
+function BlobPreviewDialog({ state, onClose, onDownload, onOpenExternal }: BlobPreviewDialogProps) {
+  const result = state.result;
+  const columns = result ? previewColumns(result) : [];
+
+  return (
+    <div style={styles.previewOverlay} onMouseDown={onClose}>
+      <div style={styles.previewDialog} onMouseDown={(event) => event.stopPropagation()}>
+        <div style={styles.previewHeader}>
+          <div style={styles.previewIcon}>
+            {state.busy ? <IconLoader size={16} /> : <IconEye size={16} />}
+          </div>
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div style={styles.previewEyebrow}>Blob preview</div>
+            <div style={styles.previewTitle}>{result?.title ?? state.row.name}</div>
+            <div style={styles.previewPath}>{result?.path ?? state.row.path}</div>
+          </div>
+          <button type="button" style={styles.secondaryButton} onClick={onDownload} disabled={state.busy}>
+            <IconDownload size={12} />
+            <span>Download</span>
+          </button>
+          <button type="button" style={styles.secondaryButton} onClick={onOpenExternal} disabled={state.busy}>
+            <IconExternal size={12} />
+            <span>Open</span>
+          </button>
+          <button type="button" style={styles.previewCloseButton} onClick={onClose}>
+            <IconX size={13} />
+          </button>
+        </div>
+
+        <div style={styles.previewBody}>
+          {state.busy ? (
+            <div style={styles.previewCentered}>
+              <IconLoader size={22} />
+              <span>Reading live blob data…</span>
+            </div>
+          ) : state.error ? (
+            <div style={styles.previewError}>
+              <IconAlert size={18} />
+              <div>
+                <div style={styles.previewErrorTitle}>Preview failed</div>
+                <div style={styles.previewErrorBody}>{state.error}</div>
+              </div>
+            </div>
+          ) : result ? (
+            <>
+              <div style={styles.previewMetaGrid}>
+                {result.metadata.map((item) => (
+                  <div key={`${item.label}:${item.value}`} style={styles.previewMetaItem}>
+                    <span style={styles.previewMetaLabel}>{item.label}</span>
+                    <span style={styles.previewMetaValue}>{item.value}</span>
+                  </div>
+                ))}
+                <div style={styles.previewMetaItem}>
+                  <span style={styles.previewMetaLabel}>Preview</span>
+                  <span style={styles.previewMetaValue}>{previewKindLabel(result.kind)}</span>
+                </div>
+              </div>
+
+              {result.warning && (
+                <div style={styles.previewWarning}>
+                  <IconAlert size={13} />
+                  <span>{result.warning}</span>
+                </div>
+              )}
+
+              {result.image_data_url ? (
+                <div style={styles.previewImageWrap}>
+                  <img src={result.image_data_url} alt={result.title} style={styles.previewImage} />
+                </div>
+              ) : columns.length > 0 ? (
+                <div style={styles.previewTableWrap}>
+                  <div
+                    style={{
+                      ...styles.previewTableHeader,
+                      gridTemplateColumns: `repeat(${columns.length}, minmax(160px, 1fr))`,
+                    }}
+                  >
+                    {columns.map((column, index) => (
+                      <div key={`${column}-${index}`} style={styles.previewTableCellHeader}>
+                        {column || `column ${index + 1}`}
+                      </div>
+                    ))}
+                  </div>
+                  {result.rows.length === 0 ? (
+                    <div style={styles.previewEmpty}>No rows were available in the preview sample.</div>
+                  ) : (
+                    result.rows.map((row, rowIndex) => (
+                      <div
+                        key={`row-${rowIndex}`}
+                        style={{
+                          ...styles.previewTableRow,
+                          gridTemplateColumns: `repeat(${columns.length}, minmax(160px, 1fr))`,
+                        }}
+                      >
+                        {columns.map((_, columnIndex) => (
+                          <div key={`${rowIndex}-${columnIndex}`} style={styles.previewTableCell}>
+                            {row[columnIndex] ?? ""}
+                          </div>
+                        ))}
+                      </div>
+                    ))
+                  )}
+                </div>
+              ) : result.text != null ? (
+                <pre style={styles.previewText}>{result.text}</pre>
+              ) : (
+                <div style={styles.previewEmpty}>
+                  This blob format does not have an inline preview yet. Download or open it externally.
+                </div>
+              )}
+            </>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function previewColumns(result: BlobPreviewResult): string[] {
+  if (result.columns.length > 0) {
+    return result.columns;
+  }
+
+  const width = result.rows.reduce((max, row) => Math.max(max, row.length), 0);
+  return Array.from({ length: width }, (_, index) => `column ${index + 1}`);
+}
+
+function previewKindLabel(kind: BlobPreviewResult["kind"]): string {
+  switch (kind) {
+    case "parquet":
+      return "Parquet table";
+    case "table":
+      return "Delimited table";
+    case "json":
+      return "JSON";
+    case "image":
+      return "Image";
+    case "binary":
+      return "Binary";
+    default:
+      return "Text";
+  }
 }
 
 interface EmptySidebarStateProps {
@@ -4878,6 +5101,245 @@ const styles: Record<string, CSSProperties> = {
   },
   azuriteText: {
     color: "var(--fg-2)",
+    lineHeight: 1.6,
+  },
+  previewOverlay: {
+    position: "fixed",
+    inset: 0,
+    background: "rgba(5, 6, 9, 0.72)",
+    backdropFilter: "blur(8px)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 24,
+    zIndex: 55,
+  },
+  previewDialog: {
+    width: "min(1180px, calc(100vw - 48px))",
+    height: "min(820px, calc(100vh - 48px))",
+    borderRadius: 16,
+    border: "1px solid var(--border-1)",
+    background: "linear-gradient(180deg, rgba(20, 22, 28, 0.98), rgba(12, 13, 17, 0.98))",
+    boxShadow: "0 28px 90px rgba(0, 0, 0, 0.55)",
+    display: "flex",
+    flexDirection: "column",
+    overflow: "hidden",
+  },
+  previewHeader: {
+    display: "flex",
+    alignItems: "center",
+    gap: 12,
+    padding: "14px 16px",
+    borderBottom: "1px solid var(--border-0)",
+    background: "rgba(8, 10, 14, 0.72)",
+  },
+  previewIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    color: "var(--accent)",
+    background: "rgba(63, 157, 246, 0.12)",
+    border: "1px solid rgba(63, 157, 246, 0.22)",
+  },
+  previewEyebrow: {
+    fontFamily: "var(--mono)",
+    fontSize: 10,
+    color: "var(--fg-3)",
+    textTransform: "uppercase",
+    letterSpacing: "0.08em",
+  },
+  previewTitle: {
+    color: "var(--fg-0)",
+    fontSize: 16,
+    fontWeight: 700,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  },
+  previewPath: {
+    color: "var(--fg-3)",
+    fontFamily: "var(--mono)",
+    fontSize: 11,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  },
+  previewCloseButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 9,
+    border: "1px solid var(--border-1)",
+    background: "var(--bg-2)",
+    color: "var(--fg-1)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  previewBody: {
+    flex: 1,
+    minHeight: 0,
+    display: "flex",
+    flexDirection: "column",
+    gap: 10,
+    padding: 12,
+    overflow: "hidden",
+  },
+  previewCentered: {
+    flex: 1,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    color: "var(--fg-2)",
+    fontFamily: "var(--mono)",
+  },
+  previewError: {
+    borderRadius: 12,
+    border: "1px solid rgba(224, 113, 110, 0.28)",
+    background: "rgba(224, 113, 110, 0.1)",
+    color: "var(--red)",
+    padding: 16,
+    display: "flex",
+    gap: 12,
+    alignItems: "flex-start",
+  },
+  previewErrorTitle: {
+    color: "var(--fg-0)",
+    fontWeight: 700,
+    marginBottom: 4,
+  },
+  previewErrorBody: {
+    color: "var(--red)",
+    lineHeight: 1.5,
+  },
+  previewMetaGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+    gap: 8,
+    flexShrink: 0,
+  },
+  previewMetaItem: {
+    borderRadius: 10,
+    border: "1px solid var(--border-0)",
+    background: "rgba(255, 255, 255, 0.025)",
+    padding: "8px 10px",
+    minWidth: 0,
+    display: "flex",
+    flexDirection: "column",
+    gap: 3,
+  },
+  previewMetaLabel: {
+    color: "var(--fg-3)",
+    fontFamily: "var(--mono)",
+    fontSize: 9,
+    textTransform: "uppercase",
+    letterSpacing: "0.08em",
+  },
+  previewMetaValue: {
+    color: "var(--fg-1)",
+    fontFamily: "var(--mono)",
+    fontSize: 11,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  },
+  previewWarning: {
+    flexShrink: 0,
+    display: "flex",
+    alignItems: "flex-start",
+    gap: 8,
+    borderRadius: 10,
+    border: "1px solid rgba(216, 184, 96, 0.24)",
+    background: "rgba(216, 184, 96, 0.1)",
+    color: "var(--yellow)",
+    padding: "9px 10px",
+    fontSize: 12,
+    lineHeight: 1.45,
+  },
+  previewTableWrap: {
+    flex: 1,
+    minHeight: 0,
+    overflow: "auto",
+    borderRadius: 10,
+    border: "1px solid var(--border-0)",
+    background: "var(--bg-1)",
+    fontFamily: "var(--mono)",
+    fontSize: 11,
+  },
+  previewTableHeader: {
+    display: "grid",
+    position: "sticky",
+    top: 0,
+    zIndex: 1,
+    background: "var(--bg-2)",
+    color: "var(--fg-2)",
+    textTransform: "uppercase",
+    letterSpacing: "0.05em",
+    fontSize: 10,
+    fontWeight: 700,
+    minWidth: "max-content",
+  },
+  previewTableRow: {
+    display: "grid",
+    minWidth: "max-content",
+    borderTop: "1px solid var(--border-0)",
+  },
+  previewTableCellHeader: {
+    padding: "8px 10px",
+    borderRight: "1px solid var(--border-0)",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  },
+  previewTableCell: {
+    padding: "7px 10px",
+    borderRight: "1px solid var(--border-0)",
+    color: "var(--fg-1)",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  },
+  previewText: {
+    flex: 1,
+    minHeight: 0,
+    overflow: "auto",
+    margin: 0,
+    borderRadius: 10,
+    border: "1px solid var(--border-0)",
+    background: "var(--bg-1)",
+    color: "var(--fg-1)",
+    padding: 14,
+    fontFamily: "var(--mono)",
+    fontSize: 12,
+    lineHeight: 1.55,
+    whiteSpace: "pre-wrap",
+  },
+  previewImageWrap: {
+    flex: 1,
+    minHeight: 0,
+    overflow: "auto",
+    borderRadius: 10,
+    border: "1px solid var(--border-0)",
+    background: "var(--bg-1)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 16,
+  },
+  previewImage: {
+    maxWidth: "100%",
+    maxHeight: "100%",
+    objectFit: "contain",
+  },
+  previewEmpty: {
+    borderRadius: 10,
+    border: "1px solid var(--border-0)",
+    background: "var(--bg-1)",
+    color: "var(--fg-2)",
+    padding: 18,
     lineHeight: 1.6,
   },
   banner: {
