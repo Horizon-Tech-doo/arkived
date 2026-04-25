@@ -121,6 +121,29 @@ interface ContextMenuState {
   items: ContextMenuItem[];
 }
 
+interface PersistedBrowserTab {
+  id?: string;
+  connectionId?: string | null;
+  originSignInId?: string | null;
+  originSubscriptionId?: string | null;
+  accountName?: string | null;
+  endpoint?: string | null;
+  containerName: string;
+  prefix?: string;
+}
+
+interface PersistedShellSnapshot {
+  version: 1;
+  activeTabId?: string | null;
+  activeConnectionId?: string | null;
+  expandedSignIns: Record<string, boolean>;
+  expandedSubscriptions: Record<string, boolean>;
+  expandedAccounts: Record<string, boolean>;
+  tabs: PersistedBrowserTab[];
+}
+
+const SHELL_STATE_STORAGE_KEY = "arkived.shell.v1";
+
 const EMPTY_FORM: ConnectionFormState = {
   displayName: "",
   connectionString: "",
@@ -205,11 +228,14 @@ function App() {
   const [tenantReauthBusy, setTenantReauthBusy] = useState(false);
   const [disconnectBusy, setDisconnectBusy] = useState(false);
   const [copiedCode, setCopiedCode] = useState(false);
+  const [shellInitialized, setShellInitialized] = useState(false);
+  const [shellPersistenceReady, setShellPersistenceReady] = useState(false);
 
   const containerRequestIds = useRef<Record<string, number>>({});
   const blobRequestIds = useRef<Record<string, number>>({});
   const openedDevicePromptId = useRef<string | null>(null);
   const tauriAvailable = useRef(isTauriRuntimeAvailable());
+  const shellHydrated = useRef(false);
   const browserTabsRef = useRef<BrowserTabState[]>([]);
   const connectionsRef = useRef<BrowserConnection[]>([]);
   const containerStatesRef = useRef<Record<string, ContainerListState>>({});
@@ -508,12 +534,18 @@ function App() {
   async function initializeShell() {
     if (!tauriAvailable.current) {
       setShellError("Live Azure browsing requires the Tauri desktop shell. Start this app with `npm run tauri:dev`.");
+      setShellInitialized(true);
+      setShellPersistenceReady(true);
       return;
     }
 
-    const [nextConnections, nextSignIns] = await Promise.all([refreshConnections(), refreshDiscoveryTree()]);
-    if (nextConnections.length === 0 && nextSignIns.length === 0) {
-      setConnectOpen(true);
+    try {
+      const [nextConnections, nextSignIns] = await Promise.all([refreshConnections(), refreshDiscoveryTree()]);
+      if (nextConnections.length === 0 && nextSignIns.length === 0) {
+        setConnectOpen(true);
+      }
+    } finally {
+      setShellInitialized(true);
     }
   }
 
@@ -878,6 +910,107 @@ function App() {
     openContainerTab(connectionId, containerName);
   }
 
+  async function hydratePersistedShell(snapshot: PersistedShellSnapshot) {
+    setExpandedSignIns(snapshot.expandedSignIns);
+    setExpandedSubscriptions(snapshot.expandedSubscriptions);
+    setExpandedAccounts(snapshot.expandedAccounts);
+
+    const restoredTabs: BrowserTabState[] = [];
+    let restoredActiveTabId: string | null = null;
+    let restoredActiveConnectionId =
+      snapshot.activeConnectionId &&
+      connectionsRef.current.some((connection) => connection.id === snapshot.activeConnectionId)
+        ? snapshot.activeConnectionId
+        : null;
+
+    const discoveredAccounts = Object.values(accountsBySubscription).flat();
+
+    for (const connection of connectionsRef.current) {
+      if (snapshot.expandedAccounts[directRowKey(connection.id)]) {
+        await ensureContainersLoaded(connection.id);
+      }
+    }
+
+    for (const account of discoveredAccounts) {
+      if (!snapshot.expandedAccounts[discoveredRowKey(account)]) {
+        continue;
+      }
+
+      try {
+        const connection = await ensureDiscoveredAccountConnection(account);
+        await ensureContainersLoaded(connection.id);
+        restoredActiveConnectionId = restoredActiveConnectionId ?? connection.id;
+      } catch (error) {
+        setShellError(getErrorMessage(error));
+      }
+    }
+
+    for (const persistedTab of snapshot.tabs) {
+      if (!persistedTab.containerName) {
+        continue;
+      }
+
+      let connection =
+        (persistedTab.connectionId
+          ? connectionsRef.current.find((candidate) => candidate.id === persistedTab.connectionId)
+          : null) ?? null;
+
+      if (!connection && persistedTab.originSignInId && persistedTab.originSubscriptionId && persistedTab.accountName) {
+        const account = discoveredAccounts.find(
+          (candidate) =>
+            candidate.sign_in_id === persistedTab.originSignInId &&
+            candidate.subscription_id === persistedTab.originSubscriptionId &&
+            candidate.name === persistedTab.accountName &&
+            (!persistedTab.endpoint || normalizeUrlHost(candidate.endpoint) === normalizeUrlHost(persistedTab.endpoint)),
+        );
+
+        if (account) {
+          try {
+            connection = await ensureDiscoveredAccountConnection(account);
+          } catch (error) {
+            setShellError(getErrorMessage(error));
+          }
+        }
+      }
+
+      if (!connection) {
+        continue;
+      }
+
+      await ensureContainersLoaded(connection.id);
+      const id = tabIdFor(connection.id, persistedTab.containerName);
+      if (restoredTabs.some((tab) => tab.id === id)) {
+        continue;
+      }
+
+      restoredTabs.push({
+        id,
+        connectionId: connection.id,
+        containerName: persistedTab.containerName,
+        prefix: persistedTab.prefix ?? "",
+        rows: [],
+        busy: false,
+        error: null,
+        loaded: false,
+        selectedIndices: [],
+      });
+
+      if (persistedTab.id === snapshot.activeTabId || !restoredActiveTabId) {
+        restoredActiveTabId = id;
+      }
+      restoredActiveConnectionId = restoredActiveConnectionId ?? connection.id;
+    }
+
+    if (restoredTabs.length > 0) {
+      setBrowserTabs(restoredTabs);
+      setActiveTabId(restoredActiveTabId ?? restoredTabs[0].id);
+    }
+
+    if (restoredActiveConnectionId) {
+      setActiveConnectionId(restoredActiveConnectionId);
+    }
+  }
+
   function toggleSignIn(signInId: string) {
     setExpandedSignIns((current) => ({ ...current, [signInId]: !current[signInId] }));
   }
@@ -1098,6 +1231,67 @@ function App() {
   useEffect(() => {
     void initializeShell();
   }, []);
+
+  useEffect(() => {
+    if (!shellInitialized || shellHydrated.current) {
+      return;
+    }
+
+    shellHydrated.current = true;
+    const snapshot = loadPersistedShellSnapshot();
+    if (!snapshot) {
+      setShellPersistenceReady(true);
+      return;
+    }
+
+    void hydratePersistedShell(snapshot).finally(() => {
+      setShellPersistenceReady(true);
+    });
+  }, [shellInitialized, accountsBySubscription, connections]);
+
+  useEffect(() => {
+    if (!shellInitialized || !shellPersistenceReady) {
+      return;
+    }
+
+    writePersistedShellSnapshot({
+      version: 1,
+      activeTabId,
+      activeConnectionId,
+      expandedSignIns,
+      expandedSubscriptions,
+      expandedAccounts,
+      tabs: browserTabs
+        .map<PersistedBrowserTab | null>((tab) => {
+          const connection = connections.find((candidate) => candidate.id === tab.connectionId);
+          if (!connection) {
+            return null;
+          }
+
+          return {
+            id: tab.id,
+            connectionId: connection.origin_sign_in_id ? null : connection.id,
+            originSignInId: connection.origin_sign_in_id ?? null,
+            originSubscriptionId: connection.origin_subscription_id ?? null,
+            accountName: connection.account_name,
+            endpoint: connection.endpoint,
+            containerName: tab.containerName,
+            prefix: tab.prefix,
+          };
+        })
+        .filter((tab): tab is PersistedBrowserTab => tab != null),
+    });
+  }, [
+    shellInitialized,
+    shellPersistenceReady,
+    activeTabId,
+    activeConnectionId,
+    expandedSignIns,
+    expandedSubscriptions,
+    expandedAccounts,
+    browserTabs,
+    connections,
+  ]);
 
   useEffect(() => {
     if (activeTabId && !browserTabs.some((tab) => tab.id === activeTabId)) {
@@ -3342,6 +3536,72 @@ function isTauriRuntimeAvailable(): boolean {
   }
 
   return Boolean((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
+}
+
+function loadPersistedShellSnapshot(): PersistedShellSnapshot | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  try {
+    const raw = window.localStorage.getItem(SHELL_STATE_STORAGE_KEY);
+    if (!raw) {
+      return null;
+    }
+
+    const parsed = JSON.parse(raw) as Partial<PersistedShellSnapshot>;
+    if (parsed.version !== 1 || !Array.isArray(parsed.tabs)) {
+      return null;
+    }
+
+    return {
+      version: 1,
+      activeTabId: typeof parsed.activeTabId === "string" ? parsed.activeTabId : null,
+      activeConnectionId:
+        typeof parsed.activeConnectionId === "string" ? parsed.activeConnectionId : null,
+      expandedSignIns: sanitizeBooleanRecord(parsed.expandedSignIns),
+      expandedSubscriptions: sanitizeBooleanRecord(parsed.expandedSubscriptions),
+      expandedAccounts: sanitizeBooleanRecord(parsed.expandedAccounts),
+      tabs: parsed.tabs
+        .filter((tab): tab is PersistedBrowserTab => typeof tab?.containerName === "string" && tab.containerName.length > 0)
+        .map((tab) => ({
+          id: typeof tab.id === "string" ? tab.id : undefined,
+          connectionId: typeof tab.connectionId === "string" ? tab.connectionId : null,
+          originSignInId: typeof tab.originSignInId === "string" ? tab.originSignInId : null,
+          originSubscriptionId:
+            typeof tab.originSubscriptionId === "string" ? tab.originSubscriptionId : null,
+          accountName: typeof tab.accountName === "string" ? tab.accountName : null,
+          endpoint: typeof tab.endpoint === "string" ? tab.endpoint : null,
+          containerName: tab.containerName,
+          prefix: typeof tab.prefix === "string" ? tab.prefix : "",
+        })),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writePersistedShellSnapshot(snapshot: PersistedShellSnapshot) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(SHELL_STATE_STORAGE_KEY, JSON.stringify(snapshot));
+  } catch {
+    // Shell state is a convenience. Failure should never block live browsing.
+  }
+}
+
+function sanitizeBooleanRecord(value: unknown): Record<string, boolean> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+
+  const entries = Object.entries(value as Record<string, unknown>).filter(
+    (entry): entry is [string, boolean] => entry[0].length > 0 && typeof entry[1] === "boolean",
+  );
+  return Object.fromEntries(entries);
 }
 
 const styles: Record<string, CSSProperties> = {
