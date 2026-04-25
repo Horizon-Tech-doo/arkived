@@ -677,14 +677,12 @@ pub fn update_sign_in_filter(
     let summary = sign_in_summary(sign_in.clone());
     drop(guard);
 
-    if let Err(error) = persist_sign_in_session_snapshot(
+    persist_sign_in_session_snapshot(
         &state.store,
         &*state.credential_store,
         &state.snapshot_path,
         &sign_in_snapshot,
-    ) {
-        eprintln!("failed to persist Azure sign-in filter `{sign_in_id}`: {error}");
-    }
+    )?;
 
     Ok(summary)
 }
@@ -1061,27 +1059,41 @@ pub async fn start_entra_browser_login(
                         )
                         .await;
 
-                        let mut guard = inner.lock().unwrap();
                         match discovery_result {
                             Ok(sign_in) => {
                                 let sign_in_id = sign_in.id.clone();
-                                if let Err(error) = persist_sign_in_session_snapshot(
+                                let persist_result = persist_sign_in_session_snapshot(
                                     &store,
                                     &*credential_store,
                                     &snapshot_path,
                                     &sign_in,
-                                ) {
-                                    eprintln!("failed to persist Azure sign-in `{sign_in_id}`: {error}");
-                                }
-                                guard.sign_ins.insert(sign_in_id.clone(), sign_in);
-                                if let Some(pending) =
-                                    guard.pending_browser_logins.get_mut(&login_id_for_task)
-                                {
-                                    pending.status =
-                                        PendingLoginStatus::Complete { id: sign_in_id };
+                                );
+                                let mut guard = inner.lock().unwrap();
+                                match persist_result {
+                                    Ok(()) => {
+                                        guard.sign_ins.insert(sign_in_id.clone(), sign_in);
+                                        if let Some(pending) =
+                                            guard.pending_browser_logins.get_mut(&login_id_for_task)
+                                        {
+                                            pending.status =
+                                                PendingLoginStatus::Complete { id: sign_in_id };
+                                        }
+                                    }
+                                    Err(error) => {
+                                        if let Some(pending) =
+                                            guard.pending_browser_logins.get_mut(&login_id_for_task)
+                                        {
+                                            pending.status = PendingLoginStatus::Error {
+                                                message: format!(
+                                                    "Azure sign-in succeeded, but Arkived could not persist it: {error}"
+                                                ),
+                                            };
+                                        }
+                                    }
                                 }
                             }
                             Err(message) => {
+                                let mut guard = inner.lock().unwrap();
                                 if let Some(pending) =
                                     guard.pending_browser_logins.get_mut(&login_id_for_task)
                                 {
@@ -1402,24 +1414,40 @@ pub async fn start_entra_discovery_login(
                 )
                 .await;
 
-                let mut guard = inner.lock().unwrap();
                 match discovery_result {
                     Ok(sign_in) => {
                         let sign_in_id = sign_in.id.clone();
-                        if let Err(error) = persist_sign_in_session_snapshot(
+                        let persist_result = persist_sign_in_session_snapshot(
                             &store,
                             &*credential_store,
                             &snapshot_path,
                             &sign_in,
-                        ) {
-                            eprintln!("failed to persist Azure sign-in `{sign_in_id}`: {error}");
-                        }
-                        guard.sign_ins.insert(sign_in_id.clone(), sign_in);
-                        if let Some(pending) = guard.pending_discovery_logins.get_mut(&login_id) {
-                            pending.status = PendingLoginStatus::Complete { id: sign_in_id };
+                        );
+                        let mut guard = inner.lock().unwrap();
+                        match persist_result {
+                            Ok(()) => {
+                                guard.sign_ins.insert(sign_in_id.clone(), sign_in);
+                                if let Some(pending) =
+                                    guard.pending_discovery_logins.get_mut(&login_id)
+                                {
+                                    pending.status = PendingLoginStatus::Complete { id: sign_in_id };
+                                }
+                            }
+                            Err(error) => {
+                                if let Some(pending) =
+                                    guard.pending_discovery_logins.get_mut(&login_id)
+                                {
+                                    pending.status = PendingLoginStatus::Error {
+                                        message: format!(
+                                            "Azure sign-in succeeded, but Arkived could not persist it: {error}"
+                                        ),
+                                    };
+                                }
+                            }
                         }
                     }
                     Err(message) => {
+                        let mut guard = inner.lock().unwrap();
                         if let Some(pending) = guard.pending_discovery_logins.get_mut(&login_id) {
                             pending.status = PendingLoginStatus::Error { message };
                         }
@@ -2027,23 +2055,6 @@ fn persist_sign_in_session_snapshot(
     let existing = store
         .sign_in_get(&sign_in.id)
         .map_err(|error| format!("failed to inspect persisted sign-in `{}`: {error}", sign_in.id))?;
-    if existing.is_some() {
-        store
-            .sign_in_delete(&sign_in.id)
-            .map_err(|error| format!("failed to replace persisted sign-in `{}`: {error}", sign_in.id))?;
-    }
-
-    store
-        .sign_in_insert(&SignIn {
-            id: sign_in.id.clone(),
-            display_name: sign_in.display_name.clone(),
-            tenant_id: sign_in.login_tenant.clone(),
-            environment: sign_in.environment.clone(),
-            user_principal: sign_in.display_name.clone(),
-            added_at: existing.map(|value| value.added_at).unwrap_or_else(Utc::now),
-        })
-        .map_err(|error| format!("failed to persist sign-in `{}`: {error}", sign_in.id))?;
-
     let refresh_context = sign_in
         .arm_bundle
         .refresh_context
@@ -2067,6 +2078,27 @@ fn persist_sign_in_session_snapshot(
             },
         )
         .map_err(|error| format!("failed to cache refresh token for `{}`: {error}", sign_in.id))?;
+
+    let added_at = existing
+        .as_ref()
+        .map(|value| value.added_at)
+        .unwrap_or_else(Utc::now);
+    if existing.is_some() {
+        store.sign_in_delete(&sign_in.id).map_err(|error| {
+            format!("failed to replace persisted sign-in `{}`: {error}", sign_in.id)
+        })?;
+    }
+
+    store
+        .sign_in_insert(&SignIn {
+            id: sign_in.id.clone(),
+            display_name: sign_in.display_name.clone(),
+            tenant_id: sign_in.login_tenant.clone(),
+            environment: sign_in.environment.clone(),
+            user_principal: sign_in.display_name.clone(),
+            added_at,
+        })
+        .map_err(|error| format!("failed to persist sign-in `{}`: {error}", sign_in.id))?;
 
     persist_sign_in_snapshot_metadata(snapshot_path, sign_in)?;
 
@@ -3450,10 +3482,21 @@ async fn refresh_sign_in_tenant(
     let sign_in_snapshot = sign_in.clone();
     drop(guard);
 
-    if let Err(error) =
-        persist_sign_in_session_snapshot(store, credential_store, snapshot_path, &sign_in_snapshot)
-    {
-        eprintln!("failed to refresh persisted sign-in `{sign_in_id}`: {error}");
+    if let Err(error) = persist_sign_in_session_snapshot(
+        store,
+        credential_store,
+        snapshot_path,
+        &sign_in_snapshot,
+    ) {
+        return match outcome {
+            Ok(()) => Err(format!(
+                "Tenant sign-in succeeded, but Arkived could not persist it: {error}"
+            )),
+            Err(message) => {
+                eprintln!("failed to refresh persisted sign-in `{sign_in_id}`: {error}");
+                Err(message)
+            }
+        };
     }
 
     outcome

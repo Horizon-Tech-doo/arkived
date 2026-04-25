@@ -22,7 +22,7 @@ pub struct OsKeyring {
 }
 
 const CHUNK_MARKER_PREFIX: &str = "arkived-chunked-v1:";
-const MAX_KEYRING_CHUNK_BYTES: usize = 1800;
+const MAX_KEYRING_CHUNK_BYTES: usize = 900;
 
 impl OsKeyring {
     /// Create a new keyring scoped to `service`. All keys are namespaced by this.
@@ -159,6 +159,23 @@ mod tests {
         assert_eq!(got.expose_secret(), "super-secret");
 
         store.delete(&key).unwrap();
+        store.delete(&key).unwrap();
+        assert!(matches!(store.get(&key), Err(Error::NotFound { .. })));
+    }
+
+    #[test]
+    #[ignore]
+    fn roundtrip_large_namespaced_secret_against_os_keychain() {
+        let store = OsKeyring::new("arkived-test");
+        let key = format!("arkived:entra-refresh:{}", uuid::Uuid::new_v4());
+        let secret = SecretString::new("refresh-token-fragment.".repeat(400));
+
+        assert!(matches!(store.get(&key), Err(Error::NotFound { .. })));
+
+        store.put(&key, &secret).unwrap();
+        let got = store.get(&key).unwrap();
+        assert_eq!(got.expose_secret(), secret.expose_secret());
+
         store.delete(&key).unwrap();
         assert!(matches!(store.get(&key), Err(Error::NotFound { .. })));
     }
