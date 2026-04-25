@@ -336,7 +336,7 @@ export function BlobTable({
     { key: "lease",    label: "Lease" },
   ];
 
-  const gridTemplate = "24px minmax(360px, 2fr) 92px 148px 156px 92px 84px minmax(120px, 1fr) 72px";
+  const gridTemplate = "24px minmax(520px, 2.8fr) 96px 148px 156px 96px 92px minmax(140px, 1fr) 76px";
   const allSelected = rows.length > 0 && selected.size === rows.length;
 
   return (
@@ -405,11 +405,11 @@ export function BlobTable({
                 flex: 1,
                 minWidth: 0,
                 overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-                color: isSelected ? "var(--fg-0)" : r.kind === "dir" ? "#eef4ff" : "var(--fg-0)",
+                color: isSelected ? "#ffffff" : r.kind === "dir" ? "#f5f8ff" : "var(--fg-0)",
                 fontFamily: "var(--sans)",
-                fontSize: 12,
+                fontSize: 12.5,
                 letterSpacing: "0.01em",
-                fontWeight: r.kind === "dir" ? 600 : 500,
+                fontWeight: isSelected || r.kind === "dir" ? 650 : 520,
               }} title={r.name}>{r.name}</span>
               {r.kind === "dir" && <IconChevronRight size={9} style={{ color: "var(--fg-3)" }} />}
             </div>
