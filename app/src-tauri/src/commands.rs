@@ -17,7 +17,9 @@ use arkived_core::auth::{
     AccountKeyProvider, AuthProvider, AzuriteEmulatorProvider, ConnectionStringParts,
     ConnectionStringProvider, ResolvedCredential, SasTokenProvider,
 };
-use arkived_core::backend::{AzureBlobBackend, BlobEntry, BlobPath, DeleteOpts, Page};
+use arkived_core::backend::{
+    AzureBlobBackend, BlobEntry, BlobPath, ByteStream, DeleteOpts, Page, WriteOpts,
+};
 use arkived_core::policy::AllowAllPolicy;
 use arkived_core::Ctx;
 use arkived_core::store::{AttachedResource, SignIn};
@@ -26,7 +28,8 @@ use arkived_core::Store;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use chrono::Utc;
-use futures::StreamExt;
+use bytes::Bytes;
+use futures::{stream, StreamExt};
 use secrecy::SecretString;
 use secrecy::ExposeSecret;
 use serde::de::DeserializeOwned;
@@ -278,6 +281,13 @@ pub struct BlobDownloadResult {
     pub path: String,
     pub bytes: u64,
     pub opened: bool,
+}
+
+#[derive(Serialize)]
+pub struct BlobUploadResult {
+    pub path: String,
+    pub bytes: u64,
+    pub etag: String,
 }
 
 #[derive(Serialize, Clone)]
@@ -1588,6 +1598,87 @@ pub async fn list_blobs(
 }
 
 #[tauri::command]
+pub async fn upload_blob(
+    state: State<'_, AppState>,
+    connection_id: String,
+    container: String,
+    source_path: String,
+    destination_prefix: Option<String>,
+    overwrite: bool,
+) -> Result<BlobUploadResult, String> {
+    const MAX_INLINE_UPLOAD_BYTES: u64 = 256 * 1024 * 1024;
+
+    let connection = get_connection(&state, &connection_id)?;
+    let container = resolved_container_name(&connection, &container)?;
+    let source_path = PathBuf::from(source_path);
+    let file_name = source_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| format!("upload path `{}` does not contain a file name", source_path.display()))?
+        .to_string();
+    let metadata = std::fs::metadata(&source_path).map_err(|error| {
+        format!(
+            "failed to inspect upload source `{}`: {error}",
+            source_path.display()
+        )
+    })?;
+    if !metadata.is_file() {
+        return Err(format!(
+            "upload source `{}` is not a regular file",
+            source_path.display()
+        ));
+    }
+    if metadata.len() > MAX_INLINE_UPLOAD_BYTES {
+        return Err(format!(
+            "upload source `{}` is {} bytes; this build supports single-shot uploads up to {} bytes until chunked upload lands",
+            source_path.display(),
+            metadata.len(),
+            MAX_INLINE_UPLOAD_BYTES
+        ));
+    }
+
+    let prefix = normalize_prefix(destination_prefix).unwrap_or_default();
+    let blob_path = normalize_blob_path(&format!("{prefix}{file_name}"))?;
+    let bytes = std::fs::read(&source_path).map_err(|error| {
+        format!(
+            "failed to read upload source `{}`: {error}",
+            source_path.display()
+        )
+    })?;
+    let byte_count = bytes.len() as u64;
+    let body: ByteStream =
+        stream::once(async move { Ok::<Bytes, arkived_core::Error>(Bytes::from(bytes)) }).boxed();
+    let backend = build_backend(&connection).await?;
+    let ctx = app_operation_ctx();
+    let result = backend
+        .write_blob(
+            &ctx,
+            &BlobPath::new(container.clone(), blob_path.clone()),
+            body,
+            WriteOpts {
+                overwrite,
+                content_type: infer_content_type(&source_path),
+                ..Default::default()
+            },
+        )
+        .await
+        .map_err(|error| {
+            compact_live_browse_error(
+                &connection,
+                "Blob upload",
+                Some(container.as_str()),
+                &error_to_string(error),
+            )
+        })?;
+
+    Ok(BlobUploadResult {
+        path: blob_path,
+        bytes: byte_count,
+        etag: result.etag,
+    })
+}
+
+#[tauri::command]
 pub async fn download_blob(
     state: State<'_, AppState>,
     connection_id: String,
@@ -2450,6 +2541,36 @@ fn sanitize_file_name(name: &str) -> String {
     } else {
         trimmed
     }
+}
+
+fn infer_content_type(path: &Path) -> Option<String> {
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase())?;
+
+    let content_type = match extension.as_str() {
+        "avif" => "image/avif",
+        "bmp" => "image/bmp",
+        "css" => "text/css",
+        "csv" => "text/csv",
+        "gif" => "image/gif",
+        "htm" | "html" => "text/html",
+        "jpeg" | "jpg" => "image/jpeg",
+        "js" | "mjs" => "text/javascript",
+        "json" => "application/json",
+        "md" => "text/markdown",
+        "pdf" => "application/pdf",
+        "png" => "image/png",
+        "svg" => "image/svg+xml",
+        "txt" | "log" => "text/plain",
+        "webp" => "image/webp",
+        "xml" => "application/xml",
+        "zip" => "application/zip",
+        _ => return None,
+    };
+
+    Some(content_type.into())
 }
 
 async fn try_fetch_storage_account_key(

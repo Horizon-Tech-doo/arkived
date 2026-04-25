@@ -87,6 +87,12 @@ export interface BlobDownloadResult {
   opened: boolean;
 }
 
+export interface BlobUploadResult {
+  path: string;
+  bytes: number;
+  etag: string;
+}
+
 export interface DeviceCodeLoginStatus {
   status: "pending" | "complete" | "error";
   connection_id?: string | null;
@@ -285,6 +291,22 @@ export async function fetchBlobs(
     connectionId,
     container,
     prefix,
+  });
+}
+
+export async function uploadBlob(
+  connectionId: string,
+  container: string,
+  sourcePath: string,
+  destinationPrefix?: string | null,
+  overwrite = false,
+): Promise<BlobUploadResult> {
+  return callTauri<BlobUploadResult>("upload_blob", {
+    connectionId,
+    container,
+    sourcePath,
+    destinationPrefix,
+    overwrite,
   });
 }
 

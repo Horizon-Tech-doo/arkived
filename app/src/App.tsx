@@ -1,4 +1,5 @@
 import React, { CSSProperties, FormEvent, ReactNode, useEffect, useRef, useState } from "react";
+import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { GroupHeader, TitleBar, TreeRow } from "./chrome";
 import { ActionBar, BlobTable, Inspector, TabsBar } from "./content";
 import type { BlobRow } from "./data";
@@ -52,6 +53,7 @@ import {
   startEntraDiscoveryLogin,
   startSignInTenantReauth,
   updateSignInFilter,
+  uploadBlob,
 } from "./lib/ipc";
 
 type ConnectMethod =
@@ -1186,6 +1188,53 @@ function App() {
     }
   }
 
+  async function handleUploadFiles() {
+    if (!activeConnection || !activeContainer || !activeTab) {
+      return;
+    }
+
+    setShellError(null);
+    try {
+      const selection = await openFileDialog({
+        multiple: true,
+        directory: false,
+        title: `Upload to ${activeContainer}${prefix ? `/${prefix}` : ""}`,
+      });
+      if (!selection) {
+        return;
+      }
+
+      const sourcePaths = Array.isArray(selection) ? selection : [selection];
+      let uploadedCount = 0;
+      for (const sourcePath of sourcePaths) {
+        if (typeof sourcePath !== "string") {
+          continue;
+        }
+        await uploadBlob(
+          activeConnection.id,
+          activeContainer,
+          sourcePath,
+          prefix || null,
+          false,
+        );
+        uploadedCount += 1;
+      }
+
+      if (uploadedCount > 0) {
+        setShellError(
+          `Uploaded ${uploadedCount} file${uploadedCount === 1 ? "" : "s"} to ${activeContainer}${prefix ? `/${prefix}` : ""}`,
+        );
+        updateTab(activeTab.id, (tab) => ({
+          ...tab,
+          loaded: false,
+          selectedIndices: [],
+        }));
+      }
+    } catch (error) {
+      setShellError(getErrorMessage(error));
+    }
+  }
+
   function menuSeparator(): ContextMenuSeparator {
     return { kind: "separator" };
   }
@@ -2093,7 +2142,7 @@ function App() {
               <ActionBar
                 selectedCount={selectedBlobRows.length}
                 onUpload={() => {
-                  setShellError("Upload is the next Blob parity slice.");
+                  void handleUploadFiles();
                 }}
                 onDownload={() => {
                   void handleDownloadSelection(false);
