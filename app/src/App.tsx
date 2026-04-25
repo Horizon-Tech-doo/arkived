@@ -1706,8 +1706,6 @@ function App() {
     <div style={styles.appRoot}>
       <TitleBar
         onOpenPalette={() => openConnectDialog()}
-        agentOpen={false}
-        onToggleAgent={() => undefined}
         activeConnection={titleConnection}
         connectionDetail={connectionDetail}
         connected={Boolean(activeConnection || signIns.length > 0) && !runtimeUnavailable}

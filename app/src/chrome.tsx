@@ -12,8 +12,8 @@ import { DATA } from "./data";
 // ─────────────────────────────────────────────────────────────
 interface TitleBarProps {
   onOpenPalette: () => void;
-  agentOpen: boolean;
-  onToggleAgent: () => void;
+  agentOpen?: boolean;
+  onToggleAgent?: () => void;
   activeConnection: string;
   connectionDetail?: string;
   connected?: boolean;
@@ -57,7 +57,7 @@ export function TitleBar({
           <IconSearch size={11} style={{ color: "var(--fg-2)" }} />
           <span style={{ color: "var(--fg-2)" }}>Search or run a command…</span>
           <span style={{ flex: 1 }} />
-          <span className="kbd">⌘K</span>
+          <span className="kbd">Ctrl K</span>
         </button>
       </div>
 
@@ -69,23 +69,29 @@ export function TitleBar({
         <button style={titlebarStyles.iconBtn} title="Refresh" onClick={onRefresh}>
           <IconRefresh size={13} />
         </button>
-        <button style={titlebarStyles.iconBtn} title="Settings" onClick={onOpenSettings}>
-          <IconSettings size={13} />
-        </button>
-        <div style={titlebarStyles.sep} />
-        <button
-          style={{
-            ...titlebarStyles.agentBtn,
-            background: agentOpen ? "var(--accent-ghost)" : "transparent",
-            color: agentOpen ? "var(--accent)" : "var(--fg-1)",
-            borderColor: agentOpen ? "var(--accent-dim)" : "var(--border-1)",
-          }}
-          onClick={onToggleAgent}
-        >
-          <IconSparkle size={12} />
-          <span>Agent</span>
-          <span className="kbd" style={{ marginLeft: 2 }}>⌘J</span>
-        </button>
+        {onOpenSettings && (
+          <button style={titlebarStyles.iconBtn} title="Settings" onClick={onOpenSettings}>
+            <IconSettings size={13} />
+          </button>
+        )}
+        {onToggleAgent && (
+          <>
+            <div style={titlebarStyles.sep} />
+            <button
+              style={{
+                ...titlebarStyles.agentBtn,
+                background: agentOpen ? "var(--accent-ghost)" : "transparent",
+                color: agentOpen ? "var(--accent)" : "var(--fg-1)",
+                borderColor: agentOpen ? "var(--accent-dim)" : "var(--border-1)",
+              }}
+              onClick={onToggleAgent}
+            >
+              <IconSparkle size={12} />
+              <span>Agent</span>
+              <span className="kbd" style={{ marginLeft: 2 }}>Ctrl J</span>
+            </button>
+          </>
+        )}
       </div>
     </div>
   );
@@ -314,7 +320,7 @@ export function Sidebar({ width = 260 }: { width?: number }) {
             placeholder="Search resources…"
             style={{ flex: 1, fontSize: 11, color: "var(--fg-0)", fontFamily: "var(--mono)" }}
           />
-          <span className="kbd" style={{ fontSize: 9 }}>⌘P</span>
+          <span className="kbd" style={{ fontSize: 9 }}>Ctrl P</span>
         </div>
       </div>
 

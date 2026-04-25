@@ -395,7 +395,7 @@ export function AgentPanel({ width = 420, onClose }: AgentPanelProps) {
               <IconZap size={11} /> 18 tools
             </button>
             <span style={{ flex: 1 }} />
-            <span style={{ fontSize: 10, color: "var(--fg-3)", fontFamily: "var(--mono)" }}>⌘⏎ to send</span>
+            <span style={{ fontSize: 10, color: "var(--fg-3)", fontFamily: "var(--mono)" }}>Ctrl Enter to send</span>
             <button style={{
               padding: "3px 10px", borderRadius: 3,
               background: input ? "var(--accent)" : "var(--bg-3)",
@@ -444,8 +444,8 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
   const all: PSection[] = [
     { section: "Suggested", items: [
       { icon: <IconSparkle size={12} style={{ color: "var(--accent)" }} />, label: 'Ask agent: "summarize activity in the last hour"', kbd: "agent" },
-      { icon: <IconUpload size={12} />, label: "Upload files to device-twins-sync/…", kbd: "⌘U" },
-      { icon: <IconDownload size={12} />, label: "Download selection", kbd: "⌘⇧D" },
+      { icon: <IconUpload size={12} />, label: "Upload files to device-twins-sync/…", kbd: "Ctrl U" },
+      { icon: <IconDownload size={12} />, label: "Download selection", kbd: "Ctrl Shift D" },
     ]},
     { section: "Navigate", items: [
       { icon: <IconContainer size={12} />, label: "Go to container › raw-device-telemetry" },
@@ -565,7 +565,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
         }}>
           <span><span className="kbd">↑↓</span> navigate</span>
           <span><span className="kbd">⏎</span> open</span>
-          <span><span className="kbd">⌘⏎</span> ask agent</span>
+          <span><span className="kbd">Ctrl Enter</span> ask agent</span>
           <span style={{ flex: 1 }} />
           <span>18 MCP tools loaded</span>
         </div>

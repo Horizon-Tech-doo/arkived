@@ -2,8 +2,8 @@
 // (ported from design/main.jsx — renamed to avoid clashing with main.tsx entry)
 import React, { CSSProperties, ReactNode } from "react";
 import {
-  IconX, IconPlus, IconUpload, IconDownload, IconEye, IconCopy, IconPencil,
-  IconShield, IconInfo, IconTrash, IconSparkle, IconRefresh,
+  IconX, IconPlus, IconUpload, IconDownload, IconEye, IconInfo,
+  IconTrash, IconRefresh,
   IconArrowLeft, IconArrowUp, IconChevronRight, IconChevronLeft, IconChevronDown, IconChevronUp,
   IconCircleFilled, IconCaretDown, IconFilter, IconFolder, IconFileCode, IconFileArchive, IconFileImage, IconFile,
   IconUnlock, IconLock, IconCheck,
@@ -68,14 +68,6 @@ export function TabsBar({ tabs, active, onSelect, onClose, onNew }: TabsBarProps
         </button>
       </div>
       <div style={{ flex: 1 }} />
-      <div style={tabsStyles.tabRight}>
-        <button style={tabsStyles.iconBtn} title="Split horizontally">
-          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.3">
-            <rect x="1.5" y="1.5" width="9" height="9" rx="1" />
-            <path d="M6 1.5v9" />
-          </svg>
-        </button>
-      </div>
     </div>
   );
 }
@@ -98,11 +90,6 @@ const tabsStyles: Record<string, CSSProperties> = {
   newTab: {
     width: 30, display: "flex", alignItems: "center", justifyContent: "center",
     color: "var(--fg-3)",
-  },
-  tabRight: { display: "flex", alignItems: "center", padding: "0 6px" },
-  iconBtn: {
-    width: 22, height: 22, display: "flex", alignItems: "center",
-    justifyContent: "center", color: "var(--fg-2)", borderRadius: 3,
   },
 };
 
@@ -164,7 +151,7 @@ export function ActionBar({
       borderBottom: "1px solid var(--border-0)",
       flexShrink: 0,
     }}>
-      {btn(<IconUpload size={12} />, "Upload", { onClick: onUpload, kbd: "⌘U" })}
+      {btn(<IconUpload size={12} />, "Upload", { onClick: onUpload, kbd: "Ctrl U" })}
       {btn(<IconDownload size={12} />, "Download", {
         disabled: selectedCount === 0,
         onClick: onDownload,
@@ -173,23 +160,14 @@ export function ActionBar({
         disabled: selectedCount !== 1,
         onClick: onPreview,
       })}
-      {sep}
-      {btn(<IconPlus size={12} />, "New folder")}
-      {btn(<IconCopy size={12} />, "Copy", { disabled: selectedCount === 0, kbd: "⌘C" })}
-      {btn(<IconPencil size={12} />, "Rename", { disabled: selectedCount !== 1 })}
-      {sep}
-      {btn(<IconShield size={12} />, "ACLs", { disabled: selectedCount === 0 })}
-      {btn(<IconInfo size={12} />, "Properties", { disabled: selectedCount === 0 })}
-      {sep}
       {btn(<IconTrash size={12} />, selectedCount > 0 ? `Delete (${selectedCount})` : "Delete", {
         disabled: selectedCount === 0,
         danger: true,
         onClick: onDelete,
-        kbd: "⌫",
+        kbd: "Del",
       })}
       <span style={{ flex: 1 }} />
-      {btn(<IconSparkle size={12} />, "Ask Agent", { title: "Ask the agent about the selection" })}
-      {btn(<IconRefresh size={12} />, "", { title: "Refresh", kbd: "⌘R", onClick: onRefresh })}
+      {btn(<IconRefresh size={12} />, "", { title: "Refresh", kbd: "Ctrl R", onClick: onRefresh })}
     </div>
   );
 }
