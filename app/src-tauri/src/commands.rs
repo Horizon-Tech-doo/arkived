@@ -43,6 +43,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration as StdDuration, Instant};
 use tauri::State;
 use time::{Duration as TimeDuration, OffsetDateTime};
+use tokio::io::AsyncReadExt;
 use uuid::Uuid;
 
 const ARM_SCOPE: &str = "https://management.azure.com/.default";
@@ -1653,8 +1654,6 @@ pub async fn upload_blob(
     destination_prefix: Option<String>,
     overwrite: bool,
 ) -> Result<BlobUploadResult, String> {
-    const MAX_INLINE_UPLOAD_BYTES: u64 = 256 * 1024 * 1024;
-
     let connection = get_connection(&state, &connection_id)?;
     let container = resolved_container_name(&connection, &container)?;
     let source_path = PathBuf::from(source_path);
@@ -1675,26 +1674,11 @@ pub async fn upload_blob(
             source_path.display()
         ));
     }
-    if metadata.len() > MAX_INLINE_UPLOAD_BYTES {
-        return Err(format!(
-            "upload source `{}` is {} bytes; this build supports single-shot uploads up to {} bytes until chunked upload lands",
-            source_path.display(),
-            metadata.len(),
-            MAX_INLINE_UPLOAD_BYTES
-        ));
-    }
 
     let prefix = normalize_prefix(destination_prefix).unwrap_or_default();
     let blob_path = normalize_blob_path(&format!("{prefix}{file_name}"))?;
-    let bytes = std::fs::read(&source_path).map_err(|error| {
-        format!(
-            "failed to read upload source `{}`: {error}",
-            source_path.display()
-        )
-    })?;
-    let byte_count = bytes.len() as u64;
-    let body: ByteStream =
-        stream::once(async move { Ok::<Bytes, arkived_core::Error>(Bytes::from(bytes)) }).boxed();
+    let byte_count = metadata.len();
+    let body = file_byte_stream(&source_path).await?;
     let backend = build_backend(&connection).await?;
     let ctx = app_operation_ctx();
     let result = backend
@@ -2647,6 +2631,35 @@ async fn stream_blob_to_file(
     })?;
 
     Ok(total)
+}
+
+async fn file_byte_stream(source_path: &Path) -> Result<ByteStream, String> {
+    const READ_CHUNK_BYTES: usize = 8 * 1024 * 1024;
+
+    let file = tokio::fs::File::open(source_path).await.map_err(|error| {
+        format!(
+            "failed to open upload source `{}`: {error}",
+            source_path.display()
+        )
+    })?;
+    let path_label = source_path.display().to_string();
+    Ok(stream::unfold((file, path_label), |(mut file, path_label)| async move {
+        let mut buffer = vec![0u8; READ_CHUNK_BYTES];
+        match file.read(&mut buffer).await {
+            Ok(0) => None,
+            Ok(read) => {
+                buffer.truncate(read);
+                Some((Ok(Bytes::from(buffer)), (file, path_label)))
+            }
+            Err(error) => Some((
+                Err(arkived_core::Error::Backend(format!(
+                    "failed to read upload source `{path_label}`: {error}"
+                ))),
+                (file, path_label),
+            )),
+        }
+    })
+    .boxed())
 }
 
 async fn list_blob_names_with_prefix(

@@ -1,8 +1,8 @@
-//! `PUT /{container}/{blob}` — single-shot block-blob upload.
+//! `PUT /{container}/{blob}` — block blob upload.
 //!
-//! Azure allows block blobs up to 5000 MiB via a single `PUT Blob` request.
-//! For now we buffer the stream into memory before uploading. Chunked
-//! (Put Block + Put Block List) flows are a Backend-Depth plan follow-up.
+//! Small streams use a single `Put Blob`; larger streams are staged with
+//! `Put Block` and committed with `Put Block List` so callers can upload
+//! without buffering the entire object in memory.
 //!
 //! **Policy gating:** calls `ctx.policy.confirm(...)` when the blob would be
 //! overwritten.
@@ -12,31 +12,31 @@ use crate::backend::azure::AzureBlobBackend;
 use crate::backend::types::{BlobPath, ByteStream, WriteOpts, WriteResult};
 use crate::policy::{Action, ActionContext, PolicyDecision};
 use crate::{Ctx, Error};
+use base64::engine::general_purpose::STANDARD as B64;
+use base64::Engine;
 use bytes::{Bytes, BytesMut};
 use futures::stream::StreamExt;
 use reqwest::Method;
 use time::format_description::well_known::Rfc2822;
 use time::OffsetDateTime;
 
+const DEFAULT_BLOCK_SIZE: usize = 8 * 1024 * 1024;
+const INLINE_UPLOAD_THRESHOLD: usize = DEFAULT_BLOCK_SIZE;
+const MAX_BLOCKS: usize = 50_000;
+
 impl AzureBlobBackend {
-    /// Upload a block blob in one request.
+    /// Upload a block blob.
     ///
     /// If `opts.overwrite` is false and the blob exists, returns
-    /// [`Error::Conflict`]. If overwrite is true AND the blob exists, this
-    /// method first calls `ctx.policy.confirm("overwrite_blob", ...)`.
+    /// [`Error::Conflict`]. If overwrite is true, this method first calls
+    /// `ctx.policy.confirm("overwrite_blob", ...)`.
     pub async fn write_blob(
         &self,
         ctx: &Ctx,
         path: &BlobPath,
-        body: ByteStream,
+        mut body: ByteStream,
         opts: WriteOpts,
     ) -> crate::Result<WriteResult> {
-        // Buffer the stream. For v0.1.0 we cap bodies at 256 MiB in memory;
-        // larger uploads get the chunked flow in the depth plan.
-        const MAX_INLINE_BYTES: usize = 256 * 1024 * 1024;
-        let bytes = collect_bytes(body, MAX_INLINE_BYTES).await?;
-
-        // Policy gate on potential overwrite.
         if opts.overwrite {
             let decision = ctx
                 .policy
@@ -44,12 +44,7 @@ impl AzureBlobBackend {
                     &Action {
                         verb: "overwrite_blob".into(),
                         target: format!("{}/{}", path.container, path.blob),
-                        summary: format!(
-                            "overwrite {}/{} with {} bytes",
-                            path.container,
-                            path.blob,
-                            bytes.len()
-                        ),
+                        summary: format!("overwrite {}/{}", path.container, path.blob),
                         reversible: false,
                     },
                     &ActionContext {
@@ -64,6 +59,45 @@ impl AzureBlobBackend {
             }
         }
 
+        let block_size = normalized_block_size(opts.block_size)?;
+        let mut buffered = BytesMut::new();
+        let mut block_ids = Vec::new();
+        let mut total_bytes = 0u64;
+
+        while let Some(chunk) = body.next().await {
+            let bytes = chunk?;
+            total_bytes += bytes.len() as u64;
+
+            if block_ids.is_empty() && buffered.len() + bytes.len() <= INLINE_UPLOAD_THRESHOLD {
+                buffered.extend_from_slice(&bytes);
+                continue;
+            }
+
+            if block_ids.is_empty() {
+                stage_buffered_full_blocks(self, path, &mut block_ids, &mut buffered, block_size)
+                    .await?;
+            }
+            append_and_stage_blocks(self, path, &mut block_ids, &mut buffered, bytes, block_size)
+                .await?;
+        }
+
+        if block_ids.is_empty() {
+            return self.put_blob(path, buffered.freeze(), &opts).await;
+        }
+
+        if !buffered.is_empty() {
+            stage_block(self, path, &mut block_ids, buffered.freeze()).await?;
+        }
+
+        commit_block_list(self, path, &block_ids, total_bytes, &opts).await
+    }
+
+    async fn put_blob(
+        &self,
+        path: &BlobPath,
+        bytes: Bytes,
+        opts: &WriteOpts,
+    ) -> crate::Result<WriteResult> {
         let mut url = self.endpoint.clone();
         url.set_path(&format!("/{}/{}", path.container, path.blob));
         url.set_query(None);
@@ -120,43 +154,198 @@ impl AzureBlobBackend {
     }
 }
 
-async fn collect_bytes(mut stream: ByteStream, max: usize) -> crate::Result<Bytes> {
-    let mut buf = BytesMut::new();
-    while let Some(chunk) = stream.next().await {
-        let bytes = chunk?;
-        if buf.len() + bytes.len() > max {
-            return Err(Error::Backend(format!(
-                "upload body exceeds {max} bytes (chunked upload lands in Backend-Depth plan)"
-            )));
+async fn append_and_stage_blocks(
+    backend: &AzureBlobBackend,
+    path: &BlobPath,
+    block_ids: &mut Vec<String>,
+    buffered: &mut BytesMut,
+    mut chunk: Bytes,
+    block_size: usize,
+) -> crate::Result<()> {
+    if !buffered.is_empty() {
+        let remaining = block_size - buffered.len();
+        let take = remaining.min(chunk.len());
+        let head = chunk.split_to(take);
+        buffered.extend_from_slice(&head);
+        if buffered.len() == block_size {
+            let block = buffered.split_to(block_size).freeze();
+            stage_block(backend, path, block_ids, block).await?;
         }
-        buf.extend_from_slice(&bytes);
     }
-    Ok(buf.freeze())
+
+    while chunk.len() >= block_size {
+        let block = chunk.split_to(block_size);
+        stage_block(backend, path, block_ids, block).await?;
+    }
+
+    if !chunk.is_empty() {
+        buffered.extend_from_slice(&chunk);
+    }
+
+    Ok(())
+}
+
+async fn stage_buffered_full_blocks(
+    backend: &AzureBlobBackend,
+    path: &BlobPath,
+    block_ids: &mut Vec<String>,
+    buffered: &mut BytesMut,
+    block_size: usize,
+) -> crate::Result<()> {
+    while buffered.len() >= block_size {
+        let block = buffered.split_to(block_size).freeze();
+        stage_block(backend, path, block_ids, block).await?;
+    }
+    Ok(())
+}
+
+async fn stage_block(
+    backend: &AzureBlobBackend,
+    path: &BlobPath,
+    block_ids: &mut Vec<String>,
+    bytes: Bytes,
+) -> crate::Result<()> {
+    if block_ids.len() >= MAX_BLOCKS {
+        return Err(Error::Backend(format!(
+            "upload exceeds Azure block blob limit of {MAX_BLOCKS} blocks"
+        )));
+    }
+
+    let block_id = make_block_id(block_ids.len());
+    let mut url = backend.endpoint.clone();
+    url.set_path(&format!("/{}/{}", path.container, path.blob));
+    url.query_pairs_mut()
+        .append_pair("comp", "block")
+        .append_pair("blockid", &block_id);
+
+    let pipeline = HttpPipeline {
+        http: &backend.http,
+        credential: &backend.credential,
+    };
+    pipeline
+        .send(RequestTemplate {
+            method: Method::PUT,
+            url,
+            headers: vec![("content-length".into(), bytes.len().to_string())],
+            body: Body::Bytes(bytes),
+        })
+        .await?;
+    block_ids.push(block_id);
+    Ok(())
+}
+
+async fn commit_block_list(
+    backend: &AzureBlobBackend,
+    path: &BlobPath,
+    block_ids: &[String],
+    total_bytes: u64,
+    opts: &WriteOpts,
+) -> crate::Result<WriteResult> {
+    let xml = block_list_xml(block_ids);
+    let bytes = Bytes::from(xml);
+    let mut url = backend.endpoint.clone();
+    url.set_path(&format!("/{}/{}", path.container, path.blob));
+    url.set_query(Some("comp=blocklist"));
+
+    let mut headers: Vec<(String, String)> = vec![
+        ("content-length".into(), bytes.len().to_string()),
+        ("content-type".into(), "application/xml".into()),
+        (
+            "x-ms-blob-content-type".into(),
+            opts.content_type
+                .clone()
+                .unwrap_or_else(|| "application/octet-stream".into()),
+        ),
+    ];
+    if !opts.overwrite {
+        headers.push(("if-none-match".into(), "*".into()));
+    }
+    if let Some(etag) = &opts.if_match {
+        headers.push(("if-match".into(), etag.clone()));
+    }
+    for (k, v) in &opts.metadata {
+        headers.push((format!("x-ms-meta-{k}"), v.clone()));
+    }
+
+    let pipeline = HttpPipeline {
+        http: &backend.http,
+        credential: &backend.credential,
+    };
+    let resp = pipeline
+        .send(RequestTemplate {
+            method: Method::PUT,
+            url,
+            headers,
+            body: Body::Bytes(bytes),
+        })
+        .await?;
+
+    let etag = resp
+        .headers()
+        .get("etag")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let last_modified = resp
+        .headers()
+        .get("last-modified")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| OffsetDateTime::parse(s, &Rfc2822).ok());
+
+    tracing::info!(
+        block_count = block_ids.len(),
+        total_bytes,
+        "committed block blob upload"
+    );
+
+    Ok(WriteResult {
+        etag,
+        last_modified,
+        blob_type: "BlockBlob".into(),
+    })
+}
+
+fn normalized_block_size(value: Option<usize>) -> crate::Result<usize> {
+    let block_size = value.unwrap_or(DEFAULT_BLOCK_SIZE);
+    if block_size == 0 {
+        return Err(Error::Backend(
+            "upload block size must be greater than 0".into(),
+        ));
+    }
+    Ok(block_size)
+}
+
+fn make_block_id(index: usize) -> String {
+    B64.encode(format!("arkived-block-{index:08}"))
+}
+
+fn block_list_xml(block_ids: &[String]) -> String {
+    let mut xml = String::from(r#"<?xml version="1.0" encoding="utf-8"?><BlockList>"#);
+    for block_id in block_ids {
+        xml.push_str("<Latest>");
+        xml.push_str(block_id);
+        xml.push_str("</Latest>");
+    }
+    xml.push_str("</BlockList>");
+    xml
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures::stream;
 
-    #[tokio::test]
-    async fn collect_bytes_returns_full_body() {
-        let chunks: Vec<crate::Result<Bytes>> =
-            vec![Ok(Bytes::from("hello ")), Ok(Bytes::from("world"))];
-        let s = stream::iter(chunks).boxed();
-        let body = collect_bytes(s, 1024).await.unwrap();
-        assert_eq!(&body[..], b"hello world");
+    #[test]
+    fn block_ids_have_stable_encoded_width() {
+        assert_eq!(make_block_id(0).len(), make_block_id(49_999).len());
+        assert_ne!(make_block_id(0), make_block_id(1));
     }
 
-    #[tokio::test]
-    async fn collect_bytes_errors_above_limit() {
-        let chunks: Vec<crate::Result<Bytes>> = vec![
-            Ok(Bytes::from(vec![0u8; 600])),
-            Ok(Bytes::from(vec![0u8; 600])),
-        ];
-        let s = stream::iter(chunks).boxed();
-        let err = collect_bytes(s, 1000).await.unwrap_err();
-        assert!(matches!(err, Error::Backend(_)));
+    #[test]
+    fn block_list_xml_uses_latest_entries() {
+        let xml = block_list_xml(&[make_block_id(0), make_block_id(1)]);
+        assert!(xml.starts_with(r#"<?xml version="1.0" encoding="utf-8"?><BlockList>"#));
+        assert_eq!(xml.matches("<Latest>").count(), 2);
+        assert!(xml.ends_with("</BlockList>"));
     }
 
     use crate::auth::ResolvedCredential;
