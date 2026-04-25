@@ -376,6 +376,52 @@ export async function deleteBlobPrefix(
   });
 }
 
+export async function createBlobFolder(
+  connectionId: string,
+  container: string,
+  parentPrefix: string | null,
+  folderName: string,
+): Promise<BlobUploadResult> {
+  return callTauri<BlobUploadResult>("create_blob_folder", {
+    connectionId,
+    container,
+    parentPrefix,
+    folderName,
+  });
+}
+
+export async function renameBlobItem(
+  connectionId: string,
+  container: string,
+  sourcePath: string,
+  destinationPath: string,
+  isPrefix: boolean,
+): Promise<BlobBulkResult> {
+  return callTauri<BlobBulkResult>("rename_blob_item", {
+    connectionId,
+    container,
+    sourcePath,
+    destinationPath,
+    isPrefix,
+  });
+}
+
+export async function copyBlobItem(
+  connectionId: string,
+  container: string,
+  sourcePath: string,
+  destinationPrefix: string | null,
+  isPrefix: boolean,
+): Promise<BlobBulkResult> {
+  return callTauri<BlobBulkResult>("copy_blob_item", {
+    connectionId,
+    container,
+    sourcePath,
+    destinationPrefix,
+    isPrefix,
+  });
+}
+
 export async function disconnectConnection(connectionId: string): Promise<void> {
   return callTauri<void>("disconnect_connection", { connectionId });
 }

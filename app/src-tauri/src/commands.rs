@@ -1927,6 +1927,279 @@ pub async fn delete_blob_prefix(
 }
 
 #[tauri::command]
+pub async fn create_blob_folder(
+    state: State<'_, AppState>,
+    connection_id: String,
+    container: String,
+    parent_prefix: Option<String>,
+    folder_name: String,
+) -> Result<BlobUploadResult, String> {
+    let connection = get_connection(&state, &connection_id)?;
+    let container = resolved_container_name(&connection, &container)?;
+    let parent_prefix = normalize_prefix(parent_prefix).unwrap_or_default();
+    let folder_path = ensure_blob_prefix(&format!("{parent_prefix}{folder_name}"))?;
+    let backend = build_backend(&connection).await?;
+    let ctx = app_operation_ctx();
+    let mut metadata = HashMap::new();
+    metadata.insert("hdi_isfolder".into(), "true".into());
+    let result = backend
+        .write_blob(
+            &ctx,
+            &BlobPath::new(container.clone(), folder_path.clone()),
+            empty_byte_stream(),
+            WriteOpts {
+                overwrite: false,
+                content_type: Some("application/x-directory".into()),
+                metadata,
+                ..Default::default()
+            },
+        )
+        .await
+        .map_err(|error| {
+            compact_live_browse_error(
+                &connection,
+                "Folder create",
+                Some(container.as_str()),
+                &error_to_string(error),
+            )
+        })?;
+
+    Ok(BlobUploadResult {
+        path: folder_path,
+        bytes: 0,
+        etag: result.etag,
+    })
+}
+
+#[tauri::command]
+pub async fn rename_blob_item(
+    state: State<'_, AppState>,
+    connection_id: String,
+    container: String,
+    source_path: String,
+    destination_path: String,
+    is_prefix: bool,
+) -> Result<BlobBulkResult, String> {
+    let connection = get_connection(&state, &connection_id)?;
+    let container = resolved_container_name(&connection, &container)?;
+    let backend = build_backend(&connection).await?;
+    let ctx = app_operation_ctx();
+
+    if is_prefix {
+        let source_prefix = ensure_blob_prefix(&source_path)?;
+        let destination_prefix = ensure_blob_prefix(&destination_path)?;
+        if source_prefix == destination_prefix {
+            return Err("source and destination folders are the same".into());
+        }
+        if destination_prefix.starts_with(&source_prefix) {
+            return Err("cannot rename a folder into itself".into());
+        }
+
+        let blob_names = list_blob_names_with_prefix(&backend, &container, &source_prefix)
+            .await
+            .map_err(|error| {
+                compact_live_browse_error(
+                    &connection,
+                    "Folder rename",
+                    Some(container.as_str()),
+                    &error,
+                )
+            })?;
+        if blob_names.is_empty() {
+            return Err(format!("prefix `{source_prefix}` does not contain any blobs"));
+        }
+
+        for blob_name in &blob_names {
+            let suffix = blob_name
+                .strip_prefix(&source_prefix)
+                .unwrap_or(blob_name.as_str());
+            let destination = format!("{destination_prefix}{suffix}");
+            let source_url = source_url_for_copy(&connection, &container, blob_name)?;
+            backend
+                .copy_blob(&source_url, &BlobPath::new(container.clone(), destination))
+                .await
+                .map_err(|error| {
+                    compact_live_browse_error(
+                        &connection,
+                        "Folder rename",
+                        Some(container.as_str()),
+                        &error_to_string(error),
+                    )
+                })?;
+        }
+
+        for blob_name in &blob_names {
+            backend
+                .delete_blob(
+                    &ctx,
+                    &BlobPath::new(container.clone(), blob_name.clone()),
+                    DeleteOpts {
+                        include_snapshots: false,
+                    },
+                )
+                .await
+                .map_err(|error| {
+                    compact_live_browse_error(
+                        &connection,
+                        "Folder rename cleanup",
+                        Some(container.as_str()),
+                        &error_to_string(error),
+                    )
+                })?;
+        }
+
+        return Ok(BlobBulkResult {
+            path: destination_prefix,
+            bytes: 0,
+            item_count: blob_names.len() as u64,
+        });
+    }
+
+    let source = normalize_blob_path(&source_path)?;
+    let destination = normalize_blob_path(&destination_path)?;
+    if source == destination {
+        return Err("source and destination blobs are the same".into());
+    }
+
+    let source_url = source_url_for_copy(&connection, &container, &source)?;
+    backend
+        .copy_blob(
+            &source_url,
+            &BlobPath::new(container.clone(), destination.clone()),
+        )
+        .await
+        .map_err(|error| {
+            compact_live_browse_error(
+                &connection,
+                "Blob rename",
+                Some(container.as_str()),
+                &error_to_string(error),
+            )
+        })?;
+    backend
+        .delete_blob(
+            &ctx,
+            &BlobPath::new(container.clone(), source),
+            DeleteOpts {
+                include_snapshots: false,
+            },
+        )
+        .await
+        .map_err(|error| {
+            compact_live_browse_error(
+                &connection,
+                "Blob rename cleanup",
+                Some(container.as_str()),
+                &error_to_string(error),
+            )
+        })?;
+
+    Ok(BlobBulkResult {
+        path: destination,
+        bytes: 0,
+        item_count: 1,
+    })
+}
+
+#[tauri::command]
+pub async fn copy_blob_item(
+    state: State<'_, AppState>,
+    connection_id: String,
+    container: String,
+    source_path: String,
+    destination_prefix: Option<String>,
+    is_prefix: bool,
+) -> Result<BlobBulkResult, String> {
+    let connection = get_connection(&state, &connection_id)?;
+    let container = resolved_container_name(&connection, &container)?;
+    let backend = build_backend(&connection).await?;
+    let destination_root = normalize_prefix(destination_prefix).unwrap_or_default();
+
+    if is_prefix {
+        let source_prefix = ensure_blob_prefix(&source_path)?;
+        let leaf = path_leaf(&source_prefix).ok_or_else(|| {
+            format!("could not determine folder name for source `{source_prefix}`")
+        })?;
+        let destination_prefix = ensure_blob_prefix(&format!("{destination_root}{leaf}"))?;
+        if source_prefix == destination_prefix {
+            return Err("source and destination folders are the same".into());
+        }
+        if destination_prefix.starts_with(&source_prefix) {
+            return Err("cannot copy a folder into itself".into());
+        }
+
+        let blob_names = list_blob_names_with_prefix(&backend, &container, &source_prefix)
+            .await
+            .map_err(|error| {
+                compact_live_browse_error(
+                    &connection,
+                    "Folder copy",
+                    Some(container.as_str()),
+                    &error,
+                )
+            })?;
+        if blob_names.is_empty() {
+            return Err(format!("prefix `{source_prefix}` does not contain any blobs"));
+        }
+
+        for blob_name in &blob_names {
+            let suffix = blob_name
+                .strip_prefix(&source_prefix)
+                .unwrap_or(blob_name.as_str());
+            let destination = format!("{destination_prefix}{suffix}");
+            let source_url = source_url_for_copy(&connection, &container, blob_name)?;
+            backend
+                .copy_blob(&source_url, &BlobPath::new(container.clone(), destination))
+                .await
+                .map_err(|error| {
+                    compact_live_browse_error(
+                        &connection,
+                        "Folder copy",
+                        Some(container.as_str()),
+                        &error_to_string(error),
+                    )
+                })?;
+        }
+
+        return Ok(BlobBulkResult {
+            path: destination_prefix,
+            bytes: 0,
+            item_count: blob_names.len() as u64,
+        });
+    }
+
+    let source = normalize_blob_path(&source_path)?;
+    let leaf = path_leaf(&source)
+        .ok_or_else(|| format!("could not determine blob name for source `{source}`"))?;
+    let destination = normalize_blob_path(&format!("{destination_root}{leaf}"))?;
+    if source == destination {
+        return Err("source and destination blobs are the same".into());
+    }
+
+    let source_url = source_url_for_copy(&connection, &container, &source)?;
+    backend
+        .copy_blob(
+            &source_url,
+            &BlobPath::new(container.clone(), destination.clone()),
+        )
+        .await
+        .map_err(|error| {
+            compact_live_browse_error(
+                &connection,
+                "Blob copy",
+                Some(container.as_str()),
+                &error_to_string(error),
+            )
+        })?;
+
+    Ok(BlobBulkResult {
+        path: destination,
+        bytes: 0,
+        item_count: 1,
+    })
+}
+
+#[tauri::command]
 pub fn disconnect_connection(
     state: State<'_, AppState>,
     connection_id: String,
@@ -2694,6 +2967,55 @@ async fn file_byte_stream(source_path: &Path) -> Result<ByteStream, String> {
     .boxed())
 }
 
+fn empty_byte_stream() -> ByteStream {
+    stream::once(async { Ok(Bytes::new()) }).boxed()
+}
+
+fn source_url_for_copy(
+    connection: &LiveConnection,
+    container: &str,
+    blob_path: &str,
+) -> Result<String, String> {
+    let endpoint = match connection {
+        LiveConnection::ConnectionString { endpoint, .. }
+        | LiveConnection::AccountKey { endpoint, .. }
+        | LiveConnection::Sas { endpoint, .. }
+        | LiveConnection::Entra { endpoint, .. } => endpoint,
+        LiveConnection::Azurite { .. } => arkived_core::auth::azurite::AZURITE_BLOB_ENDPOINT,
+    };
+    let mut url = parse_endpoint(endpoint)?;
+    let base_path = url.path().trim_end_matches('/');
+    url.set_path(&format!("{base_path}/{container}/{blob_path}"));
+    if let Some(sas) = copy_source_sas(connection)? {
+        append_query(&mut url, &sas);
+    }
+    Ok(url.to_string())
+}
+
+fn copy_source_sas(connection: &LiveConnection) -> Result<Option<String>, String> {
+    match connection {
+        LiveConnection::Sas { sas, .. } => Ok(Some(sas.clone())),
+        LiveConnection::ConnectionString { raw, .. } => {
+            let parts = ConnectionStringParts::parse(raw).map_err(error_to_string)?;
+            Ok(parts.sas().map(str::to_string))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn append_query(url: &mut url::Url, query: &str) {
+    let query = query.trim().trim_start_matches('?');
+    if query.is_empty() {
+        return;
+    }
+
+    let merged = match url.query() {
+        Some(existing) if !existing.is_empty() => format!("{existing}&{query}"),
+        _ => query.to_string(),
+    };
+    url.set_query(Some(&merged));
+}
+
 async fn list_blob_names_with_prefix(
     backend: &AzureBlobBackend,
     container: &str,
@@ -2818,6 +3140,13 @@ fn ensure_blob_prefix(path: &str) -> Result<String, String> {
     } else {
         format!("{normalized}/")
     })
+}
+
+fn path_leaf(path: &str) -> Option<String> {
+    path.trim_end_matches('/')
+        .rsplit('/')
+        .find(|segment| !segment.trim().is_empty())
+        .map(str::to_string)
 }
 
 fn sanitize_relative_path(path: &str) -> PathBuf {

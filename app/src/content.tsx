@@ -2,7 +2,7 @@
 // (ported from design/main.jsx — renamed to avoid clashing with main.tsx entry)
 import React, { CSSProperties, ReactNode } from "react";
 import {
-  IconX, IconPlus, IconUpload, IconDownload, IconEye, IconInfo,
+  IconX, IconPlus, IconUpload, IconDownload, IconEye, IconInfo, IconCopy,
   IconTrash, IconRefresh,
   IconArrowLeft, IconArrowUp, IconChevronRight, IconChevronLeft, IconChevronDown, IconChevronUp,
   IconCircleFilled, IconCaretDown, IconFilter, IconFolder, IconFileCode, IconFileArchive, IconFileImage, IconFile,
@@ -102,6 +102,9 @@ interface ActionBarProps {
   onUpload: () => void;
   onDownload: () => void;
   onPreview: () => void;
+  onCreateFolder: () => void;
+  onPaste: () => void;
+  canPaste: boolean;
   onRefresh: () => void;
 }
 export function ActionBar({
@@ -110,6 +113,9 @@ export function ActionBar({
   onUpload,
   onDownload,
   onPreview,
+  onCreateFolder,
+  onPaste,
+  canPaste,
   onRefresh,
 }: ActionBarProps) {
   interface BtnOpts {
@@ -160,6 +166,9 @@ export function ActionBar({
         disabled: selectedCount !== 1,
         onClick: onPreview,
       })}
+      {sep}
+      {btn(<IconPlus size={12} />, "New folder", { onClick: onCreateFolder })}
+      {btn(<IconCopy size={12} />, "Paste", { disabled: !canPaste, onClick: onPaste })}
       {btn(<IconTrash size={12} />, selectedCount > 0 ? `Delete (${selectedCount})` : "Delete", {
         disabled: selectedCount === 0,
         danger: true,

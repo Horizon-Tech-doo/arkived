@@ -37,6 +37,8 @@ import {
   connectWithAccountKey,
   connectWithConnectionString,
   connectWithSas,
+  copyBlobItem,
+  createBlobFolder,
   deleteBlob,
   deleteBlobPrefix,
   disconnectConnection,
@@ -52,6 +54,7 @@ import {
   pollEntraDiscoveryLogin,
   pollSignInTenantReauth,
   removeSignIn,
+  renameBlobItem,
   startEntraBrowserLogin,
   startEntraDiscoveryLogin,
   startSignInTenantReauth,
@@ -124,6 +127,14 @@ interface ContextMenuState {
   x: number;
   y: number;
   items: ContextMenuItem[];
+}
+
+interface BlobClipboardState {
+  connectionId: string;
+  containerName: string;
+  path: string;
+  name: string;
+  kind: string;
 }
 
 interface PersistedBrowserTab {
@@ -226,6 +237,7 @@ function App() {
   const [shellError, setShellError] = useState<string | null>(null);
   const [discoveryError, setDiscoveryError] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const [blobClipboard, setBlobClipboard] = useState<BlobClipboardState | null>(null);
   const [connectionsBusy, setConnectionsBusy] = useState(false);
   const [signInsBusy, setSignInsBusy] = useState(false);
   const [connectBusy, setConnectBusy] = useState(false);
@@ -1311,6 +1323,136 @@ function App() {
     }
   }
 
+  async function handleCreateFolder(
+    connectionId = activeConnection?.id,
+    containerName = activeContainer,
+    parent = prefix,
+  ) {
+    if (!connectionId || !containerName) {
+      return;
+    }
+
+    const folderName = window.prompt(`New folder name in ${containerName}${parent ? `/${parent}` : ""}`);
+    if (!folderName) {
+      return;
+    }
+    const trimmed = folderName.trim();
+    if (!trimmed) {
+      return;
+    }
+    if (/[\\/]/.test(trimmed)) {
+      setShellError("Folder name cannot contain slashes. Create nested folders one level at a time.");
+      return;
+    }
+
+    setShellError(null);
+    try {
+      const result = await createBlobFolder(connectionId, containerName, parent || null, trimmed);
+      setShellError(`Created folder ${result.path}`);
+      if (activeTab && activeTab.connectionId === connectionId && activeTab.containerName === containerName) {
+        updateTab(activeTab.id, (tab) => ({
+          ...tab,
+          loaded: false,
+          selectedIndices: [],
+        }));
+      }
+    } catch (error) {
+      setShellError(getErrorMessage(error));
+    }
+  }
+
+  async function handleRenameRow(row: BlobRow) {
+    if (!activeConnection || !activeContainer || !activeTab || !row.path) {
+      return;
+    }
+
+    const nextName = window.prompt(`Rename ${row.kind === "dir" ? "folder" : "blob"}`, row.name);
+    if (!nextName) {
+      return;
+    }
+    const trimmed = nextName.trim();
+    if (!trimmed || trimmed === row.name) {
+      return;
+    }
+    if (/[\\/]/.test(trimmed)) {
+      setShellError("Rename only changes the item name. Slashes are not allowed here.");
+      return;
+    }
+
+    const destination = `${parentPathPrefix(row.path)}${trimmed}${row.kind === "dir" ? "/" : ""}`;
+    setShellError(null);
+    try {
+      const result = await renameBlobItem(
+        activeConnection.id,
+        activeContainer,
+        row.path,
+        destination,
+        row.kind === "dir",
+      );
+      setShellError(
+        row.kind === "dir"
+          ? `Renamed folder to ${result.path} (${result.item_count} blob${result.item_count === 1 ? "" : "s"})`
+          : `Renamed blob to ${result.path}`,
+      );
+      updateTab(activeTab.id, (tab) => ({
+        ...tab,
+        loaded: false,
+        selectedIndices: [],
+      }));
+    } catch (error) {
+      setShellError(getErrorMessage(error));
+    }
+  }
+
+  function handleCopyRow(row: BlobRow) {
+    if (!activeConnection || !activeContainer || !row.path) {
+      return;
+    }
+
+    setBlobClipboard({
+      connectionId: activeConnection.id,
+      containerName: activeContainer,
+      path: row.path,
+      name: row.name,
+      kind: row.kind,
+    });
+    setShellError(`Copied ${row.name}. Paste is available in the same container.`);
+  }
+
+  async function handlePasteClipboard() {
+    if (!activeConnection || !activeContainer || !activeTab || !blobClipboard) {
+      return;
+    }
+    if (
+      blobClipboard.connectionId !== activeConnection.id ||
+      blobClipboard.containerName !== activeContainer
+    ) {
+      setShellError("Paste currently supports items copied within the same storage account container.");
+      return;
+    }
+
+    setShellError(null);
+    try {
+      const result = await copyBlobItem(
+        activeConnection.id,
+        activeContainer,
+        blobClipboard.path,
+        activeTab.prefix || null,
+        blobClipboard.kind === "dir",
+      );
+      setShellError(
+        `Pasted ${blobClipboard.name} to ${result.path} (${result.item_count} item${result.item_count === 1 ? "" : "s"})`,
+      );
+      updateTab(activeTab.id, (tab) => ({
+        ...tab,
+        loaded: false,
+        selectedIndices: [],
+      }));
+    } catch (error) {
+      setShellError(getErrorMessage(error));
+    }
+  }
+
   function menuSeparator(): ContextMenuSeparator {
     return { kind: "separator" };
   }
@@ -2227,6 +2369,19 @@ function App() {
                 onPreview={() => {
                   void handleDownloadSelection(true);
                 }}
+                onCreateFolder={() => {
+                  void handleCreateFolder();
+                }}
+                canPaste={Boolean(
+                  blobClipboard &&
+                    activeConnection &&
+                    activeContainer &&
+                    blobClipboard.connectionId === activeConnection.id &&
+                    blobClipboard.containerName === activeContainer,
+                )}
+                onPaste={() => {
+                  void handlePasteClipboard();
+                }}
                 onDelete={() => {
                   void handleDeleteSelection();
                 }}
@@ -2299,17 +2454,28 @@ function App() {
                                 void handleDownloadBlob(row, true);
                               },
                             },
+                            {
+                              label: "Rename…",
+                              action: () => {
+                                void handleRenameRow(row);
+                              },
+                            },
                             menuSeparator(),
                             {
                               label: "Copy",
                               action: () => {
-                                void copyText(row.name);
+                                handleCopyRow(row);
                               },
                             },
                             {
                               label: "Paste",
-                              disabled: true,
-                              action: () => undefined,
+                              disabled:
+                                !blobClipboard ||
+                                blobClipboard.connectionId !== activeConnection?.id ||
+                                blobClipboard.containerName !== activeContainer,
+                              action: () => {
+                                void handlePasteClipboard();
+                              },
                             },
                             {
                               label: "Clone…",
@@ -2791,6 +2957,13 @@ function App() {
               hint: "tab",
               action: () => {
                 handleSelectContainer(connectionId, container.name);
+              },
+            },
+            {
+              label: "New folder…",
+              action: () => {
+                handleSelectContainer(connectionId, container.name);
+                void handleCreateFolder(connectionId, container.name, "");
               },
             },
             menuSeparator(),
@@ -3744,6 +3917,17 @@ function ensureTrailingSlash(value: string): string {
 function parentPrefix(currentPrefix: string): string {
   const trimmed = currentPrefix.replace(/\/+$/, "");
   if (!trimmed) {
+    return "";
+  }
+
+  const parts = trimmed.split("/");
+  parts.pop();
+  return parts.length === 0 ? "" : `${parts.join("/")}/`;
+}
+
+function parentPathPrefix(path: string): string {
+  const trimmed = path.replace(/\/+$/, "");
+  if (!trimmed || !trimmed.includes("/")) {
     return "";
   }
 
