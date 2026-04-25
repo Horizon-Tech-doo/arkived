@@ -3533,7 +3533,7 @@ fn preview_parquet_blob(
                 let row = row.map_err(|error| format!("failed to read Parquet row: {error}"))?;
                 rows.push(
                     row.get_column_iter()
-                        .map(|(_, field)| sanitize_preview_cell(&field.to_string()))
+                        .map(|(_, field)| format_parquet_cell(&field.to_string()))
                         .collect(),
                 );
             }
@@ -3737,6 +3737,16 @@ fn sanitize_preview_cell(value: &str) -> String {
     let mut truncated = normalized.chars().take(MAX_CELL_CHARS).collect::<String>();
     truncated.push_str("...");
     truncated
+}
+
+fn format_parquet_cell(value: &str) -> String {
+    let trimmed = value.trim();
+    let unquoted = if trimmed.len() >= 2 && trimmed.starts_with('"') && trimmed.ends_with('"') {
+        &trimmed[1..trimmed.len() - 1]
+    } else {
+        trimmed
+    };
+    sanitize_preview_cell(unquoted)
 }
 
 fn json_cell_value(value: &serde_json::Value) -> String {

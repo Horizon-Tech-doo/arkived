@@ -166,6 +166,7 @@ interface PersistedShellSnapshot {
   version: 1;
   activeTabId?: string | null;
   activeConnectionId?: string | null;
+  previewPaneRatio?: number;
   expandedSignIns: Record<string, boolean>;
   expandedSubscriptions: Record<string, boolean>;
   expandedAccounts: Record<string, boolean>;
@@ -173,6 +174,10 @@ interface PersistedShellSnapshot {
 }
 
 const SHELL_STATE_STORAGE_KEY = "arkived.shell.v1";
+const PREVIEW_PANE_DEFAULT_RATIO = 0.52;
+const PREVIEW_PANE_MIN_RATIO = 0.24;
+const PREVIEW_PANE_MAX_RATIO = 0.82;
+const PREVIEW_RESIZE_HANDLE_WIDTH = 7;
 
 const EMPTY_FORM: ConnectionFormState = {
   displayName: "",
@@ -253,6 +258,7 @@ function App() {
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [blobClipboard, setBlobClipboard] = useState<BlobClipboardState | null>(null);
   const [previewDialog, setPreviewDialog] = useState<PreviewDialogState | null>(null);
+  const [previewPaneRatio, setPreviewPaneRatio] = useState(PREVIEW_PANE_DEFAULT_RATIO);
   const [activities, setActivities] = useState<Activity[]>([]);
   const [activityExpanded, setActivityExpanded] = useState(false);
   const [connectionsBusy, setConnectionsBusy] = useState(false);
@@ -274,6 +280,7 @@ function App() {
   const browserTabsRef = useRef<BrowserTabState[]>([]);
   const connectionsRef = useRef<BrowserConnection[]>([]);
   const containerStatesRef = useRef<Record<string, ContainerListState>>({});
+  const browserPaneRef = useRef<HTMLDivElement | null>(null);
 
   browserTabsRef.current = browserTabs;
   connectionsRef.current = connections;
@@ -1537,6 +1544,39 @@ function App() {
     }
   }
 
+  function handlePreviewResizeStart(event: React.MouseEvent<HTMLDivElement>) {
+    if (!browserPaneRef.current) {
+      return;
+    }
+
+    event.preventDefault();
+    const paneRect = browserPaneRef.current.getBoundingClientRect();
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+
+    const updateFromClientX = (clientX: number) => {
+      const previewWidth = paneRect.right - clientX;
+      const availableWidth = Math.max(1, paneRect.width - PREVIEW_RESIZE_HANDLE_WIDTH);
+      setPreviewPaneRatio(clampPreviewPaneRatio(previewWidth / availableWidth));
+    };
+
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      updateFromClientX(moveEvent.clientX);
+    };
+    const handleMouseUp = () => {
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+    updateFromClientX(event.clientX);
+  }
+
   function menuSeparator(): ContextMenuSeparator {
     return { kind: "separator" };
   }
@@ -1594,6 +1634,9 @@ function App() {
       setShellPersistenceReady(true);
       return;
     }
+    if (typeof snapshot.previewPaneRatio === "number") {
+      setPreviewPaneRatio(snapshot.previewPaneRatio);
+    }
 
     void hydratePersistedShell(snapshot).finally(() => {
       setShellPersistenceReady(true);
@@ -1609,6 +1652,7 @@ function App() {
       version: 1,
       activeTabId,
       activeConnectionId,
+      previewPaneRatio,
       expandedSignIns,
       expandedSubscriptions,
       expandedAccounts,
@@ -1637,6 +1681,7 @@ function App() {
     shellPersistenceReady,
     activeTabId,
     activeConnectionId,
+    previewPaneRatio,
     expandedSignIns,
     expandedSubscriptions,
     expandedAccounts,
@@ -2484,7 +2529,15 @@ function App() {
                   }}
                 />
               ) : (
-                <div style={styles.browserPane}>
+                <div
+                  ref={browserPaneRef}
+                  style={{
+                    ...styles.browserPane,
+                    gridTemplateColumns: previewDialog
+                      ? `minmax(260px, ${Math.max(0.01, 1 - previewPaneRatio)}fr) ${PREVIEW_RESIZE_HANDLE_WIDTH}px minmax(300px, ${previewPaneRatio}fr)`
+                      : styles.browserPane.gridTemplateColumns,
+                  }}
+                >
                   <div style={styles.tablePane}>
                     {activeRows.length === 0 && !activeTab.busy ? (
                       <MainEmptyState
@@ -2689,25 +2742,48 @@ function App() {
                     )}
                   </div>
 
-                  <aside style={styles.inspectorPane}>
-                    <div style={styles.inspectorHeader}>
-                      <IconInfo size={12} />
-                      <span>Selection</span>
-                    </div>
-                    {selectedRow ? (
-                      <Inspector
-                        row={selectedRow}
-                        resourceUrl={resourceUrl}
-                        containerName={activeContainer}
-                        endpoint={activeConnection.endpoint}
-                        authKind={authLabel(activeConnection.auth_kind)}
+                  {previewDialog ? (
+                    <>
+                      <div
+                        role="separator"
+                        aria-orientation="vertical"
+                        aria-label="Resize preview pane"
+                        title="Drag to resize preview"
+                        style={styles.previewResizeHandle}
+                        onMouseDown={handlePreviewResizeStart}
                       />
-                    ) : (
-                      <div style={styles.inspectorEmpty}>
-                        Select a blob or virtual folder to inspect its live metadata.
+                      <BlobPreviewPane
+                        state={previewDialog}
+                        onClose={() => setPreviewDialog(null)}
+                        onDownload={() => {
+                          void handleDownloadBlob(previewDialog.row, false);
+                        }}
+                        onOpenExternal={() => {
+                          void handleDownloadBlob(previewDialog.row, true);
+                        }}
+                      />
+                    </>
+                  ) : (
+                    <aside style={styles.inspectorPane}>
+                      <div style={styles.inspectorHeader}>
+                        <IconInfo size={12} />
+                        <span>Selection</span>
                       </div>
-                    )}
-                  </aside>
+                      {selectedRow ? (
+                        <Inspector
+                          row={selectedRow}
+                          resourceUrl={resourceUrl}
+                          containerName={activeContainer}
+                          endpoint={activeConnection.endpoint}
+                          authKind={authLabel(activeConnection.auth_kind)}
+                        />
+                      ) : (
+                        <div style={styles.inspectorEmpty}>
+                          Select a blob or virtual folder to inspect its live metadata.
+                        </div>
+                      )}
+                    </aside>
+                  )}
                 </div>
               )}
             </>
@@ -2782,19 +2858,6 @@ function App() {
             if (tenantBrowserPrompt) {
               window.open(tenantBrowserPrompt.authorize_url, "_blank", "noopener,noreferrer");
             }
-          }}
-        />
-      )}
-
-      {previewDialog && (
-        <BlobPreviewDialog
-          state={previewDialog}
-          onClose={() => setPreviewDialog(null)}
-          onDownload={() => {
-            void handleDownloadBlob(previewDialog.row, false);
-          }}
-          onOpenExternal={() => {
-            void handleDownloadBlob(previewDialog.row, true);
           }}
         />
       )}
@@ -3869,128 +3932,120 @@ function MainEmptyState({ title, body, primaryLabel, onPrimary, secondaryLabel }
   );
 }
 
-interface BlobPreviewDialogProps {
+interface BlobPreviewPaneProps {
   state: PreviewDialogState;
   onClose: () => void;
   onDownload: () => void;
   onOpenExternal: () => void;
 }
 
-function BlobPreviewDialog({ state, onClose, onDownload, onOpenExternal }: BlobPreviewDialogProps) {
+function BlobPreviewPane({ state, onClose, onDownload, onOpenExternal }: BlobPreviewPaneProps) {
   const result = state.result;
   const columns = result ? previewColumns(result) : [];
 
   return (
-    <div style={styles.previewOverlay} onMouseDown={onClose}>
-      <div style={styles.previewDialog} onMouseDown={(event) => event.stopPropagation()}>
-        <div style={styles.previewHeader}>
-          <div style={styles.previewIcon}>
-            {state.busy ? <IconLoader size={16} /> : <IconEye size={16} />}
-          </div>
-          <div style={{ minWidth: 0, flex: 1 }}>
-            <div style={styles.previewEyebrow}>Blob preview</div>
-            <div style={styles.previewTitle}>{result?.title ?? state.row.name}</div>
-            <div style={styles.previewPath}>{result?.path ?? state.row.path}</div>
-          </div>
-          <button type="button" style={styles.secondaryButton} onClick={onDownload} disabled={state.busy}>
-            <IconDownload size={12} />
-            <span>Download</span>
-          </button>
-          <button type="button" style={styles.secondaryButton} onClick={onOpenExternal} disabled={state.busy}>
-            <IconExternal size={12} />
-            <span>Open</span>
-          </button>
-          <button type="button" style={styles.previewCloseButton} onClick={onClose}>
-            <IconX size={13} />
-          </button>
+    <aside style={styles.previewPane}>
+      <div style={styles.previewHeader}>
+        <div style={styles.previewIcon}>
+          {state.busy ? <IconLoader size={14} /> : <IconEye size={14} />}
         </div>
-
-        <div style={styles.previewBody}>
-          {state.busy ? (
-            <div style={styles.previewCentered}>
-              <IconLoader size={22} />
-              <span>Reading live blob data…</span>
-            </div>
-          ) : state.error ? (
-            <div style={styles.previewError}>
-              <IconAlert size={18} />
-              <div>
-                <div style={styles.previewErrorTitle}>Preview failed</div>
-                <div style={styles.previewErrorBody}>{state.error}</div>
-              </div>
-            </div>
-          ) : result ? (
-            <>
-              <div style={styles.previewMetaGrid}>
-                {result.metadata.map((item) => (
-                  <div key={`${item.label}:${item.value}`} style={styles.previewMetaItem}>
-                    <span style={styles.previewMetaLabel}>{item.label}</span>
-                    <span style={styles.previewMetaValue}>{item.value}</span>
-                  </div>
-                ))}
-                <div style={styles.previewMetaItem}>
-                  <span style={styles.previewMetaLabel}>Preview</span>
-                  <span style={styles.previewMetaValue}>{previewKindLabel(result.kind)}</span>
-                </div>
-              </div>
-
-              {result.warning && (
-                <div style={styles.previewWarning}>
-                  <IconAlert size={13} />
-                  <span>{result.warning}</span>
-                </div>
-              )}
-
-              {result.image_data_url ? (
-                <div style={styles.previewImageWrap}>
-                  <img src={result.image_data_url} alt={result.title} style={styles.previewImage} />
-                </div>
-              ) : columns.length > 0 ? (
-                <div style={styles.previewTableWrap}>
-                  <div
-                    style={{
-                      ...styles.previewTableHeader,
-                      gridTemplateColumns: `repeat(${columns.length}, minmax(160px, 1fr))`,
-                    }}
-                  >
-                    {columns.map((column, index) => (
-                      <div key={`${column}-${index}`} style={styles.previewTableCellHeader}>
-                        {column || `column ${index + 1}`}
-                      </div>
-                    ))}
-                  </div>
-                  {result.rows.length === 0 ? (
-                    <div style={styles.previewEmpty}>No rows were available in the preview sample.</div>
-                  ) : (
-                    result.rows.map((row, rowIndex) => (
-                      <div
-                        key={`row-${rowIndex}`}
-                        style={{
-                          ...styles.previewTableRow,
-                          gridTemplateColumns: `repeat(${columns.length}, minmax(160px, 1fr))`,
-                        }}
-                      >
-                        {columns.map((_, columnIndex) => (
-                          <div key={`${rowIndex}-${columnIndex}`} style={styles.previewTableCell}>
-                            {row[columnIndex] ?? ""}
-                          </div>
-                        ))}
-                      </div>
-                    ))
-                  )}
-                </div>
-              ) : result.text != null ? (
-                <pre style={styles.previewText}>{result.text}</pre>
-              ) : (
-                <div style={styles.previewEmpty}>
-                  This blob format does not have an inline preview yet. Download or open it externally.
-                </div>
-              )}
-            </>
-          ) : null}
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div style={styles.previewTitle}>Preview of '{result?.title ?? state.row.name}'</div>
+          <div style={styles.previewPath}>{result?.path ?? state.row.path}</div>
         </div>
+        <button type="button" style={styles.previewHeaderButton} onClick={onDownload} disabled={state.busy}>
+          <IconDownload size={11} />
+          <span>Download</span>
+        </button>
+        <button type="button" style={styles.previewHeaderButton} onClick={onOpenExternal} disabled={state.busy}>
+          <IconExternal size={11} />
+          <span>Open</span>
+        </button>
+        <button type="button" style={styles.previewCloseButton} onClick={onClose}>
+          <IconX size={12} />
+        </button>
       </div>
-    </div>
+
+      <div style={styles.previewBody}>
+        {state.busy ? (
+          <div style={styles.previewCentered}>
+            <IconLoader size={18} />
+            <span>Reading live blob data…</span>
+          </div>
+        ) : state.error ? (
+          <div style={styles.previewError}>
+            <IconAlert size={16} />
+            <div>
+              <div style={styles.previewErrorTitle}>Preview failed</div>
+              <div style={styles.previewErrorBody}>{state.error}</div>
+            </div>
+          </div>
+        ) : result ? (
+          <>
+            <div style={styles.previewMetaStrip}>
+              <span>{previewKindLabel(result.kind)}</span>
+              <span>{formatNumber(result.rows.length)} shown</span>
+              <span>{formatNumber(result.columns.length)} columns</span>
+              <span>{formatBytesLabel(result.byte_count)}</span>
+              {result.truncated && <span>sampled</span>}
+            </div>
+
+            {result.warning && (
+              <div style={styles.previewWarning}>
+                <IconAlert size={12} />
+                <span>{result.warning}</span>
+              </div>
+            )}
+
+            {result.image_data_url ? (
+              <div style={styles.previewImageWrap}>
+                <img src={result.image_data_url} alt={result.title} style={styles.previewImage} />
+              </div>
+            ) : columns.length > 0 ? (
+              <div style={styles.previewTableWrap}>
+                <div
+                  style={{
+                    ...styles.previewTableHeader,
+                    gridTemplateColumns: previewTableGrid(columns.length),
+                  }}
+                >
+                  {columns.map((column, index) => (
+                    <div key={`${column}-${index}`} style={styles.previewTableCellHeader}>
+                      {column || `column ${index + 1}`}
+                    </div>
+                  ))}
+                </div>
+                {result.rows.length === 0 ? (
+                  <div style={styles.previewEmpty}>No rows were available in the preview sample.</div>
+                ) : (
+                  result.rows.map((row, rowIndex) => (
+                    <div
+                      key={`row-${rowIndex}`}
+                      style={{
+                        ...styles.previewTableRow,
+                        gridTemplateColumns: previewTableGrid(columns.length),
+                      }}
+                    >
+                      {columns.map((_, columnIndex) => (
+                        <div key={`${rowIndex}-${columnIndex}`} style={styles.previewTableCell} title={row[columnIndex] ?? ""}>
+                          {row[columnIndex] ?? ""}
+                        </div>
+                      ))}
+                    </div>
+                  ))
+                )}
+              </div>
+            ) : result.text != null ? (
+              <pre style={styles.previewText}>{result.text}</pre>
+            ) : (
+              <div style={styles.previewEmpty}>
+                This blob format does not have an inline preview yet. Download or open it externally.
+              </div>
+            )}
+          </>
+        ) : null}
+      </div>
+    </aside>
   );
 }
 
@@ -4018,6 +4073,36 @@ function previewKindLabel(kind: BlobPreviewResult["kind"]): string {
     default:
       return "Text";
   }
+}
+
+function previewTableGrid(columnCount: number): string {
+  return `repeat(${Math.max(columnCount, 1)}, minmax(118px, max-content))`;
+}
+
+function formatNumber(value: number): string {
+  return new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(value);
+}
+
+function formatBytesLabel(bytes: number): string {
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+
+  const units = ["KiB", "MiB", "GiB", "TiB"];
+  let value = bytes / 1024;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  return `${value.toFixed(1)} ${units[unitIndex]}`;
+}
+
+function clampPreviewPaneRatio(value: number): number {
+  if (!Number.isFinite(value)) {
+    return PREVIEW_PANE_DEFAULT_RATIO;
+  }
+  return Math.min(PREVIEW_PANE_MAX_RATIO, Math.max(PREVIEW_PANE_MIN_RATIO, value));
 }
 
 interface EmptySidebarStateProps {
@@ -4270,6 +4355,10 @@ function loadPersistedShellSnapshot(): PersistedShellSnapshot | null {
       activeTabId: typeof parsed.activeTabId === "string" ? parsed.activeTabId : null,
       activeConnectionId:
         typeof parsed.activeConnectionId === "string" ? parsed.activeConnectionId : null,
+      previewPaneRatio:
+        typeof parsed.previewPaneRatio === "number"
+          ? clampPreviewPaneRatio(parsed.previewPaneRatio)
+          : undefined,
       expandedSignIns: sanitizeBooleanRecord(parsed.expandedSignIns),
       expandedSubscriptions: sanitizeBooleanRecord(parsed.expandedSubscriptions),
       expandedAccounts: sanitizeBooleanRecord(parsed.expandedAccounts),
@@ -5103,40 +5192,35 @@ const styles: Record<string, CSSProperties> = {
     color: "var(--fg-2)",
     lineHeight: 1.6,
   },
-  previewOverlay: {
-    position: "fixed",
-    inset: 0,
-    background: "rgba(5, 6, 9, 0.72)",
-    backdropFilter: "blur(8px)",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    padding: 24,
-    zIndex: 55,
-  },
-  previewDialog: {
-    width: "min(1180px, calc(100vw - 48px))",
-    height: "min(820px, calc(100vh - 48px))",
-    borderRadius: 16,
-    border: "1px solid var(--border-1)",
-    background: "linear-gradient(180deg, rgba(20, 22, 28, 0.98), rgba(12, 13, 17, 0.98))",
-    boxShadow: "0 28px 90px rgba(0, 0, 0, 0.55)",
+  previewPane: {
+    minWidth: 0,
+    minHeight: 0,
+    background: "var(--bg-1)",
     display: "flex",
     flexDirection: "column",
     overflow: "hidden",
   },
+  previewResizeHandle: {
+    minHeight: 0,
+    cursor: "col-resize",
+    background: "linear-gradient(90deg, transparent 0, transparent 2px, var(--border-1) 2px, var(--border-1) 5px, transparent 5px)",
+    borderLeft: "1px solid var(--border-0)",
+    borderRight: "1px solid var(--border-0)",
+  },
   previewHeader: {
+    height: 38,
     display: "flex",
     alignItems: "center",
-    gap: 12,
-    padding: "14px 16px",
+    gap: 8,
+    padding: "0 8px",
     borderBottom: "1px solid var(--border-0)",
-    background: "rgba(8, 10, 14, 0.72)",
+    background: "var(--bg-2)",
+    flexShrink: 0,
   },
   previewIcon: {
-    width: 34,
-    height: 34,
-    borderRadius: 10,
+    width: 24,
+    height: 24,
+    borderRadius: 6,
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
@@ -5144,17 +5228,10 @@ const styles: Record<string, CSSProperties> = {
     background: "rgba(63, 157, 246, 0.12)",
     border: "1px solid rgba(63, 157, 246, 0.22)",
   },
-  previewEyebrow: {
-    fontFamily: "var(--mono)",
-    fontSize: 10,
-    color: "var(--fg-3)",
-    textTransform: "uppercase",
-    letterSpacing: "0.08em",
-  },
   previewTitle: {
     color: "var(--fg-0)",
-    fontSize: 16,
-    fontWeight: 700,
+    fontSize: 12,
+    fontWeight: 650,
     overflow: "hidden",
     textOverflow: "ellipsis",
     whiteSpace: "nowrap",
@@ -5162,17 +5239,30 @@ const styles: Record<string, CSSProperties> = {
   previewPath: {
     color: "var(--fg-3)",
     fontFamily: "var(--mono)",
-    fontSize: 11,
+    fontSize: 10,
     overflow: "hidden",
     textOverflow: "ellipsis",
     whiteSpace: "nowrap",
   },
-  previewCloseButton: {
-    width: 34,
-    height: 34,
-    borderRadius: 9,
+  previewHeaderButton: {
+    height: 26,
+    padding: "0 8px",
+    borderRadius: 5,
     border: "1px solid var(--border-1)",
-    background: "var(--bg-2)",
+    background: "var(--bg-1)",
+    color: "var(--fg-1)",
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 5,
+    fontFamily: "var(--mono)",
+    fontSize: 10,
+  },
+  previewCloseButton: {
+    width: 26,
+    height: 26,
+    borderRadius: 5,
+    border: "1px solid var(--border-1)",
+    background: "var(--bg-1)",
     color: "var(--fg-1)",
     display: "flex",
     alignItems: "center",
@@ -5183,8 +5273,8 @@ const styles: Record<string, CSSProperties> = {
     minHeight: 0,
     display: "flex",
     flexDirection: "column",
-    gap: 10,
-    padding: 12,
+    gap: 6,
+    padding: 6,
     overflow: "hidden",
   },
   previewCentered: {
@@ -5197,13 +5287,13 @@ const styles: Record<string, CSSProperties> = {
     fontFamily: "var(--mono)",
   },
   previewError: {
-    borderRadius: 12,
+    borderRadius: 8,
     border: "1px solid rgba(224, 113, 110, 0.28)",
     background: "rgba(224, 113, 110, 0.1)",
     color: "var(--red)",
-    padding: 16,
+    padding: 12,
     display: "flex",
-    gap: 12,
+    gap: 10,
     alignItems: "flex-start",
   },
   previewErrorTitle: {
@@ -5215,59 +5305,44 @@ const styles: Record<string, CSSProperties> = {
     color: "var(--red)",
     lineHeight: 1.5,
   },
-  previewMetaGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
-    gap: 8,
-    flexShrink: 0,
-  },
-  previewMetaItem: {
-    borderRadius: 10,
-    border: "1px solid var(--border-0)",
-    background: "rgba(255, 255, 255, 0.025)",
-    padding: "8px 10px",
-    minWidth: 0,
+  previewMetaStrip: {
     display: "flex",
-    flexDirection: "column",
-    gap: 3,
-  },
-  previewMetaLabel: {
+    alignItems: "center",
+    gap: 10,
+    minHeight: 24,
+    padding: "0 8px",
+    borderRadius: 5,
+    border: "1px solid var(--border-0)",
+    background: "rgba(255, 255, 255, 0.02)",
     color: "var(--fg-3)",
     fontFamily: "var(--mono)",
-    fontSize: 9,
+    fontSize: 10,
     textTransform: "uppercase",
-    letterSpacing: "0.08em",
-  },
-  previewMetaValue: {
-    color: "var(--fg-1)",
-    fontFamily: "var(--mono)",
-    fontSize: 11,
-    overflow: "hidden",
-    textOverflow: "ellipsis",
-    whiteSpace: "nowrap",
+    letterSpacing: "0.04em",
+    flexShrink: 0,
   },
   previewWarning: {
     flexShrink: 0,
     display: "flex",
     alignItems: "flex-start",
-    gap: 8,
-    borderRadius: 10,
+    gap: 6,
+    borderRadius: 6,
     border: "1px solid rgba(216, 184, 96, 0.24)",
     background: "rgba(216, 184, 96, 0.1)",
     color: "var(--yellow)",
-    padding: "9px 10px",
-    fontSize: 12,
+    padding: "6px 8px",
+    fontSize: 11,
     lineHeight: 1.45,
   },
   previewTableWrap: {
     flex: 1,
     minHeight: 0,
     overflow: "auto",
-    borderRadius: 10,
+    borderRadius: 3,
     border: "1px solid var(--border-0)",
     background: "var(--bg-1)",
     fontFamily: "var(--mono)",
-    fontSize: 11,
+    fontSize: 10,
   },
   previewTableHeader: {
     display: "grid",
@@ -5277,8 +5352,8 @@ const styles: Record<string, CSSProperties> = {
     background: "var(--bg-2)",
     color: "var(--fg-2)",
     textTransform: "uppercase",
-    letterSpacing: "0.05em",
-    fontSize: 10,
+    letterSpacing: "0.035em",
+    fontSize: 9,
     fontWeight: 700,
     minWidth: "max-content",
   },
@@ -5288,14 +5363,14 @@ const styles: Record<string, CSSProperties> = {
     borderTop: "1px solid var(--border-0)",
   },
   previewTableCellHeader: {
-    padding: "8px 10px",
+    padding: "5px 7px",
     borderRight: "1px solid var(--border-0)",
     overflow: "hidden",
     textOverflow: "ellipsis",
     whiteSpace: "nowrap",
   },
   previewTableCell: {
-    padding: "7px 10px",
+    padding: "5px 7px",
     borderRight: "1px solid var(--border-0)",
     color: "var(--fg-1)",
     overflow: "hidden",
@@ -5307,21 +5382,21 @@ const styles: Record<string, CSSProperties> = {
     minHeight: 0,
     overflow: "auto",
     margin: 0,
-    borderRadius: 10,
+    borderRadius: 4,
     border: "1px solid var(--border-0)",
     background: "var(--bg-1)",
     color: "var(--fg-1)",
-    padding: 14,
+    padding: 10,
     fontFamily: "var(--mono)",
-    fontSize: 12,
-    lineHeight: 1.55,
+    fontSize: 11,
+    lineHeight: 1.45,
     whiteSpace: "pre-wrap",
   },
   previewImageWrap: {
     flex: 1,
     minHeight: 0,
     overflow: "auto",
-    borderRadius: 10,
+    borderRadius: 4,
     border: "1px solid var(--border-0)",
     background: "var(--bg-1)",
     display: "flex",
@@ -5335,7 +5410,7 @@ const styles: Record<string, CSSProperties> = {
     objectFit: "contain",
   },
   previewEmpty: {
-    borderRadius: 10,
+    borderRadius: 4,
     border: "1px solid var(--border-0)",
     background: "var(--bg-1)",
     color: "var(--fg-2)",
