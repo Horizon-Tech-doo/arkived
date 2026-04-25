@@ -180,6 +180,10 @@ const PREVIEW_PANE_DEFAULT_RATIO = 0.52;
 const PREVIEW_PANE_MIN_RATIO = 0.24;
 const PREVIEW_PANE_MAX_RATIO = 0.82;
 const PREVIEW_RESIZE_HANDLE_WIDTH = 7;
+const PREVIEW_DEFAULT_ROW_LIMIT = 50;
+const PREVIEW_PAGE_SIZE_OPTIONS = [25, 50, 100, 250, 500];
+const PREVIEW_COLUMN_MIN_WIDTH = 72;
+const PREVIEW_COLUMN_MAX_WIDTH = 420;
 
 const EMPTY_FORM: ConnectionFormState = {
   displayName: "",
@@ -283,6 +287,7 @@ function App() {
   const connectionsRef = useRef<BrowserConnection[]>([]);
   const containerStatesRef = useRef<Record<string, ContainerListState>>({});
   const browserPaneRef = useRef<HTMLDivElement | null>(null);
+  const previewRequestId = useRef(0);
 
   browserTabsRef.current = browserTabs;
   connectionsRef.current = connections;
@@ -1216,23 +1221,27 @@ function App() {
     }
   }
 
-  async function handlePreviewBlob(row: BlobRow, rowOffset = 0, rowLimit = 100) {
+  async function handlePreviewBlob(row: BlobRow, rowOffset = 0, rowLimit = PREVIEW_DEFAULT_ROW_LIMIT) {
     if (!activeConnection || !activeContainer || !row.path || row.kind === "dir") {
       return;
     }
 
+    const requestId = ++previewRequestId.current;
     setShellError(null);
-    setPreviewDialog({
+    setPreviewDialog((current) => ({
       row,
-      result: null,
+      result: current && current.row.path === row.path ? current.result : null,
       rowOffset,
       rowLimit,
       busy: true,
       error: null,
-    });
+    }));
 
     try {
       const result = await previewBlob(activeConnection.id, activeContainer, row.path, rowOffset, rowLimit);
+      if (requestId !== previewRequestId.current) {
+        return;
+      }
       setPreviewDialog({
         row,
         result,
@@ -1242,6 +1251,9 @@ function App() {
         error: null,
       });
     } catch (error) {
+      if (requestId !== previewRequestId.current) {
+        return;
+      }
       const message = getErrorMessage(error);
       setShellError(message);
       setPreviewDialog({
@@ -3954,11 +3966,61 @@ interface BlobPreviewPaneProps {
 function BlobPreviewPane({ state, onClose, onPage, onDownload, onOpenExternal }: BlobPreviewPaneProps) {
   const result = state.result;
   const columns = result ? previewColumns(result) : [];
-  const canPage = Boolean(result && columns.length > 0 && (result.has_previous_page || result.has_next_page || result.total_rows != null));
+  const [columnWidthsByKey, setColumnWidthsByKey] = useState<Record<string, number[]>>({});
+  const tableKey = result ? `${result.kind}\u001f${result.path}\u001f${columns.join("\u001f")}` : "";
+  const columnWidths =
+    result && columns.length > 0
+      ? previewTableColumnWidths(tableKey, columns, result.rows, columnWidthsByKey)
+      : [];
+  const canPage = Boolean(result && columns.length > 0);
   const rowLimit = result?.row_limit || state.rowLimit || 100;
   const currentStart = result && result.rows.length > 0 ? result.row_offset + 1 : 0;
   const currentEnd = result ? result.row_offset + result.rows.length : 0;
   const totalRowsLabel = result?.total_rows != null ? formatNumber(result.total_rows) : "sample";
+  const lastOffset =
+    result?.total_rows != null
+      ? Math.max(0, Math.floor(Math.max(0, result.total_rows - 1) / rowLimit) * rowLimit)
+      : null;
+  const tableGridTemplate = previewTableGrid(columnWidths);
+
+  const handleColumnResizeStart = (event: React.MouseEvent<HTMLSpanElement>, columnIndex: number) => {
+    if (!result || !tableKey) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    const startX = event.clientX;
+    const startWidth = columnWidths[columnIndex] ?? PREVIEW_COLUMN_MIN_WIDTH;
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+
+    const applyWidth = (clientX: number) => {
+      const nextWidth = clampPreviewColumnWidth(startWidth + clientX - startX);
+      setColumnWidthsByKey((current) => {
+        const base = current[tableKey] ?? columnWidths;
+        const next = [...base];
+        next[columnIndex] = nextWidth;
+        return { ...current, [tableKey]: next };
+      });
+    };
+
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      applyWidth(moveEvent.clientX);
+    };
+    const handleMouseUp = () => {
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+    applyWidth(event.clientX);
+  };
 
   return (
     <aside style={styles.previewPane}>
@@ -4015,6 +4077,14 @@ function BlobPreviewPane({ state, onClose, onPage, onDownload, onOpenExternal }:
                     type="button"
                     style={styles.previewPagerButton}
                     disabled={state.busy || !result.has_previous_page}
+                    onClick={() => onPage(0, rowLimit)}
+                  >
+                    First
+                  </button>
+                  <button
+                    type="button"
+                    style={styles.previewPagerButton}
+                    disabled={state.busy || !result.has_previous_page}
                     onClick={() => onPage(Math.max(0, result.row_offset - rowLimit), rowLimit)}
                   >
                     Prev
@@ -4027,6 +4097,34 @@ function BlobPreviewPane({ state, onClose, onPage, onDownload, onOpenExternal }:
                   >
                     Next
                   </button>
+                  <button
+                    type="button"
+                    style={styles.previewPagerButton}
+                    disabled={state.busy || lastOffset == null || !result.has_next_page}
+                    onClick={() => {
+                      if (lastOffset != null) {
+                        onPage(lastOffset, rowLimit);
+                      }
+                    }}
+                  >
+                    Last
+                  </button>
+                  <select
+                    style={styles.previewPageSizeSelect}
+                    value={rowLimit}
+                    disabled={state.busy}
+                    title="Rows per page"
+                    onChange={(event) => {
+                      const nextLimit = Number(event.currentTarget.value) || PREVIEW_DEFAULT_ROW_LIMIT;
+                      onPage(0, nextLimit);
+                    }}
+                  >
+                    {PREVIEW_PAGE_SIZE_OPTIONS.map((option) => (
+                      <option key={option} value={option}>
+                        {option}/page
+                      </option>
+                    ))}
+                  </select>
                 </span>
               )}
             </div>
@@ -4047,10 +4145,16 @@ function BlobPreviewPane({ state, onClose, onPage, onDownload, onOpenExternal }:
                 {result.rows.length === 0 ? (
                   <div style={styles.previewEmpty}>No rows were available in the preview sample.</div>
                 ) : (
-                  <div style={{ ...styles.previewTableGrid, gridTemplateColumns: previewTableGrid(columns, result.rows) }}>
+                  <div style={{ ...styles.previewTableGrid, gridTemplateColumns: tableGridTemplate }}>
                     {columns.map((column, index) => (
                       <div key={`${column}-${index}`} style={styles.previewTableCellHeader}>
-                        {column || `column ${index + 1}`}
+                        <span style={styles.previewTableCellText}>{column || `column ${index + 1}`}</span>
+                        <span
+                          aria-hidden="true"
+                          title="Drag to resize column"
+                          style={styles.previewColumnResizeHandle}
+                          onMouseDown={(event) => handleColumnResizeStart(event, index)}
+                        />
                       </div>
                     ))}
                     {result.rows.map((row, rowIndex) =>
@@ -4103,16 +4207,38 @@ function previewKindLabel(kind: BlobPreviewResult["kind"]): string {
   }
 }
 
-function previewTableGrid(columns: string[], rows: string[][]): string {
-  const widths = columns.map((column, columnIndex) => {
+function previewTableColumnWidths(
+  tableKey: string,
+  columns: string[],
+  rows: string[][],
+  overrides: Record<string, number[]>,
+): number[] {
+  const saved = tableKey ? overrides[tableKey] : undefined;
+  return previewTableDefaultColumnWidths(columns, rows).map((width, index) =>
+    saved?.[index] != null ? clampPreviewColumnWidth(saved[index]) : width,
+  );
+}
+
+function previewTableDefaultColumnWidths(columns: string[], rows: string[][]): number[] {
+  return columns.map((column, columnIndex) => {
     const longest = rows.reduce(
       (max, row) => Math.max(max, (row[columnIndex] ?? "").length),
       column.length,
     );
     const ch = Math.min(48, Math.max(12, longest + 2));
-    return `minmax(${ch}ch, ${ch}ch)`;
+    return clampPreviewColumnWidth(Math.round(ch * 7.2 + 24));
   });
-  return widths.length > 0 ? widths.join(" ") : "minmax(12ch, 12ch)";
+}
+
+function previewTableGrid(widths: number[]): string {
+  return widths.length > 0 ? widths.map((width) => `${clampPreviewColumnWidth(width)}px`).join(" ") : "96px";
+}
+
+function clampPreviewColumnWidth(width: number): number {
+  if (!Number.isFinite(width)) {
+    return PREVIEW_COLUMN_MIN_WIDTH;
+  }
+  return Math.min(PREVIEW_COLUMN_MAX_WIDTH, Math.max(PREVIEW_COLUMN_MIN_WIDTH, Math.round(width)));
 }
 
 function formatNumber(value: number): string {
@@ -5344,9 +5470,10 @@ const styles: Record<string, CSSProperties> = {
   previewMetaStrip: {
     display: "flex",
     alignItems: "center",
+    flexWrap: "wrap",
     gap: 10,
     minHeight: 24,
-    padding: "0 8px",
+    padding: "3px 8px",
     borderRadius: 5,
     border: "1px solid var(--border-0)",
     background: "rgba(255, 255, 255, 0.02)",
@@ -5362,6 +5489,8 @@ const styles: Record<string, CSSProperties> = {
     display: "inline-flex",
     alignItems: "center",
     gap: 4,
+    flexWrap: "wrap",
+    justifyContent: "flex-end",
   },
   previewPagerButton: {
     height: 18,
@@ -5374,6 +5503,17 @@ const styles: Record<string, CSSProperties> = {
     fontSize: 9,
     textTransform: "uppercase",
     letterSpacing: "0.04em",
+  },
+  previewPageSizeSelect: {
+    height: 20,
+    borderRadius: 4,
+    border: "1px solid var(--border-1)",
+    background: "var(--bg-1)",
+    color: "var(--fg-1)",
+    fontFamily: "var(--mono)",
+    fontSize: 9,
+    textTransform: "uppercase",
+    outline: "none",
   },
   previewWarning: {
     flexShrink: 0,
@@ -5406,7 +5546,7 @@ const styles: Record<string, CSSProperties> = {
     position: "sticky",
     top: 0,
     zIndex: 2,
-    padding: "5px 7px",
+    padding: "5px 13px 5px 7px",
     borderRight: "1px solid var(--border-0)",
     borderBottom: "1px solid var(--border-1)",
     background: "var(--bg-2)",
@@ -5418,6 +5558,22 @@ const styles: Record<string, CSSProperties> = {
     overflow: "hidden",
     textOverflow: "ellipsis",
     whiteSpace: "nowrap",
+  },
+  previewTableCellText: {
+    display: "block",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  },
+  previewColumnResizeHandle: {
+    position: "absolute",
+    top: 0,
+    right: 0,
+    width: 7,
+    height: "100%",
+    cursor: "col-resize",
+    zIndex: 3,
+    background: "linear-gradient(to right, transparent, transparent 3px, rgba(77, 166, 255, 0.28) 3px, rgba(77, 166, 255, 0.28) 4px, transparent 4px)",
   },
   previewTableCell: {
     padding: "5px 7px",

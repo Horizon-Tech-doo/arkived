@@ -314,6 +314,7 @@ export function BlobTable({
 }: BlobTableProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const [tableWidth, setTableWidth] = useState(0);
+  const [columnWidths, setColumnWidths] = useState<Record<string, number>>({});
 
   useEffect(() => {
     const node = rootRef.current;
@@ -340,8 +341,39 @@ export function BlobTable({
     { key: "etag", label: "ETag", template: "minmax(132px, 0.65fr)", minWidth: 1280 },
   ].filter((column) => availableWidth >= column.minWidth);
 
-  const gridTemplate = `24px ${cols.map((column) => column.template).join(" ")}`;
+  const gridTemplate = `24px ${cols.map((column) => columnWidths[column.key] ? `${columnWidths[column.key]}px` : column.template).join(" ")}`;
   const allSelected = rows.length > 0 && selected.size === rows.length;
+
+  const handleColumnResizeStart = (event: React.MouseEvent<HTMLSpanElement>, key: string) => {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const startX = event.clientX;
+    const startWidth = event.currentTarget.parentElement?.getBoundingClientRect().width ?? columnWidths[key] ?? 120;
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+
+    const applyWidth = (clientX: number) => {
+      const nextWidth = Math.min(720, Math.max(64, Math.round(startWidth + clientX - startX)));
+      setColumnWidths((current) => ({ ...current, [key]: nextWidth }));
+    };
+
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      applyWidth(moveEvent.clientX);
+    };
+    const handleMouseUp = () => {
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+    applyWidth(event.clientX);
+  };
 
   const renderCell = (r: BlobRow, key: string, isSelected: boolean) => {
     switch (key) {
@@ -425,14 +457,29 @@ export function BlobTable({
         </div>
         {cols.map((c) => (
           <div key={c.key} style={{
+            position: "relative",
             display: "flex", alignItems: "center",
             justifyContent: c.align === "right" ? "flex-end" : "flex-start",
-            padding: "0 8px", gap: 4,
+            padding: "0 14px 0 8px", gap: 4,
             borderRight: "1px solid var(--border-0)",
             cursor: c.sortable ? "pointer" : "default",
           }}>
             <span>{c.label}</span>
             {c.sorted === "desc" && <IconChevronDown size={9} style={{ color: "var(--accent)" }} />}
+            <span
+              aria-hidden="true"
+              title="Drag to resize column"
+              onMouseDown={(event) => handleColumnResizeStart(event, c.key)}
+              style={{
+                position: "absolute",
+                top: 0,
+                right: 0,
+                width: 7,
+                height: "100%",
+                cursor: "col-resize",
+                background: "linear-gradient(to right, transparent, transparent 3px, rgba(77, 166, 255, 0.28) 3px, rgba(77, 166, 255, 0.28) 4px, transparent 4px)",
+              }}
+            />
           </div>
         ))}
       </div>
