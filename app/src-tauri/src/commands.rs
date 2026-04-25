@@ -69,6 +69,7 @@ struct InnerState {
     pending_browser_logins: HashMap<String, PendingLogin>,
     pending_tenant_browser_logins: HashMap<String, PendingLogin>,
     sign_ins: HashMap<String, SignInSession>,
+    activities: Vec<Activity>,
 }
 
 #[derive(Clone)]
@@ -329,7 +330,7 @@ pub struct DiscoveryLoginStatus {
     pub error: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct Activity {
     pub id: String,
     pub kind: String,
@@ -1682,6 +1683,8 @@ pub async fn upload_blob(
     destination_prefix: Option<String>,
     overwrite: bool,
 ) -> Result<BlobUploadResult, String> {
+    let activity_started = Utc::now();
+    let activity_timer = Instant::now();
     let connection = get_connection(&state, &connection_id)?;
     let container = resolved_container_name(&connection, &container)?;
     let source_path = PathBuf::from(source_path);
@@ -1730,6 +1733,17 @@ pub async fn upload_blob(
             )
         })?;
 
+    record_activity(
+        &state,
+        "upload",
+        "done",
+        format!("Upload `{blob_path}`"),
+        format!("to `{container}`"),
+        activity_started,
+        activity_timer.elapsed(),
+        Some(format!("{} uploaded", format_bytes(byte_count))),
+    );
+
     Ok(BlobUploadResult {
         path: blob_path,
         bytes: byte_count,
@@ -1745,6 +1759,8 @@ pub async fn download_blob(
     path: String,
     open_after_download: bool,
 ) -> Result<BlobDownloadResult, String> {
+    let activity_started = Utc::now();
+    let activity_timer = Instant::now();
     let connection = get_connection(&state, &connection_id)?;
     let container = resolved_container_name(&connection, &container)?;
     let blob_path = normalize_blob_path(&path)?;
@@ -1778,6 +1794,17 @@ pub async fn download_blob(
         }
     }
 
+    record_activity(
+        &state,
+        "download",
+        "done",
+        format!("Download `{blob_path}`"),
+        format!("from `{container}`"),
+        activity_started,
+        activity_timer.elapsed(),
+        Some(format!("{} downloaded", format_bytes(bytes))),
+    );
+
     Ok(BlobDownloadResult {
         path: target_path.to_string_lossy().into_owned(),
         bytes,
@@ -1792,6 +1819,8 @@ pub async fn download_blob_prefix(
     container: String,
     prefix: String,
 ) -> Result<BlobBulkResult, String> {
+    let activity_started = Utc::now();
+    let activity_timer = Instant::now();
     let connection = get_connection(&state, &connection_id)?;
     let container = resolved_container_name(&connection, &container)?;
     let prefix = ensure_blob_prefix(&prefix)?;
@@ -1836,6 +1865,22 @@ pub async fn download_blob_prefix(
         item_count += 1;
     }
 
+    record_activity(
+        &state,
+        "download",
+        "done",
+        format!("Download folder `{prefix}`"),
+        format!("from `{container}`"),
+        activity_started,
+        activity_timer.elapsed(),
+        Some(format!(
+            "{} across {} blob{}",
+            format_bytes(bytes),
+            item_count,
+            if item_count == 1 { "" } else { "s" }
+        )),
+    );
+
     Ok(BlobBulkResult {
         path: target_dir.to_string_lossy().into_owned(),
         bytes,
@@ -1851,6 +1896,8 @@ pub async fn delete_blob(
     path: String,
     include_snapshots: bool,
 ) -> Result<(), String> {
+    let activity_started = Utc::now();
+    let activity_timer = Instant::now();
     let connection = get_connection(&state, &connection_id)?;
     let container = resolved_container_name(&connection, &container)?;
     let blob_path = normalize_blob_path(&path)?;
@@ -1870,7 +1917,19 @@ pub async fn delete_blob(
                 Some(container.as_str()),
                 &error_to_string(error),
             )
-        })
+        })?;
+
+    record_activity(
+        &state,
+        "delete",
+        "done",
+        format!("Delete `{blob_path}`"),
+        format!("from `{container}`"),
+        activity_started,
+        activity_timer.elapsed(),
+        Some("1 deleted".into()),
+    );
+    Ok(())
 }
 
 #[tauri::command]
@@ -1881,6 +1940,8 @@ pub async fn delete_blob_prefix(
     prefix: String,
     include_snapshots: bool,
 ) -> Result<BlobBulkResult, String> {
+    let activity_started = Utc::now();
+    let activity_timer = Instant::now();
     let connection = get_connection(&state, &connection_id)?;
     let container = resolved_container_name(&connection, &container)?;
     let prefix = ensure_blob_prefix(&prefix)?;
@@ -1919,6 +1980,20 @@ pub async fn delete_blob_prefix(
             })?;
     }
 
+    record_activity(
+        &state,
+        "delete",
+        "done",
+        format!("Delete folder `{prefix}`"),
+        format!("from `{container}`"),
+        activity_started,
+        activity_timer.elapsed(),
+        Some(format!(
+            "{item_count} blob{} deleted",
+            if item_count == 1 { "" } else { "s" }
+        )),
+    );
+
     Ok(BlobBulkResult {
         path: prefix,
         bytes: 0,
@@ -1934,6 +2009,8 @@ pub async fn create_blob_folder(
     parent_prefix: Option<String>,
     folder_name: String,
 ) -> Result<BlobUploadResult, String> {
+    let activity_started = Utc::now();
+    let activity_timer = Instant::now();
     let connection = get_connection(&state, &connection_id)?;
     let container = resolved_container_name(&connection, &container)?;
     let parent_prefix = normalize_prefix(parent_prefix).unwrap_or_default();
@@ -1964,6 +2041,17 @@ pub async fn create_blob_folder(
             )
         })?;
 
+    record_activity(
+        &state,
+        "upload",
+        "done",
+        format!("Create folder `{folder_path}`"),
+        format!("in `{container}`"),
+        activity_started,
+        activity_timer.elapsed(),
+        Some("folder marker uploaded".into()),
+    );
+
     Ok(BlobUploadResult {
         path: folder_path,
         bytes: 0,
@@ -1980,6 +2068,8 @@ pub async fn rename_blob_item(
     destination_path: String,
     is_prefix: bool,
 ) -> Result<BlobBulkResult, String> {
+    let activity_started = Utc::now();
+    let activity_timer = Instant::now();
     let connection = get_connection(&state, &connection_id)?;
     let container = resolved_container_name(&connection, &container)?;
     let backend = build_backend(&connection).await?;
@@ -2048,6 +2138,21 @@ pub async fn rename_blob_item(
                 })?;
         }
 
+        record_activity(
+            &state,
+            "copy",
+            "done",
+            format!("Rename folder `{source_prefix}`"),
+            format!("to `{destination_prefix}`"),
+            activity_started,
+            activity_timer.elapsed(),
+            Some(format!(
+                "{} blob{} moved",
+                blob_names.len(),
+                if blob_names.len() == 1 { "" } else { "s" }
+            )),
+        );
+
         return Ok(BlobBulkResult {
             path: destination_prefix,
             bytes: 0,
@@ -2079,7 +2184,7 @@ pub async fn rename_blob_item(
     backend
         .delete_blob(
             &ctx,
-            &BlobPath::new(container.clone(), source),
+            &BlobPath::new(container.clone(), source.clone()),
             DeleteOpts {
                 include_snapshots: false,
             },
@@ -2093,6 +2198,17 @@ pub async fn rename_blob_item(
                 &error_to_string(error),
             )
         })?;
+
+    record_activity(
+        &state,
+        "copy",
+        "done",
+        format!("Rename blob `{source}`"),
+        format!("to `{destination}`"),
+        activity_started,
+        activity_timer.elapsed(),
+        Some("1 blob moved".into()),
+    );
 
     Ok(BlobBulkResult {
         path: destination,
@@ -2110,6 +2226,8 @@ pub async fn copy_blob_item(
     destination_prefix: Option<String>,
     is_prefix: bool,
 ) -> Result<BlobBulkResult, String> {
+    let activity_started = Utc::now();
+    let activity_timer = Instant::now();
     let connection = get_connection(&state, &connection_id)?;
     let container = resolved_container_name(&connection, &container)?;
     let backend = build_backend(&connection).await?;
@@ -2161,6 +2279,21 @@ pub async fn copy_blob_item(
                 })?;
         }
 
+        record_activity(
+            &state,
+            "copy",
+            "done",
+            format!("Copy folder `{source_prefix}`"),
+            format!("to `{destination_prefix}`"),
+            activity_started,
+            activity_timer.elapsed(),
+            Some(format!(
+                "{} blob{} copied",
+                blob_names.len(),
+                if blob_names.len() == 1 { "" } else { "s" }
+            )),
+        );
+
         return Ok(BlobBulkResult {
             path: destination_prefix,
             bytes: 0,
@@ -2191,6 +2324,17 @@ pub async fn copy_blob_item(
                 &error_to_string(error),
             )
         })?;
+
+    record_activity(
+        &state,
+        "copy",
+        "done",
+        format!("Copy blob `{source}`"),
+        format!("to `{destination}`"),
+        activity_started,
+        activity_timer.elapsed(),
+        Some("1 blob copied".into()),
+    );
 
     Ok(BlobBulkResult {
         path: destination,
@@ -2223,13 +2367,56 @@ pub fn disconnect_connection(
 }
 
 #[tauri::command]
-pub fn list_activities() -> Vec<Activity> {
-    Vec::new()
+pub fn list_activities(state: State<'_, AppState>) -> Vec<Activity> {
+    state.inner.lock().unwrap().activities.clone()
 }
 
 #[tauri::command]
 pub fn agent_transcript() -> serde_json::Value {
     serde_json::json!([])
+}
+
+fn record_activity(
+    state: &AppState,
+    kind: impl Into<String>,
+    status: impl Into<String>,
+    title: impl Into<String>,
+    detail: impl Into<String>,
+    started_at: chrono::DateTime<Utc>,
+    duration: StdDuration,
+    result: Option<String>,
+) {
+    let activity = Activity {
+        id: Uuid::new_v4().to_string(),
+        kind: kind.into(),
+        status: status.into(),
+        title: title.into(),
+        detail: detail.into(),
+        started: started_at.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+        duration: Some(format_activity_duration(duration)),
+        progress: None,
+        result,
+    };
+
+    let mut guard = state.inner.lock().unwrap();
+    guard.activities.insert(0, activity);
+    guard.activities.truncate(200);
+}
+
+fn format_activity_duration(duration: StdDuration) -> String {
+    let millis = duration.as_millis();
+    if millis < 1_000 {
+        return format!("{millis} ms");
+    }
+
+    let seconds = duration.as_secs();
+    if seconds < 60 {
+        return format!("{seconds}s");
+    }
+
+    let minutes = seconds / 60;
+    let remaining = seconds % 60;
+    format!("{minutes}m {remaining}s")
 }
 
 fn keychain_ref_for_connection(connection_id: &str) -> String {

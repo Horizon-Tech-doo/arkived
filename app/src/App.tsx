@@ -2,7 +2,8 @@ import React, { CSSProperties, FormEvent, ReactNode, useEffect, useRef, useState
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { GroupHeader, TitleBar, TreeRow } from "./chrome";
 import { ActionBar, BlobTable, Inspector, TabsBar } from "./content";
-import type { BlobRow } from "./data";
+import { ActivityBar } from "./panels";
+import type { Activity, BlobRow } from "./data";
 import {
   IconAlert,
   IconArrowUp,
@@ -45,6 +46,7 @@ import {
   downloadBlob,
   downloadBlobPrefix,
   fetchBlobs,
+  fetchActivities,
   listConnections,
   listContainers,
   listDiscoveredStorageAccounts,
@@ -238,6 +240,8 @@ function App() {
   const [discoveryError, setDiscoveryError] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [blobClipboard, setBlobClipboard] = useState<BlobClipboardState | null>(null);
+  const [activities, setActivities] = useState<Activity[]>([]);
+  const [activityExpanded, setActivityExpanded] = useState(false);
   const [connectionsBusy, setConnectionsBusy] = useState(false);
   const [signInsBusy, setSignInsBusy] = useState(false);
   const [connectBusy, setConnectBusy] = useState(false);
@@ -441,6 +445,18 @@ function App() {
     }
   }
 
+  async function refreshActivities() {
+    if (!tauriAvailable.current) {
+      return;
+    }
+
+    try {
+      setActivities(await fetchActivities());
+    } catch (error) {
+      setShellError(getErrorMessage(error));
+    }
+  }
+
   async function ensureContainersLoaded(connectionId: string, force = false): Promise<BrowserContainer[]> {
     const currentState = containerStatesRef.current[connectionId];
     if (!force && currentState?.loaded && !currentState.busy) {
@@ -558,7 +574,11 @@ function App() {
     }
 
     try {
-      const [nextConnections, nextSignIns] = await Promise.all([refreshConnections(), refreshDiscoveryTree()]);
+      const [nextConnections, nextSignIns] = await Promise.all([
+        refreshConnections(),
+        refreshDiscoveryTree(),
+        refreshActivities(),
+      ]);
       if (nextConnections.length === 0 && nextSignIns.length === 0) {
         setConnectOpen(true);
       }
@@ -577,6 +597,7 @@ function App() {
     await Promise.all([
       refreshConnections(preferredConnectionId),
       refreshDiscoveryTree(),
+      refreshActivities(),
     ]);
 
     await Promise.all(
@@ -1167,6 +1188,7 @@ function App() {
           ? `Opened ${row.name} from ${result.path}`
           : `Downloaded ${row.name} to ${result.path}`,
       );
+      await refreshActivities();
     } catch (error) {
       setShellError(getErrorMessage(error));
     }
@@ -1183,6 +1205,7 @@ function App() {
       setShellError(
         `Downloaded ${result.item_count} blob${result.item_count === 1 ? "" : "s"} from ${row.name} to ${result.path}`,
       );
+      await refreshActivities();
     } catch (error) {
       setShellError(getErrorMessage(error));
     }
@@ -1206,6 +1229,7 @@ function App() {
         loaded: false,
         selectedIndices: [],
       }));
+      await refreshActivities();
     } catch (error) {
       setShellError(getErrorMessage(error));
     }
@@ -1230,6 +1254,7 @@ function App() {
         loaded: false,
         selectedIndices: [],
       }));
+      await refreshActivities();
     } catch (error) {
       setShellError(getErrorMessage(error));
     }
@@ -1271,6 +1296,7 @@ function App() {
         loaded: false,
         selectedIndices: [],
       }));
+      await refreshActivities();
     } catch (error) {
       setShellError(getErrorMessage(error));
     }
@@ -1317,6 +1343,7 @@ function App() {
           loaded: false,
           selectedIndices: [],
         }));
+        await refreshActivities();
       }
     } catch (error) {
       setShellError(getErrorMessage(error));
@@ -1356,6 +1383,7 @@ function App() {
           selectedIndices: [],
         }));
       }
+      await refreshActivities();
     } catch (error) {
       setShellError(getErrorMessage(error));
     }
@@ -1399,6 +1427,7 @@ function App() {
         loaded: false,
         selectedIndices: [],
       }));
+      await refreshActivities();
     } catch (error) {
       setShellError(getErrorMessage(error));
     }
@@ -1448,6 +1477,7 @@ function App() {
         loaded: false,
         selectedIndices: [],
       }));
+      await refreshActivities();
     } catch (error) {
       setShellError(getErrorMessage(error));
     }
@@ -2628,6 +2658,11 @@ function App() {
               )}
             </>
           )}
+          <ActivityBar
+            expanded={activityExpanded}
+            onToggle={() => setActivityExpanded((current) => !current)}
+            activities={activities}
+          />
         </main>
       </div>
 

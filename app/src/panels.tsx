@@ -7,7 +7,8 @@ import {
   IconKey, IconLock, IconRefresh, IconLoader, IconTrash, IconChevronDown, IconChevronUp,
   IconAlert,
 } from "./icons";
-import { ACTIVITIES, AGENT_TRANSCRIPT, ImpactRow, TranscriptMessage, AssistantMessage, ToolPart, ConfirmPart } from "./data";
+import { AGENT_TRANSCRIPT, ImpactRow, TranscriptMessage, AssistantMessage, ToolPart, ConfirmPart } from "./data";
+import type { Activity } from "./data";
 import { Checkbox } from "./content";
 
 // ─────────────────────────────────────────────────────────────
@@ -580,10 +581,11 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
 interface ActivityBarProps {
   expanded: boolean;
   onToggle: () => void;
+  activities: Activity[];
 }
-export function ActivityBar({ expanded, onToggle }: ActivityBarProps) {
-  const running = ACTIVITIES.filter((a) => a.status === "running");
-  const done = ACTIVITIES.filter((a) => a.status === "done");
+export function ActivityBar({ expanded, onToggle, activities }: ActivityBarProps) {
+  const running = activities.filter((a) => a.status === "running");
+  const done = activities.filter((a) => a.status === "done");
 
   return (
     <div style={{
@@ -621,13 +623,21 @@ export function ActivityBar({ expanded, onToggle }: ActivityBarProps) {
         )}
         <span style={{ fontSize: 10, color: "var(--fg-3)" }}>{done.length} completed</span>
         <span style={{ flex: 1 }} />
-        <button style={{ fontSize: 10, color: "var(--fg-2)" }}>Clear completed</button>
-        <button style={{ fontSize: 10, color: "var(--fg-2)" }}>Clear successful</button>
       </div>
 
       {expanded && (
         <div style={{ flex: 1, overflow: "auto" }}>
-          {ACTIVITIES.map((a) => (
+          {activities.length === 0 && (
+            <div style={{
+              padding: "18px 12px",
+              color: "var(--fg-3)",
+              fontSize: 11,
+              borderBottom: "1px solid var(--border-0)",
+            }}>
+              Blob uploads, downloads, copies, renames, and deletes will appear here.
+            </div>
+          )}
+          {activities.map((a) => (
             <div key={a.id} style={{
               display: "flex", alignItems: "flex-start", gap: 10,
               padding: "8px 12px",
@@ -673,14 +683,6 @@ export function ActivityBar({ expanded, onToggle }: ActivityBarProps) {
                   </div>
                 )}
               </div>
-              <button style={{
-                fontSize: 10, color: "var(--accent)",
-                whiteSpace: "nowrap",
-                display: "flex", alignItems: "center", gap: 4,
-                padding: "2px 4px",
-              }}>
-                <IconCopy size={10} /> Copy AzCopy
-              </button>
             </div>
           ))}
         </div>
