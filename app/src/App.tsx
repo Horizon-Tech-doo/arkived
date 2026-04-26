@@ -37,6 +37,7 @@ import {
   BrowserTenant,
   BlobPreviewResult,
   cancelActivity,
+  clearActivities,
   DeviceCodePrompt,
   connectAzurite,
   connectDiscoveredStorageAccount,
@@ -501,6 +502,18 @@ function App() {
     try {
       await cancelActivity(activityId);
       await refreshActivities();
+    } catch (error) {
+      setShellError(getErrorMessage(error));
+    }
+  }
+
+  async function handleClearActivities(scope: "completed" | "successful") {
+    if (!tauriAvailable.current) {
+      return;
+    }
+
+    try {
+      setActivities(await clearActivities(scope));
     } catch (error) {
       setShellError(getErrorMessage(error));
     }
@@ -3148,6 +3161,12 @@ function App() {
             activities={activities}
             onCancelActivity={(activityId) => {
               void handleCancelActivity(activityId);
+            }}
+            onClearCompleted={() => {
+              void handleClearActivities("completed");
+            }}
+            onClearSuccessful={() => {
+              void handleClearActivities("successful");
             }}
           />
         </main>

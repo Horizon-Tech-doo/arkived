@@ -495,6 +495,10 @@ export async function fetchActivities(): Promise<Activity[]> {
   return callTauri<Activity[]>("list_activities");
 }
 
+export async function clearActivities(scope: "completed" | "successful"): Promise<Activity[]> {
+  return callTauri<Activity[]>("clear_activities", { scope });
+}
+
 export async function cancelActivity(activityId: string): Promise<void> {
   return callTauri<void>("cancel_activity", { activityId });
 }

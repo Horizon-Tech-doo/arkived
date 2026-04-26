@@ -583,10 +583,35 @@ interface ActivityBarProps {
   onToggle: () => void;
   activities: Activity[];
   onCancelActivity?: (activityId: string) => void;
+  onClearCompleted?: () => void;
+  onClearSuccessful?: () => void;
 }
-export function ActivityBar({ expanded, onToggle, activities, onCancelActivity }: ActivityBarProps) {
+
+function activityHeaderButtonStyle(disabled: boolean): CSSProperties {
+  return {
+    height: 20,
+    padding: "0 7px",
+    border: "1px solid transparent",
+    borderRadius: 3,
+    background: disabled ? "transparent" : "var(--bg-2)",
+    color: disabled ? "var(--fg-4)" : "var(--accent)",
+    fontFamily: "var(--mono)",
+    fontSize: 10,
+    cursor: disabled ? "default" : "pointer",
+  };
+}
+
+export function ActivityBar({
+  expanded,
+  onToggle,
+  activities,
+  onCancelActivity,
+  onClearCompleted,
+  onClearSuccessful,
+}: ActivityBarProps) {
   const running = activities.filter((a) => a.status === "running");
   const done = activities.filter((a) => a.status !== "running");
+  const successful = activities.filter((a) => a.status === "done");
   const activityIcon = (activity: Activity) => {
     if (activity.kind === "delete") {
       return <IconTrash size={11} />;
@@ -633,6 +658,32 @@ export function ActivityBar({ expanded, onToggle, activities, onCancelActivity }
         )}
         <span style={{ fontSize: 10, color: "var(--fg-3)" }}>{done.length} completed</span>
         <span style={{ flex: 1 }} />
+        {expanded && (
+          <>
+            <button
+              type="button"
+              disabled={done.length === 0}
+              onClick={(event) => {
+                event.stopPropagation();
+                onClearCompleted?.();
+              }}
+              style={activityHeaderButtonStyle(done.length === 0)}
+            >
+              Clear completed
+            </button>
+            <button
+              type="button"
+              disabled={successful.length === 0}
+              onClick={(event) => {
+                event.stopPropagation();
+                onClearSuccessful?.();
+              }}
+              style={activityHeaderButtonStyle(successful.length === 0)}
+            >
+              Clear successful
+            </button>
+          </>
+        )}
       </div>
 
       {expanded && (

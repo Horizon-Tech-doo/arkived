@@ -2797,6 +2797,24 @@ pub fn list_activities(state: State<'_, AppState>) -> Vec<Activity> {
 }
 
 #[tauri::command]
+pub fn clear_activities(
+    state: State<'_, AppState>,
+    scope: String,
+) -> Result<Vec<Activity>, String> {
+    let mut guard = state.inner.lock().unwrap();
+    match scope.as_str() {
+        "completed" => guard
+            .activities
+            .retain(|activity| activity.status == "running"),
+        "successful" => guard
+            .activities
+            .retain(|activity| activity.status != "done"),
+        _ => return Err(format!("unknown activity clear scope `{scope}`")),
+    }
+    Ok(guard.activities.clone())
+}
+
+#[tauri::command]
 pub fn cancel_activity(state: State<'_, AppState>, activity_id: String) -> Result<(), String> {
     let mut guard = state.inner.lock().unwrap();
     let activity_status = guard
