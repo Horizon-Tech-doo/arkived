@@ -67,6 +67,7 @@ import {
   startSignInTenantReauth,
   updateSignInFilter,
   uploadBlob,
+  uploadFolder,
 } from "./lib/ipc";
 
 type ConnectMethod =
@@ -1476,6 +1477,58 @@ function App() {
     }
   }
 
+  async function handleUploadFolders() {
+    if (!activeConnection || !activeContainer || !activeTab) {
+      return;
+    }
+
+    setShellError(null);
+    try {
+      const selection = await openFileDialog({
+        multiple: true,
+        directory: true,
+        title: `Upload folder to ${activeContainer}${prefix ? `/${prefix}` : ""}`,
+      });
+      if (!selection) {
+        return;
+      }
+
+      const sourcePaths = Array.isArray(selection) ? selection : [selection];
+      let folderCount = 0;
+      let fileCount = 0;
+      let byteCount = 0;
+      for (const sourcePath of sourcePaths) {
+        if (typeof sourcePath !== "string") {
+          continue;
+        }
+        const result = await uploadFolder(
+          activeConnection.id,
+          activeContainer,
+          sourcePath,
+          prefix || null,
+          false,
+        );
+        folderCount += 1;
+        fileCount += result.item_count;
+        byteCount += result.bytes;
+      }
+
+      if (folderCount > 0) {
+        setShellError(
+          `Uploaded ${folderCount} folder${folderCount === 1 ? "" : "s"} (${fileCount} file${fileCount === 1 ? "" : "s"}, ${formatBytesLabel(byteCount)}) to ${activeContainer}${prefix ? `/${prefix}` : ""}`,
+        );
+        updateTab(activeTab.id, (tab) => ({
+          ...tab,
+          loaded: false,
+          selectedIndices: [],
+        }));
+        await refreshActivities();
+      }
+    } catch (error) {
+      setShellError(getErrorMessage(error));
+    }
+  }
+
   async function handleCreateFolder(
     connectionId = activeConnection?.id,
     containerName = activeContainer,
@@ -2572,6 +2625,9 @@ function App() {
                 onUpload={() => {
                   void handleUploadFiles();
                 }}
+                onUploadFolder={() => {
+                  void handleUploadFolders();
+                }}
                 onDownload={() => {
                   void handleDownloadSelection(false);
                 }}
@@ -3106,6 +3162,9 @@ function App() {
             }, !selectedRow || selectedRow.kind !== "dir")}
             {action("Upload files…", () => {
               void handleUploadFiles();
+            }, !activeConnection || !activeContainer)}
+            {action("Upload folder…", () => {
+              void handleUploadFolders();
             }, !activeConnection || !activeContainer)}
             {action("Download", () => {
               if (!selectedRow) {

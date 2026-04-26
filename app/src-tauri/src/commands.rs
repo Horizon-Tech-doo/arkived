@@ -1786,6 +1786,136 @@ pub async fn upload_blob(
 }
 
 #[tauri::command]
+pub async fn upload_folder(
+    state: State<'_, AppState>,
+    connection_id: String,
+    container: String,
+    source_path: String,
+    destination_prefix: Option<String>,
+    overwrite: bool,
+) -> Result<BlobBulkResult, String> {
+    let activity_started = Utc::now();
+    let activity_timer = Instant::now();
+    let connection = get_connection(&state, &connection_id)?;
+    let container = resolved_container_name(&connection, &container)?;
+    let source_path = PathBuf::from(source_path);
+    let metadata = std::fs::metadata(&source_path).map_err(|error| {
+        format!(
+            "failed to inspect upload folder `{}`: {error}",
+            source_path.display()
+        )
+    })?;
+    if !metadata.is_dir() {
+        return Err(format!(
+            "upload source `{}` is not a directory",
+            source_path.display()
+        ));
+    }
+
+    let folder_name = source_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| {
+            format!(
+                "upload folder `{}` has no folder name",
+                source_path.display()
+            )
+        })?
+        .to_string();
+    let prefix = normalize_prefix(destination_prefix).unwrap_or_default();
+    let root_blob_prefix = ensure_blob_prefix(&format!("{prefix}{folder_name}"))?;
+    let files = collect_regular_files(&source_path)?;
+    let backend = build_backend(&connection).await?;
+    let ctx = app_operation_ctx();
+    let mut uploaded_count = 0u64;
+    let mut uploaded_bytes = 0u64;
+
+    if files.is_empty() {
+        let mut metadata = HashMap::new();
+        metadata.insert("hdi_isfolder".into(), "true".into());
+        backend
+            .write_blob(
+                &ctx,
+                &BlobPath::new(container.clone(), root_blob_prefix.clone()),
+                empty_byte_stream(),
+                WriteOpts {
+                    overwrite,
+                    content_type: Some("application/x-directory".into()),
+                    metadata,
+                    ..Default::default()
+                },
+            )
+            .await
+            .map_err(|error| {
+                compact_live_browse_error(
+                    &connection,
+                    "Folder upload",
+                    Some(container.as_str()),
+                    &error_to_string(error),
+                )
+            })?;
+    } else {
+        for file_path in files {
+            let relative_path = local_relative_path_to_blob(&source_path, &file_path)?;
+            let blob_path = normalize_blob_path(&format!("{root_blob_prefix}{relative_path}"))?;
+            let byte_count = std::fs::metadata(&file_path)
+                .map_err(|error| {
+                    format!(
+                        "failed to inspect upload source `{}`: {error}",
+                        file_path.display()
+                    )
+                })?
+                .len();
+            let body = file_byte_stream(&file_path).await?;
+            backend
+                .write_blob(
+                    &ctx,
+                    &BlobPath::new(container.clone(), blob_path),
+                    body,
+                    WriteOpts {
+                        overwrite,
+                        content_type: infer_content_type(&file_path),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .map_err(|error| {
+                    compact_live_browse_error(
+                        &connection,
+                        "Folder upload",
+                        Some(container.as_str()),
+                        &error_to_string(error),
+                    )
+                })?;
+            uploaded_count += 1;
+            uploaded_bytes += byte_count;
+        }
+    }
+
+    record_activity(
+        &state,
+        "upload",
+        "done",
+        format!("Upload folder `{folder_name}`"),
+        format!("to `{container}/{root_blob_prefix}`"),
+        activity_started,
+        activity_timer.elapsed(),
+        Some(format!(
+            "{} in {} file{} uploaded",
+            format_bytes(uploaded_bytes),
+            uploaded_count,
+            if uploaded_count == 1 { "" } else { "s" }
+        )),
+    );
+
+    Ok(BlobBulkResult {
+        path: root_blob_prefix,
+        bytes: uploaded_bytes,
+        item_count: uploaded_count,
+    })
+}
+
+#[tauri::command]
 pub async fn download_blob(
     state: State<'_, AppState>,
     connection_id: String,
@@ -3883,6 +4013,66 @@ async fn file_byte_stream(source_path: &Path) -> Result<ByteStream, String> {
         })
         .boxed(),
     )
+}
+
+fn collect_regular_files(root: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut pending = vec![root.to_path_buf()];
+    let mut files = Vec::new();
+
+    while let Some(path) = pending.pop() {
+        let entries = std::fs::read_dir(&path)
+            .map_err(|error| format!("failed to read directory `{}`: {error}", path.display()))?;
+        for entry in entries {
+            let entry = entry.map_err(|error| {
+                format!(
+                    "failed to read directory entry under `{}`: {error}",
+                    path.display()
+                )
+            })?;
+            let entry_path = entry.path();
+            let metadata = entry.metadata().map_err(|error| {
+                format!(
+                    "failed to inspect upload source `{}`: {error}",
+                    entry_path.display()
+                )
+            })?;
+            if metadata.is_dir() {
+                pending.push(entry_path);
+            } else if metadata.is_file() {
+                files.push(entry_path);
+            }
+        }
+    }
+
+    files.sort();
+    Ok(files)
+}
+
+fn local_relative_path_to_blob(root: &Path, file_path: &Path) -> Result<String, String> {
+    let relative = file_path.strip_prefix(root).map_err(|error| {
+        format!(
+            "failed to derive relative upload path for `{}` under `{}`: {error}",
+            file_path.display(),
+            root.display()
+        )
+    })?;
+    let parts = relative
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(value) => Some(value.to_string_lossy().to_string()),
+            _ => None,
+        })
+        .filter(|part| !part.trim().is_empty())
+        .collect::<Vec<_>>();
+
+    if parts.is_empty() {
+        Err(format!(
+            "failed to derive blob path for upload source `{}`",
+            file_path.display()
+        ))
+    } else {
+        Ok(parts.join("/"))
+    }
 }
 
 fn empty_byte_stream() -> ByteStream {

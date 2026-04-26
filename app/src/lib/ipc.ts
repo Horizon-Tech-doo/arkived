@@ -346,6 +346,22 @@ export async function uploadBlob(
   });
 }
 
+export async function uploadFolder(
+  connectionId: string,
+  container: string,
+  sourcePath: string,
+  destinationPrefix?: string | null,
+  overwrite = false,
+): Promise<BlobBulkResult> {
+  return callTauri<BlobBulkResult>("upload_folder", {
+    connectionId,
+    container,
+    sourcePath,
+    destinationPrefix,
+    overwrite,
+  });
+}
+
 export async function downloadBlob(
   connectionId: string,
   container: string,

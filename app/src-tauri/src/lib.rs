@@ -72,6 +72,7 @@ pub fn run() {
             commands::list_containers,
             commands::list_blobs,
             commands::upload_blob,
+            commands::upload_folder,
             commands::download_blob,
             commands::preview_blob,
             commands::download_blob_prefix,

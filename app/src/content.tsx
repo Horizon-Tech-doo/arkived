@@ -101,6 +101,7 @@ interface ActionBarProps {
   canPreview?: boolean;
   onDelete: () => void;
   onUpload: () => void;
+  onUploadFolder: () => void;
   onDownload: () => void;
   onPreview: () => void;
   onCreateFolder: () => void;
@@ -113,6 +114,7 @@ export function ActionBar({
   canPreview = selectedCount === 1,
   onDelete,
   onUpload,
+  onUploadFolder,
   onDownload,
   onPreview,
   onCreateFolder,
@@ -160,6 +162,7 @@ export function ActionBar({
       flexShrink: 0,
     }}>
       {btn(<IconUpload size={12} />, "Upload", { onClick: onUpload, kbd: "Ctrl U" })}
+      {btn(<IconFolder size={12} />, "Upload folder", { onClick: onUploadFolder })}
       {btn(<IconDownload size={12} />, "Download", {
         disabled: selectedCount === 0,
         onClick: onDownload,
