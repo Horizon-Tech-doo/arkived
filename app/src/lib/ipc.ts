@@ -327,12 +327,14 @@ export async function fetchBlobs(
   connectionId: string,
   container: string,
   prefix?: string | null,
+  filter?: string | null,
   continuation?: string | null,
 ): Promise<BrowserBlobPage> {
   return callTauri<BrowserBlobPage>("list_blobs", {
     connectionId,
     container,
     prefix,
+    filter,
     continuation,
   });
 }

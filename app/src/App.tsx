@@ -109,6 +109,7 @@ interface BrowserTabState {
   connectionId: string;
   containerName: string;
   prefix: string;
+  filter: string;
   rows: BlobRow[];
   busy: boolean;
   error: string | null;
@@ -164,6 +165,7 @@ interface PersistedBrowserTab {
   endpoint?: string | null;
   containerName: string;
   prefix?: string;
+  filter?: string;
 }
 
 interface PersistedShellSnapshot {
@@ -562,6 +564,8 @@ function App() {
 
     const requestId = (blobRequestIds.current[tabId] ?? 0) + 1;
     blobRequestIds.current[tabId] = requestId;
+    const requestedPrefix = tab.prefix;
+    const requestedFilter = tab.filter;
     updateTab(tabId, (currentTab) => ({
       ...currentTab,
       busy: true,
@@ -569,19 +573,34 @@ function App() {
     }));
 
     try {
-      const page = await fetchBlobs(tab.connectionId, tab.containerName, tab.prefix || null, null);
+      const page = await fetchBlobs(
+        tab.connectionId,
+        tab.containerName,
+        tab.prefix || null,
+        tab.filter || null,
+        null,
+      );
       if (blobRequestIds.current[tabId] !== requestId) {
         return;
       }
 
       updateTab(tabId, (currentTab) => ({
-        ...currentTab,
-        rows: page.rows,
-        busy: false,
-        error: null,
-        loaded: true,
-        continuation: page.continuation ?? null,
-        selectedIndices: [],
+        ...(currentTab.prefix === requestedPrefix && currentTab.filter === requestedFilter
+          ? {
+              ...currentTab,
+              rows: page.rows,
+              busy: false,
+              error: null,
+              loaded: true,
+              continuation: page.continuation ?? null,
+              selectedIndices: [],
+            }
+          : {
+              ...currentTab,
+              busy: false,
+              loaded: false,
+              continuation: null,
+            }),
       }));
     } catch (error) {
       if (blobRequestIds.current[tabId] !== requestId) {
@@ -589,13 +608,22 @@ function App() {
       }
 
       updateTab(tabId, (currentTab) => ({
-        ...currentTab,
-        rows: [],
-        busy: false,
-        error: getErrorMessage(error),
-        loaded: true,
-        continuation: null,
-        selectedIndices: [],
+        ...(currentTab.prefix === requestedPrefix && currentTab.filter === requestedFilter
+          ? {
+              ...currentTab,
+              rows: [],
+              busy: false,
+              error: getErrorMessage(error),
+              loaded: true,
+              continuation: null,
+              selectedIndices: [],
+            }
+          : {
+              ...currentTab,
+              busy: false,
+              loaded: false,
+              continuation: null,
+            }),
       }));
     }
   }
@@ -608,6 +636,9 @@ function App() {
 
     const requestId = (blobRequestIds.current[tabId] ?? 0) + 1;
     blobRequestIds.current[tabId] = requestId;
+    const requestedPrefix = tab.prefix;
+    const requestedFilter = tab.filter;
+    const requestedContinuation = tab.continuation;
     updateTab(tabId, (currentTab) => ({
       ...currentTab,
       busy: true,
@@ -619,6 +650,7 @@ function App() {
         tab.connectionId,
         tab.containerName,
         tab.prefix || null,
+        tab.filter || null,
         tab.continuation,
       );
       if (blobRequestIds.current[tabId] !== requestId) {
@@ -626,12 +658,23 @@ function App() {
       }
 
       updateTab(tabId, (currentTab) => ({
-        ...currentTab,
-        rows: [...currentTab.rows, ...page.rows],
-        busy: false,
-        error: null,
-        loaded: true,
-        continuation: page.continuation ?? null,
+        ...(currentTab.prefix === requestedPrefix &&
+        currentTab.filter === requestedFilter &&
+        currentTab.continuation === requestedContinuation
+          ? {
+              ...currentTab,
+              rows: [...currentTab.rows, ...page.rows],
+              busy: false,
+              error: null,
+              loaded: true,
+              continuation: page.continuation ?? null,
+            }
+          : {
+              ...currentTab,
+              busy: false,
+              loaded: false,
+              continuation: null,
+            }),
       }));
     } catch (error) {
       if (blobRequestIds.current[tabId] !== requestId) {
@@ -639,10 +682,21 @@ function App() {
       }
 
       updateTab(tabId, (currentTab) => ({
-        ...currentTab,
-        busy: false,
-        error: getErrorMessage(error),
-        loaded: true,
+        ...(currentTab.prefix === requestedPrefix &&
+        currentTab.filter === requestedFilter &&
+        currentTab.continuation === requestedContinuation
+          ? {
+              ...currentTab,
+              busy: false,
+              error: getErrorMessage(error),
+              loaded: true,
+            }
+          : {
+              ...currentTab,
+              busy: false,
+              loaded: false,
+              continuation: null,
+            }),
       }));
     }
   }
@@ -844,6 +898,7 @@ function App() {
           connectionId,
           containerName,
           prefix: "",
+          filter: "",
           rows: [],
           busy: false,
           error: null,
@@ -1142,6 +1197,7 @@ function App() {
         connectionId: connection.id,
         containerName: persistedTab.containerName,
         prefix: persistedTab.prefix ?? "",
+        filter: persistedTab.filter ?? "",
         rows: [],
         busy: false,
         error: null,
@@ -1188,8 +1244,10 @@ function App() {
     updateTab(activeTab.id, (tab) => ({
       ...tab,
       prefix: nextPrefix,
+      filter: "",
       loaded: false,
       error: null,
+      continuation: null,
       selectedIndices: [],
     }));
   }
@@ -1202,8 +1260,10 @@ function App() {
     updateTab(activeTab.id, (tab) => ({
       ...tab,
       prefix: parentPrefix(tab.prefix),
+      filter: "",
       loaded: false,
       error: null,
+      continuation: null,
       selectedIndices: [],
     }));
   }
@@ -1857,6 +1917,7 @@ function App() {
             endpoint: connection.endpoint,
             containerName: tab.containerName,
             prefix: tab.prefix,
+            filter: tab.filter,
           };
         })
         .filter((tab): tab is PersistedBrowserTab => tab != null),
@@ -2653,8 +2714,10 @@ function App() {
                       updateTab(activeTab.id, (tab) => ({
                         ...tab,
                         prefix: "",
+                        filter: "",
                         loaded: false,
                         error: null,
+                        continuation: null,
                         selectedIndices: [],
                       }));
                     }}
@@ -2672,8 +2735,10 @@ function App() {
                           updateTab(activeTab.id, (tab) => ({
                             ...tab,
                             prefix: segment.value,
+                            filter: "",
                             loaded: false,
                             error: null,
+                            continuation: null,
                             selectedIndices: [],
                           }));
                         }}
@@ -2685,6 +2750,24 @@ function App() {
                 </div>
 
                 <div style={styles.pathMeta}>
+                  <input
+                    type="search"
+                    aria-label="Filter blobs by prefix"
+                    placeholder="Filter by prefix"
+                    value={activeTab.filter}
+                    style={styles.pathFilterInput}
+                    onChange={(event) => {
+                      const nextFilter = event.currentTarget.value;
+                      updateTab(activeTab.id, (tab) => ({
+                        ...tab,
+                        filter: nextFilter,
+                        loaded: false,
+                        error: null,
+                        continuation: null,
+                        selectedIndices: [],
+                      }));
+                    }}
+                  />
                   {activeTab.busy && (
                     <span style={styles.pathStatus}>
                       <IconLoader size={11} />
@@ -2693,6 +2776,7 @@ function App() {
                   )}
                   <span style={styles.pathCount}>
                     {activeRows.length} {activeRows.length === 1 ? "item" : "items"}
+                    {activeTab.filter ? " matched" : ""}
                   </span>
                 </div>
               </div>
@@ -2965,6 +3049,7 @@ function App() {
                         <div style={styles.blobListFooter}>
                           <span>
                             Showing {activeRows.length.toLocaleString()} cached item{activeRows.length === 1 ? "" : "s"}
+                            {activeTab.filter ? ` for prefix "${activeTab.filter}"` : ""}
                           </span>
                           {activeRowsHaveMore ? (
                             <span style={styles.blobListFooterHint}>More results are available from Azure.</span>
@@ -4908,6 +4993,7 @@ function loadPersistedShellSnapshot(): PersistedShellSnapshot | null {
           endpoint: typeof tab.endpoint === "string" ? tab.endpoint : null,
           containerName: tab.containerName,
           prefix: typeof tab.prefix === "string" ? tab.prefix : "",
+          filter: typeof tab.filter === "string" ? tab.filter : "",
         })),
     };
   } catch {
@@ -5221,6 +5307,18 @@ const styles: Record<string, CSSProperties> = {
     alignItems: "center",
     gap: 10,
     flexShrink: 0,
+  },
+  pathFilterInput: {
+    width: 190,
+    height: 24,
+    border: "1px solid var(--border-1)",
+    borderRadius: 3,
+    background: "var(--bg-1)",
+    color: "var(--fg-1)",
+    padding: "0 8px",
+    fontFamily: "var(--mono)",
+    fontSize: 10,
+    outline: "none",
   },
   pathStatus: {
     display: "inline-flex",

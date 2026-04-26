@@ -1694,17 +1694,25 @@ pub async fn list_blobs(
     connection_id: String,
     container: String,
     prefix: Option<String>,
+    filter: Option<String>,
     continuation: Option<String>,
 ) -> Result<BrowserBlobPage, String> {
     let connection = get_connection(&state, &connection_id)?;
     let container = resolved_container_name(&connection, &container)?;
     let prefix = normalize_prefix(prefix);
+    let filter = normalize_blob_filter(filter);
+    let query_prefix = match (prefix.as_deref(), filter.as_deref()) {
+        (Some(prefix), Some(filter)) => Some(format!("{prefix}{filter}")),
+        (Some(prefix), None) => Some(prefix.to_string()),
+        (None, Some(filter)) => Some(filter.to_string()),
+        (None, None) => None,
+    };
     let backend = build_backend(&connection).await?;
     let Page {
         items,
         continuation,
     } = backend
-        .list_blobs(&container, prefix.as_deref(), Some("/"), continuation)
+        .list_blobs(&container, query_prefix.as_deref(), Some("/"), continuation)
         .await
         .map_err(|error| {
             compact_live_browse_error(
@@ -5915,6 +5923,17 @@ fn normalize_prefix(prefix: Option<String>) -> Option<String> {
             Some(trimmed.to_string())
         } else {
             Some(format!("{trimmed}/"))
+        }
+    })
+}
+
+fn normalize_blob_filter(filter: Option<String>) -> Option<String> {
+    filter.and_then(|value| {
+        let trimmed = value.trim().trim_start_matches('/').replace('\\', "/");
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
         }
     })
 }
