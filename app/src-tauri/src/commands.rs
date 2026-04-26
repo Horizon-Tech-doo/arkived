@@ -281,7 +281,9 @@ pub struct BrowserBlobRow {
     pub path: String,
     pub name: String,
     pub kind: String,
+    pub blob_type: Option<String>,
     pub size: Option<String>,
+    pub size_bytes: Option<u64>,
     pub tier: Option<String>,
     pub modified: String,
     pub etag: Option<String>,
@@ -1698,6 +1700,7 @@ pub async fn list_blobs(
     prefix: Option<String>,
     filter: Option<String>,
     continuation: Option<String>,
+    recursive: Option<bool>,
 ) -> Result<BrowserBlobPage, String> {
     let connection = get_connection(&state, &connection_id)?;
     let container = resolved_container_name(&connection, &container)?;
@@ -1710,11 +1713,17 @@ pub async fn list_blobs(
         (None, None) => None,
     };
     let backend = build_backend(&connection).await?;
+    let recursive = recursive.unwrap_or(false);
     let Page {
         items,
         continuation,
     } = backend
-        .list_blobs(&container, query_prefix.as_deref(), Some("/"), continuation)
+        .list_blobs(
+            &container,
+            query_prefix.as_deref(),
+            if recursive { None } else { Some("/") },
+            continuation,
+        )
         .await
         .map_err(|error| {
             compact_live_browse_error(
@@ -1728,7 +1737,7 @@ pub async fn list_blobs(
     Ok(BrowserBlobPage {
         rows: items
             .into_iter()
-            .map(|entry| blob_entry_to_row(entry, prefix.as_deref()))
+            .map(|entry| blob_entry_to_row(entry, prefix.as_deref(), recursive))
             .collect(),
         continuation,
     })
@@ -5925,13 +5934,19 @@ fn discovered_account_summary(
     }
 }
 
-fn blob_entry_to_row(entry: BlobEntry, current_prefix: Option<&str>) -> BrowserBlobRow {
+fn blob_entry_to_row(
+    entry: BlobEntry,
+    current_prefix: Option<&str>,
+    show_relative_path: bool,
+) -> BrowserBlobRow {
     match entry {
         BlobEntry::Prefix { name } => BrowserBlobRow {
             path: name.clone(),
             name: leaf_name(&name, current_prefix),
             kind: "dir".into(),
+            blob_type: None,
             size: None,
+            size_bytes: None,
             tier: None,
             modified: String::new(),
             etag: None,
@@ -5941,6 +5956,7 @@ fn blob_entry_to_row(entry: BlobEntry, current_prefix: Option<&str>) -> BrowserB
         BlobEntry::Blob {
             name,
             size,
+            blob_type,
             tier,
             etag,
             last_modified,
@@ -5948,9 +5964,15 @@ fn blob_entry_to_row(entry: BlobEntry, current_prefix: Option<&str>) -> BrowserB
             ..
         } => BrowserBlobRow {
             path: name.clone(),
-            name: leaf_name(&name, current_prefix),
+            name: if show_relative_path {
+                relative_name(&name, current_prefix)
+            } else {
+                leaf_name(&name, current_prefix)
+            },
             kind: "blob".into(),
+            blob_type: Some(blob_type),
             size: Some(format_bytes(size)),
+            size_bytes: Some(size),
             tier,
             modified: last_modified.map(|ts| ts.to_string()).unwrap_or_default(),
             etag,
@@ -5958,6 +5980,19 @@ fn blob_entry_to_row(entry: BlobEntry, current_prefix: Option<&str>) -> BrowserB
             icon: icon_for_name(&name).into(),
         },
     }
+}
+
+fn relative_name(path: &str, current_prefix: Option<&str>) -> String {
+    let trimmed = path.trim_matches('/');
+    current_prefix
+        .map(str::trim)
+        .map(|prefix| prefix.trim_matches('/'))
+        .filter(|prefix| !prefix.is_empty())
+        .and_then(|prefix| trimmed.strip_prefix(prefix))
+        .map(|value| value.trim_start_matches('/'))
+        .filter(|value| !value.is_empty())
+        .unwrap_or(trimmed)
+        .to_string()
 }
 
 fn icon_for_name(name: &str) -> &'static str {

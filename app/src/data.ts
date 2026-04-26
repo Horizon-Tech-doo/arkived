@@ -151,7 +151,9 @@ export interface BlobRow {
   path?: string;
   name: string;
   kind: "dir" | "blob";
+  blob_type?: string | null;
   size: string | null;
+  size_bytes?: number | null;
   tier: string | null;
   modified: string;
   etag: string | null;

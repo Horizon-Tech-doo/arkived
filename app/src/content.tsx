@@ -10,6 +10,14 @@ import {
 } from "./icons";
 import { BlobRow, BreadcrumbEntry } from "./data";
 
+export type BlobSortKey = "name" | "mod" | "size" | "tier" | "blobType" | "tierMod" | "lease" | "etag";
+export type SortDirection = "asc" | "desc";
+
+export interface IndexedBlobRow {
+  index: number;
+  row: BlobRow;
+}
+
 // ─────────────────────────────────────────────────────────────
 // Tabs bar
 // ─────────────────────────────────────────────────────────────
@@ -301,7 +309,7 @@ function blobIcon(iconKey: BlobRow["icon"]): ReactNode {
 }
 
 interface BlobTableProps {
-  rows: BlobRow[];
+  rows: IndexedBlobRow[];
   selected: Set<number>;
   onToggleSelect: (i: number) => void;
   onSelectRow: (i: number, event: React.MouseEvent<HTMLDivElement>) => void;
@@ -309,6 +317,9 @@ interface BlobTableProps {
   onDelete: () => void;
   onActivateRow?: (i: number) => void;
   onContextMenuRow?: (index: number, row: BlobRow, event: React.MouseEvent<HTMLDivElement>) => void;
+  sortKey: BlobSortKey;
+  sortDirection: SortDirection;
+  onSortChange: (key: BlobSortKey) => void;
 }
 export function BlobTable({
   rows,
@@ -318,6 +329,9 @@ export function BlobTable({
   onSelectAll,
   onActivateRow,
   onContextMenuRow,
+  sortKey,
+  sortDirection,
+  onSortChange,
 }: BlobTableProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const [tableWidth, setTableWidth] = useState(0);
@@ -338,18 +352,18 @@ export function BlobTable({
 
   const availableWidth = tableWidth || 900;
   const cols = [
-    { key: "name", label: "Name", sortable: true, template: "minmax(180px, 2.4fr)", minWidth: 0 },
-    { key: "mod", label: "Last Modified", sortable: true, sorted: "desc" as const, template: "minmax(132px, 0.9fr)", minWidth: 420 },
-    { key: "size", label: "Size", align: "right" as const, template: "minmax(72px, 0.38fr)", minWidth: 560 },
-    { key: "tier", label: "Access Tier", template: "minmax(82px, 0.42fr)", minWidth: 680 },
-    { key: "blobType", label: "Blob Type", template: "minmax(78px, 0.42fr)", minWidth: 800 },
-    { key: "tierMod", label: "Tier Last Modified", template: "minmax(132px, 0.7fr)", minWidth: 960 },
-    { key: "lease", label: "Lease", template: "minmax(72px, 0.34fr)", minWidth: 1120 },
-    { key: "etag", label: "ETag", template: "minmax(132px, 0.65fr)", minWidth: 1280 },
+    { key: "name" as const, label: "Name", sortable: true, template: "minmax(180px, 2.4fr)", minWidth: 0 },
+    { key: "mod" as const, label: "Last Modified", sortable: true, template: "minmax(132px, 0.9fr)", minWidth: 420 },
+    { key: "size" as const, label: "Size", sortable: true, align: "right" as const, template: "minmax(72px, 0.38fr)", minWidth: 560 },
+    { key: "tier" as const, label: "Access Tier", sortable: true, template: "minmax(82px, 0.42fr)", minWidth: 680 },
+    { key: "blobType" as const, label: "Blob Type", sortable: true, template: "minmax(78px, 0.42fr)", minWidth: 800 },
+    { key: "tierMod" as const, label: "Tier Last Modified", sortable: true, template: "minmax(132px, 0.7fr)", minWidth: 960 },
+    { key: "lease" as const, label: "Lease", sortable: true, template: "minmax(72px, 0.34fr)", minWidth: 1120 },
+    { key: "etag" as const, label: "ETag", sortable: true, template: "minmax(132px, 0.65fr)", minWidth: 1280 },
   ].filter((column) => availableWidth >= column.minWidth);
 
   const gridTemplate = `24px ${cols.map((column) => columnWidths[column.key] ? `${columnWidths[column.key]}px` : column.template).join(" ")}`;
-  const allSelected = rows.length > 0 && selected.size === rows.length;
+  const allSelected = rows.length > 0 && rows.every((item) => selected.has(item.index));
 
   const handleColumnResizeStart = (event: React.MouseEvent<HTMLSpanElement>, key: string) => {
     event.preventDefault();
@@ -416,7 +430,7 @@ export function BlobTable({
       case "size":
         return <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", padding: "0 8px", color: r.size ? "var(--fg-1)" : "var(--fg-3)" }}>{r.size || "—"}</div>;
       case "blobType":
-        return <div style={{ display: "flex", alignItems: "center", padding: "0 8px", color: "var(--fg-3)" }}>{r.kind === "blob" ? "Block" : "—"}</div>;
+        return <div style={{ display: "flex", alignItems: "center", padding: "0 8px", color: "var(--fg-3)" }}>{r.kind === "blob" ? r.blob_type ?? "Block" : "—"}</div>;
       case "etag":
         return (
           <div style={{ display: "flex", alignItems: "center", padding: "0 8px", color: "var(--fg-3)", overflow: "hidden" }}>
@@ -462,8 +476,14 @@ export function BlobTable({
         <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
           <Checkbox checked={allSelected} onChange={onSelectAll} />
         </div>
-        {cols.map((c) => (
-          <div key={c.key} style={{
+        {cols.map((c) => {
+          const isSorted = c.key === sortKey;
+          return (
+          <div
+            key={c.key}
+            onClick={() => c.sortable && onSortChange(c.key)}
+            title={c.sortable ? `Sort by ${c.label}` : undefined}
+            style={{
             position: "relative",
             display: "flex", alignItems: "center",
             justifyContent: c.align === "right" ? "flex-end" : "flex-start",
@@ -472,7 +492,11 @@ export function BlobTable({
             cursor: c.sortable ? "pointer" : "default",
           }}>
             <span>{c.label}</span>
-            {c.sorted === "desc" && <IconChevronDown size={9} style={{ color: "var(--accent)" }} />}
+            {isSorted && (
+              sortDirection === "desc"
+                ? <IconChevronDown size={9} style={{ color: "var(--accent)" }} />
+                : <IconChevronUp size={9} style={{ color: "var(--accent)" }} />
+            )}
             <span
               aria-hidden="true"
               title="Drag to resize column"
@@ -488,17 +512,18 @@ export function BlobTable({
               }}
             />
           </div>
-        ))}
+          );
+        })}
       </div>
 
-      {rows.map((r, i) => {
-        const isSelected = selected.has(i);
+      {rows.map(({ index, row: r }) => {
+        const isSelected = selected.has(index);
         return (
           <div
-            key={i}
-            onClick={(event) => onSelectRow(i, event)}
-            onDoubleClick={() => onActivateRow?.(i)}
-            onContextMenu={(event) => onContextMenuRow?.(i, r, event)}
+            key={`${index}:${r.path ?? r.name}`}
+            onClick={(event) => onSelectRow(index, event)}
+            onDoubleClick={() => onActivateRow?.(index)}
+            onContextMenu={(event) => onContextMenuRow?.(index, r, event)}
             style={{
               display: "grid",
               gridTemplateColumns: gridTemplate,
@@ -512,7 +537,7 @@ export function BlobTable({
             onMouseLeave={(e) => { if (!isSelected) (e.currentTarget as HTMLDivElement).style.background = "transparent"; }}
           >
             <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
-              <Checkbox checked={isSelected} onChange={() => onToggleSelect(i)} />
+              <Checkbox checked={isSelected} onChange={() => onToggleSelect(index)} />
             </div>
 
             {cols.map((column) => (

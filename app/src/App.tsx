@@ -1,13 +1,16 @@
-import React, { CSSProperties, FormEvent, ReactNode, useEffect, useRef, useState } from "react";
+import React, { CSSProperties, FormEvent, ReactNode, startTransition, useDeferredValue, useEffect, useRef, useState } from "react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { GroupHeader, TitleBar, TreeRow } from "./chrome";
 import { ActionBar, BlobTable, Inspector, TabsBar } from "./content";
+import type { BlobSortKey, IndexedBlobRow, SortDirection } from "./content";
 import { ActivityBar } from "./panels";
 import type { Activity, BlobRow } from "./data";
 import {
   IconAlert,
   IconArrowUp,
   IconAzure,
+  IconChevronDown,
+  IconChevronUp,
   IconContainer,
   IconCopy,
   IconDownload,
@@ -112,6 +115,10 @@ interface BrowserTabState {
   containerName: string;
   prefix: string;
   filter: string;
+  search: string;
+  searchDeep: boolean;
+  sortKey: BlobSortKey;
+  sortDirection: SortDirection;
   rows: BlobRow[];
   busy: boolean;
   error: string | null;
@@ -168,6 +175,10 @@ interface PersistedBrowserTab {
   containerName: string;
   prefix?: string;
   filter?: string;
+  search?: string;
+  searchDeep?: boolean;
+  sortKey?: BlobSortKey;
+  sortDirection?: SortDirection;
 }
 
 interface PersistedShellSnapshot {
@@ -199,6 +210,8 @@ const ACTIVITY_PANE_DEFAULT_HEIGHT = 220;
 const ACTIVITY_PANE_MIN_HEIGHT = 116;
 const ACTIVITY_PANE_MAX_HEIGHT = 520;
 const PANE_RESIZE_HANDLE_WIDTH = 7;
+const DEFAULT_BLOB_SORT_KEY: BlobSortKey = "name";
+const DEFAULT_BLOB_SORT_DIRECTION: SortDirection = "asc";
 const PREVIEW_DEFAULT_ROW_LIMIT = 50;
 const PREVIEW_PAGE_SIZE_OPTIONS = [25, 50, 100, 250, 500];
 const PREVIEW_COLUMN_MIN_WIDTH = 72;
@@ -321,10 +334,21 @@ function App() {
   const activeConnection = connections.find((connection) => connection.id === browsingConnectionId) ?? null;
   const activeContainer = activeTab?.containerName ?? null;
   const activeRows = activeTab?.rows ?? [];
+  const deferredSearch = useDeferredValue(activeTab?.search ?? "");
+  const activeVisibleRows = activeTab
+    ? buildVisibleBlobRows(
+        activeRows,
+        deferredSearch,
+        activeTab.sortKey ?? DEFAULT_BLOB_SORT_KEY,
+        activeTab.sortDirection ?? DEFAULT_BLOB_SORT_DIRECTION,
+      )
+    : [];
   const activeRowsHaveMore = Boolean(activeTab?.loaded && activeTab?.continuation);
   const selectedIndices = activeTab?.selectedIndices ?? [];
   const selectedRows = new Set(selectedIndices);
-  const selectedIndex = selectedIndices.length > 0 ? [...selectedIndices].sort((a, b) => a - b)[0] : null;
+  const selectedIndex =
+    activeVisibleRows.find((item) => selectedRows.has(item.index))?.index ??
+    (selectedIndices.length > 0 ? [...selectedIndices].sort((a, b) => a - b)[0] : null);
   const selectedRow = selectedIndex == null ? null : activeRows[selectedIndex] ?? null;
   const selectedResourceRows = selectedIndices
     .map((index) => activeRows[index])
@@ -609,6 +633,7 @@ function App() {
     blobRequestIds.current[tabId] = requestId;
     const requestedPrefix = tab.prefix;
     const requestedFilter = tab.filter;
+    const requestedSearchDeep = tab.searchDeep;
     updateTab(tabId, (currentTab) => ({
       ...currentTab,
       busy: true,
@@ -622,13 +647,16 @@ function App() {
         tab.prefix || null,
         tab.filter || null,
         null,
+        requestedSearchDeep,
       );
       if (blobRequestIds.current[tabId] !== requestId) {
         return;
       }
 
       updateTab(tabId, (currentTab) => ({
-        ...(currentTab.prefix === requestedPrefix && currentTab.filter === requestedFilter
+        ...(currentTab.prefix === requestedPrefix &&
+        currentTab.filter === requestedFilter &&
+        currentTab.searchDeep === requestedSearchDeep
           ? {
               ...currentTab,
               rows: page.rows,
@@ -651,7 +679,9 @@ function App() {
       }
 
       updateTab(tabId, (currentTab) => ({
-        ...(currentTab.prefix === requestedPrefix && currentTab.filter === requestedFilter
+        ...(currentTab.prefix === requestedPrefix &&
+        currentTab.filter === requestedFilter &&
+        currentTab.searchDeep === requestedSearchDeep
           ? {
               ...currentTab,
               rows: [],
@@ -681,6 +711,7 @@ function App() {
     blobRequestIds.current[tabId] = requestId;
     const requestedPrefix = tab.prefix;
     const requestedFilter = tab.filter;
+    const requestedSearchDeep = tab.searchDeep;
     const requestedContinuation = tab.continuation;
     updateTab(tabId, (currentTab) => ({
       ...currentTab,
@@ -695,6 +726,7 @@ function App() {
         tab.prefix || null,
         tab.filter || null,
         tab.continuation,
+        requestedSearchDeep,
       );
       if (blobRequestIds.current[tabId] !== requestId) {
         return;
@@ -703,6 +735,7 @@ function App() {
       updateTab(tabId, (currentTab) => ({
         ...(currentTab.prefix === requestedPrefix &&
         currentTab.filter === requestedFilter &&
+        currentTab.searchDeep === requestedSearchDeep &&
         currentTab.continuation === requestedContinuation
           ? {
               ...currentTab,
@@ -727,7 +760,101 @@ function App() {
       updateTab(tabId, (currentTab) => ({
         ...(currentTab.prefix === requestedPrefix &&
         currentTab.filter === requestedFilter &&
+        currentTab.searchDeep === requestedSearchDeep &&
         currentTab.continuation === requestedContinuation
+          ? {
+              ...currentTab,
+              busy: false,
+              error: getErrorMessage(error),
+              loaded: true,
+            }
+          : {
+              ...currentTab,
+              busy: false,
+              loaded: false,
+              continuation: null,
+            }),
+      }));
+    }
+  }
+
+  async function scanAllTabRows(tabId: string) {
+    const tab = browserTabsRef.current.find((currentTab) => currentTab.id === tabId);
+    if (!tab || tab.busy) {
+      return;
+    }
+
+    const requestId = (blobRequestIds.current[tabId] ?? 0) + 1;
+    blobRequestIds.current[tabId] = requestId;
+    const requestedPrefix = tab.prefix;
+    const requestedFilter = tab.filter;
+    const requestedSearchDeep = tab.searchDeep;
+    let continuation = tab.loaded ? tab.continuation : null;
+    let rows = tab.loaded ? tab.rows : [];
+    let shouldFetch = !tab.loaded || Boolean(continuation);
+
+    if (!shouldFetch) {
+      return;
+    }
+
+    updateTab(tabId, (currentTab) => ({
+      ...currentTab,
+      busy: true,
+      error: null,
+    }));
+
+    try {
+      while (shouldFetch) {
+        const page = await fetchBlobs(
+          tab.connectionId,
+          tab.containerName,
+          tab.prefix || null,
+          tab.filter || null,
+          continuation,
+          requestedSearchDeep,
+        );
+        if (blobRequestIds.current[tabId] !== requestId) {
+          return;
+        }
+
+        rows = continuation ? [...rows, ...page.rows] : page.rows;
+        continuation = page.continuation ?? null;
+        shouldFetch = Boolean(continuation);
+
+        updateTab(tabId, (currentTab) => {
+          if (
+            currentTab.prefix !== requestedPrefix ||
+            currentTab.filter !== requestedFilter ||
+            currentTab.searchDeep !== requestedSearchDeep
+          ) {
+            return {
+              ...currentTab,
+              busy: false,
+              loaded: false,
+              continuation: null,
+            };
+          }
+
+          return {
+            ...currentTab,
+            rows,
+            busy: shouldFetch,
+            error: null,
+            loaded: true,
+            continuation,
+            selectedIndices: currentTab.selectedIndices.filter((index) => index < rows.length),
+          };
+        });
+      }
+    } catch (error) {
+      if (blobRequestIds.current[tabId] !== requestId) {
+        return;
+      }
+
+      updateTab(tabId, (currentTab) => ({
+        ...(currentTab.prefix === requestedPrefix &&
+        currentTab.filter === requestedFilter &&
+        currentTab.searchDeep === requestedSearchDeep
           ? {
               ...currentTab,
               busy: false,
@@ -942,6 +1069,10 @@ function App() {
           containerName,
           prefix: "",
           filter: "",
+          search: "",
+          searchDeep: false,
+          sortKey: DEFAULT_BLOB_SORT_KEY,
+          sortDirection: DEFAULT_BLOB_SORT_DIRECTION,
           rows: [],
           busy: false,
           error: null,
@@ -1241,6 +1372,10 @@ function App() {
         containerName: persistedTab.containerName,
         prefix: persistedTab.prefix ?? "",
         filter: persistedTab.filter ?? "",
+        search: persistedTab.search ?? "",
+        searchDeep: Boolean(persistedTab.searchDeep),
+        sortKey: sanitizeBlobSortKey(persistedTab.sortKey),
+        sortDirection: sanitizeSortDirection(persistedTab.sortDirection),
         rows: [],
         busy: false,
         error: null,
@@ -1334,14 +1469,21 @@ function App() {
     }
 
     const tabId = activeTab.id;
+    const visibleOrder = activeVisibleRows.map((item) => item.index);
     updateTab(tabId, (tab) => {
       let selectedIndices: number[];
 
       if (event.shiftKey) {
         const anchor = blobSelectionAnchors.current[tabId] ?? tab.selectedIndices[tab.selectedIndices.length - 1] ?? index;
-        const start = Math.min(anchor, index);
-        const end = Math.max(anchor, index);
-        selectedIndices = Array.from({ length: end - start + 1 }, (_, offset) => start + offset);
+        const anchorPosition = visibleOrder.indexOf(anchor);
+        const indexPosition = visibleOrder.indexOf(index);
+        if (anchorPosition >= 0 && indexPosition >= 0) {
+          const start = Math.min(anchorPosition, indexPosition);
+          const end = Math.max(anchorPosition, indexPosition);
+          selectedIndices = visibleOrder.slice(start, end + 1);
+        } else {
+          selectedIndices = [index];
+        }
       } else if (event.ctrlKey || event.metaKey) {
         const next = new Set(tab.selectedIndices);
         if (next.has(index)) {
@@ -1365,12 +1507,25 @@ function App() {
       return;
     }
 
+    const visibleIndices = activeVisibleRows.map((item) => item.index);
     updateTab(activeTab.id, (tab) => ({
       ...tab,
       selectedIndices:
-        tab.selectedIndices.length === tab.rows.length
+        visibleIndices.length > 0 && visibleIndices.every((index) => tab.selectedIndices.includes(index))
           ? []
-          : tab.rows.map((_, index) => index),
+          : visibleIndices,
+    }));
+  }
+
+  function handleBlobSortChange(key: BlobSortKey) {
+    if (!activeTab) {
+      return;
+    }
+
+    updateTab(activeTab.id, (tab) => ({
+      ...tab,
+      sortKey: key,
+      sortDirection: tab.sortKey === key && tab.sortDirection === "asc" ? "desc" : "asc",
     }));
   }
 
@@ -2010,6 +2165,10 @@ function App() {
             containerName: tab.containerName,
             prefix: tab.prefix,
             filter: tab.filter,
+            search: tab.search,
+            searchDeep: tab.searchDeep,
+            sortKey: tab.sortKey,
+            sortDirection: tab.sortDirection,
           };
         })
         .filter((tab): tab is PersistedBrowserTab => tab != null),
@@ -2062,6 +2221,8 @@ function App() {
     activeTab?.connectionId,
     activeTab?.containerName,
     activeTab?.prefix,
+    activeTab?.filter,
+    activeTab?.searchDeep,
     activeTab?.loaded,
     activeTab?.busy,
   ]);
@@ -2865,7 +3026,7 @@ function App() {
                   <input
                     type="search"
                     aria-label="Filter blobs by prefix"
-                    placeholder="Filter by prefix"
+                    placeholder="Prefix"
                     value={activeTab.filter}
                     style={styles.pathFilterInput}
                     onChange={(event) => {
@@ -2880,15 +3041,54 @@ function App() {
                       }));
                     }}
                   />
+                  <input
+                    type="search"
+                    aria-label="Advanced blob search"
+                    placeholder='Search: ext:parquet size>10MiB -archive "device twins"'
+                    value={activeTab.search}
+                    style={styles.pathSearchInput}
+                    onChange={(event) => {
+                      const nextSearch = event.currentTarget.value;
+                      startTransition(() => {
+                        updateTab(activeTab.id, (tab) => ({
+                          ...tab,
+                          search: nextSearch,
+                          selectedIndices: [],
+                        }));
+                      });
+                    }}
+                  />
+                  <button
+                    type="button"
+                    title="Deep search recursively scans blobs under the current prefix instead of only the current folder level."
+                    style={{
+                      ...styles.pathToggleButton,
+                      ...(activeTab.searchDeep ? styles.pathToggleButtonActive : {}),
+                    }}
+                    onClick={() => {
+                      updateTab(activeTab.id, (tab) => ({
+                        ...tab,
+                        searchDeep: !tab.searchDeep,
+                        rows: [],
+                        loaded: false,
+                        busy: false,
+                        error: null,
+                        continuation: null,
+                        selectedIndices: [],
+                      }));
+                    }}
+                  >
+                    {activeTab.searchDeep ? "Deep on" : "Deep"}
+                  </button>
                   {activeTab.busy && (
                     <span style={styles.pathStatus}>
                       <IconLoader size={11} />
-                      Loading…
+                      {activeTab.searchDeep ? "Scanning…" : "Loading…"}
                     </span>
                   )}
                   <span style={styles.pathCount}>
-                    {activeRows.length} {activeRows.length === 1 ? "item" : "items"}
-                    {activeTab.filter ? " matched" : ""}
+                    {activeVisibleRows.length.toLocaleString()} / {activeRows.length.toLocaleString()} shown
+                    {activeRowsHaveMore ? " +" : ""}
                   </span>
                 </div>
               </div>
@@ -2952,16 +3152,26 @@ function App() {
                         title="This prefix is empty"
                         body="The live container responded successfully, but there are no blobs or virtual directories at the current prefix."
                       />
+                    ) : activeRows.length > 0 && activeVisibleRows.length === 0 ? (
+                      <MainEmptyState
+                        title="No rows match this search"
+                        body="Adjust the advanced search query, clear filters, or enable Deep search and scan more pages to broaden the result set."
+                        primaryLabel={activeRowsHaveMore ? "Scan all Azure pages" : undefined}
+                        onPrimary={activeRowsHaveMore ? () => void scanAllTabRows(activeTab.id) : undefined}
+                      />
                     ) : (
                       <>
                         <BlobTable
-                          rows={activeRows}
+                          rows={activeVisibleRows}
                           selected={selectedRows}
                           onToggleSelect={handleToggleSelection}
                           onSelectRow={handleSelectRow}
                           onSelectAll={handleToggleSelectAll}
                           onDelete={() => undefined}
                           onActivateRow={handleActivateRow}
+                          sortKey={activeTab.sortKey ?? DEFAULT_BLOB_SORT_KEY}
+                          sortDirection={activeTab.sortDirection ?? DEFAULT_BLOB_SORT_DIRECTION}
+                          onSortChange={handleBlobSortChange}
                           onContextMenuRow={(index, row, event) => {
                           if (!selectedRows.has(index)) {
                             updateTab(activeTab.id, (tab) => ({
@@ -3158,15 +3368,31 @@ function App() {
                         />
                         <div style={styles.blobListFooter}>
                           <span>
-                            Showing {activeRows.length.toLocaleString()} cached item{activeRows.length === 1 ? "" : "s"}
-                            {activeTab.filter ? ` for prefix "${activeTab.filter}"` : ""}
+                            Showing {activeVisibleRows.length.toLocaleString()} of {activeRows.length.toLocaleString()} cached item{activeRows.length === 1 ? "" : "s"}
+                            {activeTab.filter ? ` under prefix "${activeTab.filter}"` : ""}
+                            {activeTab.search ? ` matching "${activeTab.search}"` : ""}
                           </span>
                           {activeRowsHaveMore ? (
-                            <span style={styles.blobListFooterHint}>More results are available from Azure.</span>
+                            <span style={styles.blobListFooterHint}>
+                              More {activeTab.searchDeep ? "recursive" : "folder"} results are available from Azure.
+                            </span>
                           ) : (
                             <span style={styles.blobListFooterHint}>End of current listing.</span>
                           )}
                           <span style={{ flex: 1 }} />
+                          <button
+                            type="button"
+                            style={{
+                              ...styles.blobListFooterButton,
+                              ...(!activeRowsHaveMore || activeTab.busy ? styles.blobListFooterButtonDisabled : {}),
+                            }}
+                            disabled={!activeRowsHaveMore || activeTab.busy}
+                            onClick={() => {
+                              void scanAllTabRows(activeTab.id);
+                            }}
+                          >
+                            {activeTab.busy ? "Scanning…" : "Scan all"}
+                          </button>
                           <button
                             type="button"
                             style={{
@@ -4417,9 +4643,11 @@ function BlobPreviewPane({
   const result = state.result;
   const columns = result ? previewColumns(result) : [];
   const [columnWidthsByKey, setColumnWidthsByKey] = useState<Record<string, number[]>>({});
+  const [previewSortByKey, setPreviewSortByKey] = useState<Record<string, { columnIndex: number; direction: SortDirection }>>({});
   const [selectedRowsByKey, setSelectedRowsByKey] = useState<Record<string, number[]>>({});
   const [selectionAnchorByKey, setSelectionAnchorByKey] = useState<Record<string, number>>({});
   const tableKey = result ? `${result.kind}\u001f${result.path}\u001f${columns.join("\u001f")}` : "";
+  const previewSort = tableKey ? previewSortByKey[tableKey] : undefined;
   const rowLimit = result?.row_limit || state.rowLimit || 100;
   const tablePageKey = result ? `${tableKey}\u001f${result.row_offset}\u001f${rowLimit}` : "";
   const columnWidths =
@@ -4439,6 +4667,8 @@ function BlobPreviewPane({
   const currentPage = result ? Math.floor(result.row_offset / rowLimit) + 1 : 1;
   const pageCount = lastOffset != null ? Math.floor(lastOffset / rowLimit) + 1 : null;
   const tableGridTemplate = previewTableGrid(columnWidths);
+  const previewRows = result ? buildPreviewDisplayRows(result.rows, previewSort) : [];
+  const previewVisibleOrder = previewRows.map((item) => item.index);
 
   const handleColumnResizeStart = (event: React.MouseEvent<HTMLSpanElement>, columnIndex: number) => {
     if (!result || !tableKey) {
@@ -4479,6 +4709,24 @@ function BlobPreviewPane({
     applyWidth(event.clientX);
   };
 
+  const handlePreviewSortChange = (columnIndex: number) => {
+    if (!tableKey) {
+      return;
+    }
+
+    setPreviewSortByKey((current) => {
+      const existing = current[tableKey];
+      return {
+        ...current,
+        [tableKey]: {
+          columnIndex,
+          direction:
+            existing?.columnIndex === columnIndex && existing.direction === "asc" ? "desc" : "asc",
+        },
+      };
+    });
+  };
+
   const setSelectedPreviewRows = (indices: number[]) => {
     if (!tablePageKey) {
       return;
@@ -4497,9 +4745,15 @@ function BlobPreviewPane({
 
     if (event.shiftKey) {
       const anchor = selectionAnchorByKey[tablePageKey] ?? rowIndex;
-      const start = Math.min(anchor, rowIndex);
-      const end = Math.max(anchor, rowIndex);
-      setSelectedPreviewRows(Array.from({ length: end - start + 1 }, (_, offset) => start + offset));
+      const anchorPosition = previewVisibleOrder.indexOf(anchor);
+      const rowPosition = previewVisibleOrder.indexOf(rowIndex);
+      if (anchorPosition >= 0 && rowPosition >= 0) {
+        const start = Math.min(anchorPosition, rowPosition);
+        const end = Math.max(anchorPosition, rowPosition);
+        setSelectedPreviewRows(previewVisibleOrder.slice(start, end + 1));
+      } else {
+        setSelectedPreviewRows([rowIndex]);
+      }
       return;
     }
 
@@ -4616,8 +4870,22 @@ function BlobPreviewPane({
                     <div style={styles.previewTableScroll}>
                       <div style={{ ...styles.previewTableGrid, gridTemplateColumns: tableGridTemplate }}>
                         {columns.map((column, index) => (
-                          <div key={`${column}-${index}`} style={styles.previewTableCellHeader}>
+                          <div
+                            key={`${column}-${index}`}
+                            style={{
+                              ...styles.previewTableCellHeader,
+                              cursor: "pointer",
+                              color: previewSort?.columnIndex === index ? "var(--fg-0)" : styles.previewTableCellHeader.color,
+                            }}
+                            title={`Sort by ${column || `column ${index + 1}`}`}
+                            onClick={() => handlePreviewSortChange(index)}
+                          >
                             <span style={styles.previewTableCellText}>{column || `column ${index + 1}`}</span>
+                            {previewSort?.columnIndex === index && (
+                              previewSort.direction === "desc"
+                                ? <IconChevronDown size={9} style={{ color: "var(--accent)", position: "absolute", right: 8, top: 7 }} />
+                                : <IconChevronUp size={9} style={{ color: "var(--accent)", position: "absolute", right: 8, top: 7 }} />
+                            )}
                             <span
                               aria-hidden="true"
                               title="Drag to resize column"
@@ -4626,7 +4894,7 @@ function BlobPreviewPane({
                             />
                           </div>
                         ))}
-                        {result.rows.map((row, rowIndex) =>
+                        {previewRows.map(({ index: rowIndex, row }) =>
                           columns.map((_, columnIndex) => {
                             const isSelected = selectedRowIndices.has(rowIndex);
                             return (
@@ -4811,6 +5079,41 @@ function previewTableGrid(widths: number[]): string {
   return widths.length > 0 ? widths.map((width) => `${clampPreviewColumnWidth(width)}px`).join(" ") : "96px";
 }
 
+function buildPreviewDisplayRows(
+  rows: string[][],
+  sort: { columnIndex: number; direction: SortDirection } | undefined,
+): Array<{ index: number; row: string[] }> {
+  const indexed = rows.map((row, index) => ({ row, index }));
+  if (!sort) {
+    return indexed;
+  }
+
+  const direction = sort.direction === "desc" ? -1 : 1;
+  return [...indexed].sort((left, right) => {
+    const primary = comparePreviewCell(left.row[sort.columnIndex] ?? "", right.row[sort.columnIndex] ?? "");
+    if (primary !== 0) {
+      return primary * direction;
+    }
+    return left.index - right.index;
+  });
+}
+
+function comparePreviewCell(left: string, right: string): number {
+  const leftNumber = Number(left);
+  const rightNumber = Number(right);
+  if (left.trim() !== "" && right.trim() !== "" && Number.isFinite(leftNumber) && Number.isFinite(rightNumber)) {
+    return leftNumber === rightNumber ? 0 : leftNumber < rightNumber ? -1 : 1;
+  }
+
+  const leftDate = Date.parse(left);
+  const rightDate = Date.parse(right);
+  if (Number.isFinite(leftDate) && Number.isFinite(rightDate)) {
+    return leftDate === rightDate ? 0 : leftDate < rightDate ? -1 : 1;
+  }
+
+  return left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" });
+}
+
 function clampPreviewColumnWidth(width: number): number {
   if (!Number.isFinite(width)) {
     return PREVIEW_COLUMN_MIN_WIDTH;
@@ -4823,6 +5126,343 @@ function clampNumber(value: number, min: number, max: number): number {
     return min;
   }
   return Math.min(max, Math.max(min, Math.round(value)));
+}
+
+function buildVisibleBlobRows(
+  rows: BlobRow[],
+  query: string,
+  sortKey: BlobSortKey,
+  sortDirection: SortDirection,
+): IndexedBlobRow[] {
+  const normalizedQuery = query.trim();
+  const indexed = rows.map((row, index) => ({ row, index }));
+  const filtered = normalizedQuery
+    ? indexed.filter((item) => matchesAdvancedBlobSearch(item.row, normalizedQuery))
+    : indexed;
+  const direction = sortDirection === "desc" ? -1 : 1;
+
+  return [...filtered].sort((left, right) => {
+    const primary = compareBlobRows(left.row, right.row, sortKey);
+    if (primary !== 0) {
+      return primary * direction;
+    }
+    return compareBlobRows(left.row, right.row, "name");
+  });
+}
+
+function compareBlobRows(left: BlobRow, right: BlobRow, key: BlobSortKey): number {
+  const leftValue = blobSortValue(left, key);
+  const rightValue = blobSortValue(right, key);
+
+  if (typeof leftValue === "number" || typeof rightValue === "number") {
+    const leftNumber = typeof leftValue === "number" ? leftValue : Number.NEGATIVE_INFINITY;
+    const rightNumber = typeof rightValue === "number" ? rightValue : Number.NEGATIVE_INFINITY;
+    return leftNumber === rightNumber ? 0 : leftNumber < rightNumber ? -1 : 1;
+  }
+
+  return String(leftValue ?? "").localeCompare(String(rightValue ?? ""), undefined, {
+    numeric: true,
+    sensitivity: "base",
+  });
+}
+
+function blobSortValue(row: BlobRow, key: BlobSortKey): string | number {
+  switch (key) {
+    case "name":
+      return row.name || row.path || "";
+    case "mod":
+    case "tierMod":
+      return parseBlobDate(row.modified);
+    case "size":
+      return blobSizeBytes(row);
+    case "tier":
+      return row.tier ?? "";
+    case "blobType":
+      return row.kind === "dir" ? "Folder" : row.blob_type ?? "Block";
+    case "lease":
+      return row.lease ?? "";
+    case "etag":
+      return row.etag ?? "";
+    default:
+      return "";
+  }
+}
+
+function matchesAdvancedBlobSearch(row: BlobRow, query: string): boolean {
+  const tokens = tokenizeSearchQuery(query);
+  if (tokens.length === 0) {
+    return true;
+  }
+
+  return tokens.every((rawToken) => {
+    const token = normalizeSearchToken(rawToken);
+    if (!token.value) {
+      return true;
+    }
+    const matched = matchBlobSearchToken(row, token);
+    return token.negated ? !matched : matched;
+  });
+}
+
+interface SearchToken {
+  field: string | null;
+  op: ":" | "=" | "!=" | ">" | ">=" | "<" | "<=";
+  value: string;
+  negated: boolean;
+}
+
+function tokenizeSearchQuery(query: string): string[] {
+  const matches = query.match(/"[^"]*"|'[^']*'|\/(?:\\.|[^/])+\/[a-z]*|\S+/g) ?? [];
+  return matches.map((token) => token.trim()).filter(Boolean);
+}
+
+function normalizeSearchToken(rawToken: string): SearchToken {
+  let token = rawToken.trim();
+  let negated = false;
+  if (token.startsWith("-") || token.startsWith("!")) {
+    negated = true;
+    token = token.slice(1);
+  }
+
+  const fieldMatch = token.match(/^([a-zA-Z][\w-]*)(<=|>=|!=|=|:|<|>)(.+)$/);
+  if (fieldMatch) {
+    return {
+      field: fieldMatch[1].toLowerCase(),
+      op: fieldMatch[2] as SearchToken["op"],
+      value: stripSearchQuotes(fieldMatch[3].trim()),
+      negated,
+    };
+  }
+
+  return {
+    field: null,
+    op: ":",
+    value: stripSearchQuotes(token),
+    negated,
+  };
+}
+
+function stripSearchQuotes(value: string): string {
+  if (
+    (value.startsWith('"') && value.endsWith('"')) ||
+    (value.startsWith("'") && value.endsWith("'"))
+  ) {
+    return value.slice(1, -1);
+  }
+  return value;
+}
+
+function matchBlobSearchToken(row: BlobRow, token: SearchToken): boolean {
+  const field = token.field;
+  if (!field) {
+    return matchText(blobSearchHaystack(row), token.value, token.op);
+  }
+
+  if (field === "regex" || field === "re") {
+    return matchRegex(blobSearchHaystack(row), token.value);
+  }
+
+  if (field === "ext" || field === "extension") {
+    const ext = extensionForBlob(row).toLowerCase();
+    return compareStringValue(ext, token.value.replace(/^\./, ""), token.op);
+  }
+
+  if (field === "type" || field === "kind" || field === "is") {
+    const value = row.kind === "dir" ? "dir folder directory" : `blob file ${row.icon}`;
+    return matchText(value, token.value, token.op);
+  }
+
+  if (field === "size" || field === "bytes") {
+    return compareNumberValue(blobSizeBytes(row), parseStorageSize(token.value), token.op);
+  }
+
+  if (field === "modified" || field === "mtime" || field === "lastmodified" || field === "last-modified") {
+    return compareNumberValue(parseBlobDate(row.modified), Date.parse(token.value), token.op);
+  }
+
+  const value = blobFieldValue(row, field);
+  return matchText(value, token.value, token.op);
+}
+
+function blobFieldValue(row: BlobRow, field: string): string {
+  switch (field) {
+    case "name":
+      return row.name;
+    case "path":
+    case "url":
+      return row.path ?? row.name;
+    case "tier":
+    case "access":
+    case "access-tier":
+      return row.tier ?? "";
+    case "lease":
+      return row.lease ?? "";
+    case "etag":
+      return row.etag ?? "";
+    case "icon":
+      return row.icon;
+    case "modified":
+      return row.modified;
+    default:
+      return blobSearchHaystack(row);
+  }
+}
+
+function blobSearchHaystack(row: BlobRow): string {
+  return [
+    row.name,
+    row.path,
+    row.kind,
+    row.blob_type,
+    row.icon,
+    row.size,
+    row.tier,
+    row.modified,
+    row.etag,
+    row.lease,
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join(" ");
+}
+
+function matchText(source: string, value: string, op: SearchToken["op"]): boolean {
+  if (value.startsWith("/") && /\/[a-z]*$/i.test(value)) {
+    return matchRegex(source, value);
+  }
+
+  return compareStringValue(source, value, op);
+}
+
+function compareStringValue(source: string, expected: string, op: SearchToken["op"]): boolean {
+  const left = source.toLowerCase();
+  const right = expected.toLowerCase();
+  switch (op) {
+    case "=":
+      return left === right;
+    case "!=":
+      return left !== right;
+    case ">":
+      return left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" }) > 0;
+    case ">=":
+      return left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" }) >= 0;
+    case "<":
+      return left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" }) < 0;
+    case "<=":
+      return left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" }) <= 0;
+    default:
+      return left.includes(right);
+  }
+}
+
+function compareNumberValue(source: number, expected: number, op: SearchToken["op"]): boolean {
+  if (!Number.isFinite(source) || !Number.isFinite(expected)) {
+    return false;
+  }
+
+  switch (op) {
+    case "=":
+    case ":":
+      return source === expected;
+    case "!=":
+      return source !== expected;
+    case ">":
+      return source > expected;
+    case ">=":
+      return source >= expected;
+    case "<":
+      return source < expected;
+    case "<=":
+      return source <= expected;
+    default:
+      return false;
+  }
+}
+
+function matchRegex(source: string, rawPattern: string): boolean {
+  const match = rawPattern.match(/^\/((?:\\.|[^/])+)\/([a-z]*)$/i);
+  const pattern = match ? match[1] : rawPattern;
+  const flags = match?.[2]?.includes("i") ? "i" : "";
+  try {
+    return new RegExp(pattern, flags).test(source);
+  } catch {
+    return source.toLowerCase().includes(rawPattern.toLowerCase());
+  }
+}
+
+function extensionForBlob(row: BlobRow): string {
+  const value = (row.path ?? row.name).split("?")[0] ?? "";
+  const leaf = value.split("/").filter(Boolean).pop() ?? value;
+  const dot = leaf.lastIndexOf(".");
+  return dot >= 0 ? leaf.slice(dot + 1) : "";
+}
+
+function blobSizeBytes(row: BlobRow): number {
+  if (typeof row.size_bytes === "number") {
+    return row.size_bytes;
+  }
+  return parseStorageSize(row.size ?? "");
+}
+
+function parseStorageSize(value: string): number {
+  const match = value.trim().match(/^([\d,.]+)\s*([kmgtp]?i?b?)?$/i);
+  if (!match) {
+    return Number.NaN;
+  }
+
+  const amount = Number(match[1].replace(/,/g, ""));
+  if (!Number.isFinite(amount)) {
+    return Number.NaN;
+  }
+
+  const unit = (match[2] || "b").toLowerCase();
+  const multiplier: Record<string, number> = {
+    b: 1,
+    kb: 1000,
+    k: 1000,
+    kib: 1024,
+    mb: 1000 ** 2,
+    m: 1000 ** 2,
+    mib: 1024 ** 2,
+    gb: 1000 ** 3,
+    g: 1000 ** 3,
+    gib: 1024 ** 3,
+    tb: 1000 ** 4,
+    t: 1000 ** 4,
+    tib: 1024 ** 4,
+    pb: 1000 ** 5,
+    p: 1000 ** 5,
+    pib: 1024 ** 5,
+  };
+  return amount * (multiplier[unit] ?? 1);
+}
+
+function parseBlobDate(value: string): number {
+  if (!value) {
+    return Number.NEGATIVE_INFINITY;
+  }
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY;
+}
+
+function sanitizeBlobSortKey(value: unknown): BlobSortKey {
+  return isBlobSortKey(value) ? value : DEFAULT_BLOB_SORT_KEY;
+}
+
+function sanitizeSortDirection(value: unknown): SortDirection {
+  return value === "desc" ? "desc" : DEFAULT_BLOB_SORT_DIRECTION;
+}
+
+function isBlobSortKey(value: unknown): value is BlobSortKey {
+  return (
+    value === "name" ||
+    value === "mod" ||
+    value === "size" ||
+    value === "tier" ||
+    value === "blobType" ||
+    value === "tierMod" ||
+    value === "lease" ||
+    value === "etag"
+  );
 }
 
 function formatNumber(value: number): string {
@@ -5129,6 +5769,10 @@ function loadPersistedShellSnapshot(): PersistedShellSnapshot | null {
           containerName: tab.containerName,
           prefix: typeof tab.prefix === "string" ? tab.prefix : "",
           filter: typeof tab.filter === "string" ? tab.filter : "",
+          search: typeof tab.search === "string" ? tab.search : "",
+          searchDeep: Boolean(tab.searchDeep),
+          sortKey: sanitizeBlobSortKey(tab.sortKey),
+          sortDirection: sanitizeSortDirection(tab.sortDirection),
         })),
     };
   } catch {
@@ -5465,9 +6109,10 @@ const styles: Record<string, CSSProperties> = {
     alignItems: "center",
     gap: 10,
     flexShrink: 0,
+    minWidth: 0,
   },
   pathFilterInput: {
-    width: 190,
+    width: 124,
     height: 24,
     border: "1px solid var(--border-1)",
     borderRadius: 3,
@@ -5477,6 +6122,35 @@ const styles: Record<string, CSSProperties> = {
     fontFamily: "var(--mono)",
     fontSize: 10,
     outline: "none",
+  },
+  pathSearchInput: {
+    width: 360,
+    maxWidth: "32vw",
+    height: 24,
+    border: "1px solid var(--border-1)",
+    borderRadius: 3,
+    background: "var(--bg-1)",
+    color: "var(--fg-1)",
+    padding: "0 8px",
+    fontFamily: "var(--mono)",
+    fontSize: 10,
+    outline: "none",
+  },
+  pathToggleButton: {
+    height: 24,
+    padding: "0 8px",
+    border: "1px solid var(--border-1)",
+    borderRadius: 5,
+    background: "var(--bg-2)",
+    color: "var(--fg-2)",
+    fontFamily: "var(--mono)",
+    fontSize: 10,
+    whiteSpace: "nowrap",
+  },
+  pathToggleButtonActive: {
+    borderColor: "var(--accent-dim)",
+    background: "var(--accent-ghost)",
+    color: "var(--accent)",
   },
   pathStatus: {
     display: "inline-flex",
@@ -6214,7 +6888,7 @@ const styles: Record<string, CSSProperties> = {
     position: "sticky",
     top: 0,
     zIndex: 2,
-    padding: "5px 13px 5px 7px",
+    padding: "5px 24px 5px 7px",
     borderRight: "1px solid var(--border-0)",
     borderBottom: "1px solid var(--border-1)",
     background: "var(--bg-2)",

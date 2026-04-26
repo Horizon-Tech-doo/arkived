@@ -329,6 +329,7 @@ export async function fetchBlobs(
   prefix?: string | null,
   filter?: string | null,
   continuation?: string | null,
+  recursive = false,
 ): Promise<BrowserBlobPage> {
   return callTauri<BrowserBlobPage>("list_blobs", {
     connectionId,
@@ -336,6 +337,7 @@ export async function fetchBlobs(
     prefix,
     filter,
     continuation,
+    recursive,
   });
 }
 
