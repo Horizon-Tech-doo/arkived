@@ -288,6 +288,12 @@ pub struct BrowserBlobRow {
 }
 
 #[derive(Serialize)]
+pub struct BrowserBlobPage {
+    pub rows: Vec<BrowserBlobRow>,
+    pub continuation: Option<String>,
+}
+
+#[derive(Serialize)]
 pub struct BlobDownloadResult {
     pub path: String,
     pub bytes: u64,
@@ -1688,13 +1694,17 @@ pub async fn list_blobs(
     connection_id: String,
     container: String,
     prefix: Option<String>,
-) -> Result<Vec<BrowserBlobRow>, String> {
+    continuation: Option<String>,
+) -> Result<BrowserBlobPage, String> {
     let connection = get_connection(&state, &connection_id)?;
     let container = resolved_container_name(&connection, &container)?;
     let prefix = normalize_prefix(prefix);
     let backend = build_backend(&connection).await?;
-    let Page { items, .. } = backend
-        .list_blobs(&container, prefix.as_deref(), Some("/"), None)
+    let Page {
+        items,
+        continuation,
+    } = backend
+        .list_blobs(&container, prefix.as_deref(), Some("/"), continuation)
         .await
         .map_err(|error| {
             compact_live_browse_error(
@@ -1705,10 +1715,13 @@ pub async fn list_blobs(
             )
         })?;
 
-    Ok(items
-        .into_iter()
-        .map(|entry| blob_entry_to_row(entry, prefix.as_deref()))
-        .collect())
+    Ok(BrowserBlobPage {
+        rows: items
+            .into_iter()
+            .map(|entry| blob_entry_to_row(entry, prefix.as_deref()))
+            .collect(),
+        continuation,
+    })
 }
 
 #[tauri::command]

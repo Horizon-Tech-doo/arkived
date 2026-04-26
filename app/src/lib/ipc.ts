@@ -66,6 +66,11 @@ export interface BrowserContainer {
   blob_count?: number | null;
 }
 
+export interface BrowserBlobPage {
+  rows: BlobRow[];
+  continuation?: string | null;
+}
+
 export interface DeviceCodePrompt {
   login_id: string;
   verification_uri: string;
@@ -322,11 +327,13 @@ export async function fetchBlobs(
   connectionId: string,
   container: string,
   prefix?: string | null,
-): Promise<BlobRow[]> {
-  return callTauri<BlobRow[]>("list_blobs", {
+  continuation?: string | null,
+): Promise<BrowserBlobPage> {
+  return callTauri<BrowserBlobPage>("list_blobs", {
     connectionId,
     container,
     prefix,
+    continuation,
   });
 }
 

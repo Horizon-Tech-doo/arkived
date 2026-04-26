@@ -113,6 +113,7 @@ interface BrowserTabState {
   busy: boolean;
   error: string | null;
   loaded: boolean;
+  continuation: string | null;
   selectedIndices: number[];
 }
 
@@ -300,6 +301,7 @@ function App() {
   const activeConnection = connections.find((connection) => connection.id === browsingConnectionId) ?? null;
   const activeContainer = activeTab?.containerName ?? null;
   const activeRows = activeTab?.rows ?? [];
+  const activeRowsHaveMore = Boolean(activeTab?.loaded && activeTab?.continuation);
   const selectedIndices = activeTab?.selectedIndices ?? [];
   const selectedRows = new Set(selectedIndices);
   const selectedIndex = selectedIndices.length > 0 ? [...selectedIndices].sort((a, b) => a - b)[0] : null;
@@ -567,17 +569,18 @@ function App() {
     }));
 
     try {
-      const nextRows = await fetchBlobs(tab.connectionId, tab.containerName, tab.prefix || null);
+      const page = await fetchBlobs(tab.connectionId, tab.containerName, tab.prefix || null, null);
       if (blobRequestIds.current[tabId] !== requestId) {
         return;
       }
 
       updateTab(tabId, (currentTab) => ({
         ...currentTab,
-        rows: nextRows,
+        rows: page.rows,
         busy: false,
         error: null,
         loaded: true,
+        continuation: page.continuation ?? null,
         selectedIndices: [],
       }));
     } catch (error) {
@@ -591,7 +594,55 @@ function App() {
         busy: false,
         error: getErrorMessage(error),
         loaded: true,
+        continuation: null,
         selectedIndices: [],
+      }));
+    }
+  }
+
+  async function loadMoreTabRows(tabId: string) {
+    const tab = browserTabsRef.current.find((currentTab) => currentTab.id === tabId);
+    if (!tab || tab.busy || !tab.continuation) {
+      return;
+    }
+
+    const requestId = (blobRequestIds.current[tabId] ?? 0) + 1;
+    blobRequestIds.current[tabId] = requestId;
+    updateTab(tabId, (currentTab) => ({
+      ...currentTab,
+      busy: true,
+      error: null,
+    }));
+
+    try {
+      const page = await fetchBlobs(
+        tab.connectionId,
+        tab.containerName,
+        tab.prefix || null,
+        tab.continuation,
+      );
+      if (blobRequestIds.current[tabId] !== requestId) {
+        return;
+      }
+
+      updateTab(tabId, (currentTab) => ({
+        ...currentTab,
+        rows: [...currentTab.rows, ...page.rows],
+        busy: false,
+        error: null,
+        loaded: true,
+        continuation: page.continuation ?? null,
+      }));
+    } catch (error) {
+      if (blobRequestIds.current[tabId] !== requestId) {
+        return;
+      }
+
+      updateTab(tabId, (currentTab) => ({
+        ...currentTab,
+        busy: false,
+        error: getErrorMessage(error),
+        loaded: true,
       }));
     }
   }
@@ -797,6 +848,7 @@ function App() {
           busy: false,
           error: null,
           loaded: false,
+          continuation: null,
           selectedIndices: [],
         },
       ];
@@ -1094,6 +1146,7 @@ function App() {
         busy: false,
         error: null,
         loaded: false,
+        continuation: null,
         selectedIndices: [],
       });
 
@@ -2706,15 +2759,16 @@ function App() {
                         body="The live container responded successfully, but there are no blobs or virtual directories at the current prefix."
                       />
                     ) : (
-                      <BlobTable
-                        rows={activeRows}
-                        selected={selectedRows}
-                        onToggleSelect={handleToggleSelection}
-                        onSelectRow={handleSelectRow}
-                        onSelectAll={handleToggleSelectAll}
-                        onDelete={() => undefined}
-                        onActivateRow={handleActivateRow}
-                        onContextMenuRow={(index, row, event) => {
+                      <>
+                        <BlobTable
+                          rows={activeRows}
+                          selected={selectedRows}
+                          onToggleSelect={handleToggleSelection}
+                          onSelectRow={handleSelectRow}
+                          onSelectAll={handleToggleSelectAll}
+                          onDelete={() => undefined}
+                          onActivateRow={handleActivateRow}
+                          onContextMenuRow={(index, row, event) => {
                           if (!selectedRows.has(index)) {
                             updateTab(activeTab.id, (tab) => ({
                               ...tab,
@@ -2906,8 +2960,33 @@ function App() {
                               },
                             },
                           ]);
-                        }}
-                      />
+                          }}
+                        />
+                        <div style={styles.blobListFooter}>
+                          <span>
+                            Showing {activeRows.length.toLocaleString()} cached item{activeRows.length === 1 ? "" : "s"}
+                          </span>
+                          {activeRowsHaveMore ? (
+                            <span style={styles.blobListFooterHint}>More results are available from Azure.</span>
+                          ) : (
+                            <span style={styles.blobListFooterHint}>End of current listing.</span>
+                          )}
+                          <span style={{ flex: 1 }} />
+                          <button
+                            type="button"
+                            style={{
+                              ...styles.blobListFooterButton,
+                              ...(!activeRowsHaveMore || activeTab.busy ? styles.blobListFooterButtonDisabled : {}),
+                            }}
+                            disabled={!activeRowsHaveMore || activeTab.busy}
+                            onClick={() => {
+                              void loadMoreTabRows(activeTab.id);
+                            }}
+                          >
+                            {activeTab.busy ? "Loading…" : "Load more"}
+                          </button>
+                        </div>
+                      </>
                     )}
                   </div>
 
@@ -5166,6 +5245,38 @@ const styles: Record<string, CSSProperties> = {
     minWidth: 0,
     minHeight: 0,
     display: "flex",
+    flexDirection: "column",
+  },
+  blobListFooter: {
+    height: 28,
+    flexShrink: 0,
+    borderTop: "1px solid var(--border-0)",
+    background: "var(--bg-1)",
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    padding: "0 10px",
+    color: "var(--fg-3)",
+    fontFamily: "var(--mono)",
+    fontSize: 10,
+  },
+  blobListFooterHint: {
+    color: "var(--fg-2)",
+  },
+  blobListFooterButton: {
+    height: 20,
+    border: "1px solid var(--border-1)",
+    background: "var(--bg-2)",
+    color: "var(--fg-1)",
+    borderRadius: 3,
+    padding: "0 8px",
+    fontFamily: "var(--mono)",
+    fontSize: 10,
+    cursor: "pointer",
+  },
+  blobListFooterButtonDisabled: {
+    opacity: 0.45,
+    cursor: "default",
   },
   inspectorPane: {
     borderLeft: "1px solid var(--border-0)",
