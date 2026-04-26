@@ -175,6 +175,10 @@ interface PersistedShellSnapshot {
   activeTabId?: string | null;
   activeConnectionId?: string | null;
   previewPaneRatio?: number;
+  sidebarWidth?: number;
+  detailPaneWidth?: number;
+  sidebarDetailsHeight?: number;
+  activityPaneHeight?: number;
   expandedSignIns: Record<string, boolean>;
   expandedSubscriptions: Record<string, boolean>;
   expandedAccounts: Record<string, boolean>;
@@ -182,10 +186,19 @@ interface PersistedShellSnapshot {
 }
 
 const SHELL_STATE_STORAGE_KEY = "arkived.shell.v1";
-const PREVIEW_PANE_DEFAULT_RATIO = 0.52;
-const PREVIEW_PANE_MIN_RATIO = 0.24;
-const PREVIEW_PANE_MAX_RATIO = 0.82;
-const PREVIEW_RESIZE_HANDLE_WIDTH = 7;
+const SIDEBAR_DEFAULT_WIDTH = 340;
+const SIDEBAR_MIN_WIDTH = 260;
+const SIDEBAR_MAX_WIDTH = 640;
+const DETAIL_PANE_DEFAULT_WIDTH = 340;
+const DETAIL_PANE_MIN_WIDTH = 260;
+const DETAIL_PANE_MAX_WIDTH = 820;
+const SIDEBAR_DETAILS_DEFAULT_HEIGHT = 200;
+const SIDEBAR_DETAILS_MIN_HEIGHT = 118;
+const SIDEBAR_DETAILS_MAX_HEIGHT = 420;
+const ACTIVITY_PANE_DEFAULT_HEIGHT = 220;
+const ACTIVITY_PANE_MIN_HEIGHT = 116;
+const ACTIVITY_PANE_MAX_HEIGHT = 520;
+const PANE_RESIZE_HANDLE_WIDTH = 7;
 const PREVIEW_DEFAULT_ROW_LIMIT = 50;
 const PREVIEW_PAGE_SIZE_OPTIONS = [25, 50, 100, 250, 500];
 const PREVIEW_COLUMN_MIN_WIDTH = 72;
@@ -270,7 +283,10 @@ function App() {
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [blobClipboard, setBlobClipboard] = useState<BlobClipboardState | null>(null);
   const [previewDialog, setPreviewDialog] = useState<PreviewDialogState | null>(null);
-  const [previewPaneRatio, setPreviewPaneRatio] = useState(PREVIEW_PANE_DEFAULT_RATIO);
+  const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT_WIDTH);
+  const [detailPaneWidth, setDetailPaneWidth] = useState(DETAIL_PANE_DEFAULT_WIDTH);
+  const [sidebarDetailsHeight, setSidebarDetailsHeight] = useState(SIDEBAR_DETAILS_DEFAULT_HEIGHT);
+  const [activityPaneHeight, setActivityPaneHeight] = useState(ACTIVITY_PANE_DEFAULT_HEIGHT);
   const [activities, setActivities] = useState<Activity[]>([]);
   const [activityExpanded, setActivityExpanded] = useState(false);
   const [connectionsBusy, setConnectionsBusy] = useState(false);
@@ -1816,26 +1832,20 @@ function App() {
     }
   }
 
-  function handlePreviewResizeStart(event: React.MouseEvent<HTMLDivElement>) {
-    if (!browserPaneRef.current) {
-      return;
-    }
-
+  function beginWindowResize(
+    event: React.MouseEvent<HTMLElement>,
+    cursor: "col-resize" | "row-resize",
+    onMove: (clientX: number, clientY: number) => void,
+  ) {
     event.preventDefault();
-    const paneRect = browserPaneRef.current.getBoundingClientRect();
+    event.stopPropagation();
     const previousCursor = document.body.style.cursor;
     const previousUserSelect = document.body.style.userSelect;
-    document.body.style.cursor = "col-resize";
+    document.body.style.cursor = cursor;
     document.body.style.userSelect = "none";
 
-    const updateFromClientX = (clientX: number) => {
-      const previewWidth = paneRect.right - clientX;
-      const availableWidth = Math.max(1, paneRect.width - PREVIEW_RESIZE_HANDLE_WIDTH);
-      setPreviewPaneRatio(clampPreviewPaneRatio(previewWidth / availableWidth));
-    };
-
     const handleMouseMove = (moveEvent: MouseEvent) => {
-      updateFromClientX(moveEvent.clientX);
+      onMove(moveEvent.clientX, moveEvent.clientY);
     };
     const handleMouseUp = () => {
       document.body.style.cursor = previousCursor;
@@ -1846,7 +1856,50 @@ function App() {
 
     window.addEventListener("mousemove", handleMouseMove);
     window.addEventListener("mouseup", handleMouseUp);
-    updateFromClientX(event.clientX);
+    onMove(event.clientX, event.clientY);
+  }
+
+  function handleSidebarResizeStart(event: React.MouseEvent<HTMLDivElement>) {
+    const startX = event.clientX;
+    const startWidth = sidebarWidth;
+    beginWindowResize(event, "col-resize", (clientX) => {
+      setSidebarWidth(clampNumber(startWidth + clientX - startX, SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH));
+    });
+  }
+
+  function handleSidebarDetailsResizeStart(event: React.MouseEvent<HTMLDivElement>) {
+    const startY = event.clientY;
+    const startHeight = sidebarDetailsHeight;
+    beginWindowResize(event, "row-resize", (_clientX, clientY) => {
+      setSidebarDetailsHeight(
+        clampNumber(startHeight + startY - clientY, SIDEBAR_DETAILS_MIN_HEIGHT, SIDEBAR_DETAILS_MAX_HEIGHT),
+      );
+    });
+  }
+
+  function handleDetailPaneResizeStart(event: React.MouseEvent<HTMLDivElement>) {
+    if (!browserPaneRef.current) {
+      return;
+    }
+
+    const paneRect = browserPaneRef.current.getBoundingClientRect();
+    const maxWidth = Math.min(
+      DETAIL_PANE_MAX_WIDTH,
+      Math.max(DETAIL_PANE_MIN_WIDTH, paneRect.width - PANE_RESIZE_HANDLE_WIDTH - 280),
+    );
+    beginWindowResize(event, "col-resize", (clientX) => {
+      setDetailPaneWidth(clampNumber(paneRect.right - clientX, DETAIL_PANE_MIN_WIDTH, maxWidth));
+    });
+  }
+
+  function handleActivityResizeStart(event: React.MouseEvent<HTMLDivElement>) {
+    const startY = event.clientY;
+    const startHeight = activityPaneHeight;
+    beginWindowResize(event, "row-resize", (_clientX, clientY) => {
+      setActivityPaneHeight(
+        clampNumber(startHeight + startY - clientY, ACTIVITY_PANE_MIN_HEIGHT, ACTIVITY_PANE_MAX_HEIGHT),
+      );
+    });
   }
 
   function menuSeparator(): ContextMenuSeparator {
@@ -1906,8 +1959,17 @@ function App() {
       setShellPersistenceReady(true);
       return;
     }
-    if (typeof snapshot.previewPaneRatio === "number") {
-      setPreviewPaneRatio(snapshot.previewPaneRatio);
+    if (typeof snapshot.sidebarWidth === "number") {
+      setSidebarWidth(snapshot.sidebarWidth);
+    }
+    if (typeof snapshot.detailPaneWidth === "number") {
+      setDetailPaneWidth(snapshot.detailPaneWidth);
+    }
+    if (typeof snapshot.sidebarDetailsHeight === "number") {
+      setSidebarDetailsHeight(snapshot.sidebarDetailsHeight);
+    }
+    if (typeof snapshot.activityPaneHeight === "number") {
+      setActivityPaneHeight(snapshot.activityPaneHeight);
     }
 
     void hydratePersistedShell(snapshot).finally(() => {
@@ -1924,7 +1986,10 @@ function App() {
       version: 1,
       activeTabId,
       activeConnectionId,
-      previewPaneRatio,
+      sidebarWidth,
+      detailPaneWidth,
+      sidebarDetailsHeight,
+      activityPaneHeight,
       expandedSignIns,
       expandedSubscriptions,
       expandedAccounts,
@@ -1954,7 +2019,10 @@ function App() {
     shellPersistenceReady,
     activeTabId,
     activeConnectionId,
-    previewPaneRatio,
+    sidebarWidth,
+    detailPaneWidth,
+    sidebarDetailsHeight,
+    activityPaneHeight,
     expandedSignIns,
     expandedSubscriptions,
     expandedAccounts,
@@ -2285,7 +2353,7 @@ function App() {
       />
 
       <div style={styles.shell}>
-        <aside style={styles.sidebar}>
+        <aside style={{ ...styles.sidebar, width: sidebarWidth }}>
           <div style={styles.sidebarHeader}>
             <div>
               <div style={styles.sidebarEyebrow}>Explorer</div>
@@ -2597,8 +2665,25 @@ function App() {
             })}
           </div>
 
+          <div
+            role="separator"
+            aria-orientation="horizontal"
+            aria-label="Resize explorer details pane"
+            title="Drag to resize Actions / Properties"
+            style={styles.horizontalPaneResizeHandle}
+            onMouseDown={handleSidebarDetailsResizeStart}
+          />
           {renderSidebarDetailsPanel()}
         </aside>
+
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize explorer pane"
+          title="Drag to resize explorer"
+          style={styles.shellVerticalResizeHandle}
+          onMouseDown={handleSidebarResizeStart}
+        />
 
         <main style={styles.main}>
           <div style={styles.toolbar}>
@@ -2858,9 +2943,7 @@ function App() {
                   ref={browserPaneRef}
                   style={{
                     ...styles.browserPane,
-                    gridTemplateColumns: previewDialog
-                      ? `minmax(260px, ${Math.max(0.01, 1 - previewPaneRatio)}fr) ${PREVIEW_RESIZE_HANDLE_WIDTH}px minmax(300px, ${previewPaneRatio}fr)`
-                      : styles.browserPane.gridTemplateColumns,
+                    gridTemplateColumns: `minmax(0, 1fr) ${PANE_RESIZE_HANDLE_WIDTH}px ${detailPaneWidth}px`,
                   }}
                 >
                   <div style={styles.tablePane}>
@@ -3102,16 +3185,16 @@ function App() {
                     )}
                   </div>
 
+                  <div
+                    role="separator"
+                    aria-orientation="vertical"
+                    aria-label="Resize detail pane"
+                    title={previewDialog ? "Drag to resize preview" : "Drag to resize inspector"}
+                    style={styles.previewResizeHandle}
+                    onMouseDown={handleDetailPaneResizeStart}
+                  />
+
                   {previewDialog ? (
-                    <>
-                      <div
-                        role="separator"
-                        aria-orientation="vertical"
-                        aria-label="Resize preview pane"
-                        title="Drag to resize preview"
-                        style={styles.previewResizeHandle}
-                        onMouseDown={handlePreviewResizeStart}
-                      />
                       <BlobPreviewPane
                         state={previewDialog}
                         onClose={() => setPreviewDialog(null)}
@@ -3129,7 +3212,6 @@ function App() {
                           void handleDownloadBlob(previewDialog.row, true);
                         }}
                       />
-                    </>
                   ) : (
                     <aside style={styles.inspectorPane}>
                       <div style={styles.inspectorHeader}>
@@ -3159,6 +3241,8 @@ function App() {
             expanded={activityExpanded}
             onToggle={() => setActivityExpanded((current) => !current)}
             activities={activities}
+            expandedHeight={activityPaneHeight}
+            onResizeStart={handleActivityResizeStart}
             onCancelActivity={(activityId) => {
               void handleCancelActivity(activityId);
             }}
@@ -3351,7 +3435,7 @@ function App() {
     );
 
     return (
-      <div style={styles.sidebarDetailsPanel}>
+      <div style={{ ...styles.sidebarDetailsPanel, height: sidebarDetailsHeight }}>
         <div style={styles.sidebarPanelTabs}>
           <button
             type="button"
@@ -4734,6 +4818,13 @@ function clampPreviewColumnWidth(width: number): number {
   return Math.min(PREVIEW_COLUMN_MAX_WIDTH, Math.max(PREVIEW_COLUMN_MIN_WIDTH, Math.round(width)));
 }
 
+function clampNumber(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) {
+    return min;
+  }
+  return Math.min(max, Math.max(min, Math.round(value)));
+}
+
 function formatNumber(value: number): string {
   return new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(value);
 }
@@ -4751,13 +4842,6 @@ function formatBytesLabel(bytes: number): string {
     unitIndex += 1;
   }
   return `${value.toFixed(1)} ${units[unitIndex]}`;
-}
-
-function clampPreviewPaneRatio(value: number): number {
-  if (!Number.isFinite(value)) {
-    return PREVIEW_PANE_DEFAULT_RATIO;
-  }
-  return Math.min(PREVIEW_PANE_MAX_RATIO, Math.max(PREVIEW_PANE_MIN_RATIO, value));
 }
 
 interface EmptySidebarStateProps {
@@ -5010,9 +5094,24 @@ function loadPersistedShellSnapshot(): PersistedShellSnapshot | null {
       activeTabId: typeof parsed.activeTabId === "string" ? parsed.activeTabId : null,
       activeConnectionId:
         typeof parsed.activeConnectionId === "string" ? parsed.activeConnectionId : null,
-      previewPaneRatio:
-        typeof parsed.previewPaneRatio === "number"
-          ? clampPreviewPaneRatio(parsed.previewPaneRatio)
+      previewPaneRatio: typeof parsed.previewPaneRatio === "number" ? parsed.previewPaneRatio : undefined,
+      sidebarWidth:
+        typeof parsed.sidebarWidth === "number"
+          ? clampNumber(parsed.sidebarWidth, SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH)
+          : undefined,
+      detailPaneWidth:
+        typeof parsed.detailPaneWidth === "number"
+          ? clampNumber(parsed.detailPaneWidth, DETAIL_PANE_MIN_WIDTH, DETAIL_PANE_MAX_WIDTH)
+          : typeof parsed.previewPaneRatio === "number"
+            ? clampNumber(DETAIL_PANE_DEFAULT_WIDTH * parsed.previewPaneRatio * 2, DETAIL_PANE_MIN_WIDTH, DETAIL_PANE_MAX_WIDTH)
+            : undefined,
+      sidebarDetailsHeight:
+        typeof parsed.sidebarDetailsHeight === "number"
+          ? clampNumber(parsed.sidebarDetailsHeight, SIDEBAR_DETAILS_MIN_HEIGHT, SIDEBAR_DETAILS_MAX_HEIGHT)
+          : undefined,
+      activityPaneHeight:
+        typeof parsed.activityPaneHeight === "number"
+          ? clampNumber(parsed.activityPaneHeight, ACTIVITY_PANE_MIN_HEIGHT, ACTIVITY_PANE_MAX_HEIGHT)
           : undefined,
       expandedSignIns: sanitizeBooleanRecord(parsed.expandedSignIns),
       expandedSubscriptions: sanitizeBooleanRecord(parsed.expandedSubscriptions),
@@ -5065,21 +5164,41 @@ const styles: Record<string, CSSProperties> = {
     display: "flex",
     flexDirection: "column",
     height: "100vh",
-    background: "var(--bg-0)",
+    background: "linear-gradient(180deg, #08090c 0%, #050507 100%)",
   },
   shell: {
     flex: 1,
     minHeight: 0,
     display: "flex",
-    background: "linear-gradient(180deg, rgba(17,17,21,0.98) 0%, rgba(10,10,12,1) 100%)",
+    padding: 8,
+    background:
+      "radial-gradient(circle at 82% 4%, rgba(63,157,246,0.10), transparent 34%), linear-gradient(180deg, rgba(12,13,17,0.98) 0%, rgba(6,7,10,1) 100%)",
   },
   sidebar: {
-    width: 340,
-    minWidth: 300,
+    minWidth: 0,
+    flexShrink: 0,
     display: "flex",
     flexDirection: "column",
-    borderRight: "1px solid var(--border-0)",
-    background: "linear-gradient(180deg, rgba(16,16,19,1) 0%, rgba(11,11,14,1) 100%)",
+    border: "1px solid var(--border-1)",
+    borderRadius: 14,
+    overflow: "hidden",
+    background:
+      "linear-gradient(180deg, rgba(17,18,23,0.98) 0%, rgba(10,11,15,0.98) 100%)",
+    boxShadow: "0 18px 48px rgba(0,0,0,0.28)",
+  },
+  shellVerticalResizeHandle: {
+    width: PANE_RESIZE_HANDLE_WIDTH,
+    flexShrink: 0,
+    cursor: "col-resize",
+    background:
+      "linear-gradient(90deg, transparent 0, transparent 2px, rgba(63,157,246,0.18) 3px, transparent 5px)",
+  },
+  horizontalPaneResizeHandle: {
+    height: PANE_RESIZE_HANDLE_WIDTH,
+    flexShrink: 0,
+    cursor: "row-resize",
+    background:
+      "linear-gradient(180deg, transparent 0, transparent 2px, rgba(63,157,246,0.16) 3px, transparent 5px)",
   },
   sidebarHeader: {
     display: "flex",
@@ -5130,8 +5249,6 @@ const styles: Record<string, CSSProperties> = {
     lineHeight: 1.5,
   },
   sidebarDetailsPanel: {
-    minHeight: 168,
-    maxHeight: 240,
     borderTop: "1px solid var(--border-0)",
     background: "rgba(12, 12, 15, 0.94)",
     display: "flex",
@@ -5253,7 +5370,12 @@ const styles: Record<string, CSSProperties> = {
     minHeight: 0,
     display: "flex",
     flexDirection: "column",
-    background: "radial-gradient(circle at top right, rgba(63, 157, 246, 0.08), transparent 30%), var(--bg-1)",
+    border: "1px solid var(--border-1)",
+    borderRadius: 14,
+    overflow: "hidden",
+    background:
+      "radial-gradient(circle at top right, rgba(63, 157, 246, 0.08), transparent 30%), linear-gradient(180deg, rgba(15,16,21,0.98), rgba(10,11,15,0.98))",
+    boxShadow: "0 18px 48px rgba(0,0,0,0.28)",
   },
   toolbar: {
     height: 46,
@@ -5373,7 +5495,7 @@ const styles: Record<string, CSSProperties> = {
     flex: 1,
     minHeight: 0,
     display: "grid",
-    gridTemplateColumns: "minmax(0, 1fr) 320px",
+    gridTemplateColumns: "minmax(0, 1fr) 7px 340px",
   },
   tablePane: {
     minWidth: 0,
@@ -5413,7 +5535,6 @@ const styles: Record<string, CSSProperties> = {
     cursor: "default",
   },
   inspectorPane: {
-    borderLeft: "1px solid var(--border-0)",
     background: "var(--bg-1)",
     display: "flex",
     flexDirection: "column",
@@ -5901,9 +6022,11 @@ const styles: Record<string, CSSProperties> = {
     overflow: "hidden",
   },
   previewResizeHandle: {
+    width: PANE_RESIZE_HANDLE_WIDTH,
     minHeight: 0,
     cursor: "col-resize",
-    background: "linear-gradient(90deg, transparent 0, transparent 2px, var(--border-1) 2px, var(--border-1) 5px, transparent 5px)",
+    background:
+      "linear-gradient(90deg, rgba(255,255,255,0.02), rgba(63,157,246,0.18), rgba(255,255,255,0.02))",
     borderLeft: "1px solid var(--border-0)",
     borderRight: "1px solid var(--border-0)",
   },

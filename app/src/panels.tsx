@@ -580,8 +580,10 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
 // ─────────────────────────────────────────────────────────────
 interface ActivityBarProps {
   expanded: boolean;
+  expandedHeight: number;
   onToggle: () => void;
   activities: Activity[];
+  onResizeStart?: (event: React.MouseEvent<HTMLDivElement>) => void;
   onCancelActivity?: (activityId: string) => void;
   onClearCompleted?: () => void;
   onClearSuccessful?: () => void;
@@ -603,8 +605,10 @@ function activityHeaderButtonStyle(disabled: boolean): CSSProperties {
 
 export function ActivityBar({
   expanded,
+  expandedHeight,
   onToggle,
   activities,
+  onResizeStart,
   onCancelActivity,
   onClearCompleted,
   onClearSuccessful,
@@ -629,9 +633,27 @@ export function ActivityBar({
       flexShrink: 0,
       fontFamily: "var(--mono)",
       display: "flex", flexDirection: "column",
-      maxHeight: expanded ? 220 : 28,
-      transition: "max-height 160ms ease-out",
+      height: expanded ? expandedHeight : 28,
+      transition: "height 160ms ease-out",
+      position: "relative",
+      borderRadius: expanded ? 10 : 0,
+      overflow: "hidden",
     }}>
+      {expanded && onResizeStart && (
+        <div
+          role="separator"
+          aria-orientation="horizontal"
+          aria-label="Resize activities pane"
+          title="Drag to resize activities"
+          onMouseDown={onResizeStart}
+          style={{
+            height: 6,
+            flexShrink: 0,
+            cursor: "row-resize",
+            background: "linear-gradient(180deg, transparent, rgba(63, 157, 246, 0.14), transparent)",
+          }}
+        />
+      )}
       <div
         onClick={onToggle}
         style={{
