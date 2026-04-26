@@ -1855,10 +1855,11 @@ pub async fn preview_blob(
     row_offset: Option<u64>,
     row_limit: Option<u64>,
 ) -> Result<BlobPreviewResult, String> {
-    const TEXT_PREVIEW_MAX_BYTES: usize = 2 * 1024 * 1024;
-    const IMAGE_PREVIEW_MAX_BYTES: usize = 8 * 1024 * 1024;
-    const PARQUET_PREVIEW_MAX_BYTES: usize = 64 * 1024 * 1024;
-    const DEFAULT_PREVIEW_ROW_LIMIT: usize = 100;
+    // Inline preview should load normal files completely; these are safety caps for truly large blobs.
+    const TEXT_PREVIEW_MAX_BYTES: usize = 256 * 1024 * 1024;
+    const IMAGE_PREVIEW_MAX_BYTES: usize = 128 * 1024 * 1024;
+    const PARQUET_PREVIEW_MAX_BYTES: usize = 512 * 1024 * 1024;
+    const DEFAULT_PREVIEW_ROW_LIMIT: usize = 50;
     const MAX_PREVIEW_ROW_LIMIT: usize = 500;
 
     let connection = get_connection(&state, &connection_id)?;
@@ -3410,7 +3411,7 @@ fn preview_delimited_blob(
         metadata,
         warning: truncated.then(|| {
             format!(
-                "Only the first {} were read for preview.",
+                "This blob is larger than Arkived's inline safety cap, so only the first {} were loaded.",
                 format_bytes(bytes.len() as u64)
             )
         }),
@@ -3446,7 +3447,7 @@ fn preview_json_blob(
     result.metadata.push(meta("Format", "JSON"));
     if truncated {
         result.warning = Some(format!(
-            "Only the first {} were read, so JSON formatting was skipped.",
+            "This JSON blob is larger than Arkived's inline safety cap, so only the first {} were loaded and formatting was skipped.",
             format_bytes(bytes.len() as u64)
         ));
     }
@@ -3531,7 +3532,7 @@ fn preview_json_lines_blob(
         metadata,
         warning: truncated.then(|| {
             format!(
-                "Only the first {} were read for preview.",
+                "This blob is larger than Arkived's inline safety cap, so only the first {} were loaded.",
                 format_bytes(bytes.len() as u64)
             )
         }),
@@ -3547,12 +3548,16 @@ fn preview_parquet_blob(
     row_limit: usize,
 ) -> Result<BlobPreviewResult, String> {
     if truncated {
+        let loaded = format_bytes(bytes.len() as u64);
         return Ok(preview_binary_blob(
             blob_path,
             title,
             bytes,
             true,
-            Some("Parquet preview needs the file footer. This blob is larger than Arkived's inline preview cap.".into()),
+            Some(format!(
+                "Parquet preview needs the file footer. This blob is larger than Arkived's inline safety cap, so only the first {} were loaded.",
+                loaded
+            )),
         ));
     }
 
@@ -3634,12 +3639,16 @@ fn preview_image_blob(
     extension: Option<&str>,
 ) -> Result<BlobPreviewResult, String> {
     if truncated {
+        let loaded = format_bytes(bytes.len() as u64);
         return Ok(preview_binary_blob(
             blob_path,
             title,
             bytes,
             true,
-            Some("Image is larger than Arkived's inline preview cap.".into()),
+            Some(format!(
+                "This image is larger than Arkived's inline safety cap, so only the first {} were loaded.",
+                loaded
+            )),
         ));
     }
 
@@ -3692,7 +3701,7 @@ fn preview_text_blob(
     result.warning = warning.or_else(|| {
         truncated.then(|| {
             format!(
-                "Only the first {} were read for preview.",
+                "This blob is larger than Arkived's inline safety cap, so only the first {} were loaded.",
                 format_bytes(bytes.len() as u64)
             )
         })
@@ -3751,7 +3760,14 @@ fn preview_binary_blob(
         image_data_url: None,
         metadata: preview_metadata(blob_path, bytes.len(), truncated),
         warning: warning.or_else(|| {
-            Some("No built-in preview is available for this binary format yet.".into())
+            if truncated {
+                Some(format!(
+                    "This blob is larger than Arkived's inline safety cap, so only the first {} were loaded.",
+                    format_bytes(bytes.len() as u64)
+                ))
+            } else {
+                Some("No built-in preview is available for this binary format yet.".into())
+            }
         }),
     }
 }
@@ -3766,7 +3782,7 @@ fn preview_metadata(
         meta("Bytes read", format_bytes(byte_count as u64)),
     ];
     if truncated {
-        metadata.push(meta("Read mode", "truncated sample"));
+        metadata.push(meta("Read mode", "partial file"));
     } else {
         metadata.push(meta("Read mode", "complete file"));
     }

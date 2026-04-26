@@ -98,6 +98,7 @@ const tabsStyles: Record<string, CSSProperties> = {
 // ─────────────────────────────────────────────────────────────
 interface ActionBarProps {
   selectedCount: number;
+  canPreview?: boolean;
   onDelete: () => void;
   onUpload: () => void;
   onDownload: () => void;
@@ -109,6 +110,7 @@ interface ActionBarProps {
 }
 export function ActionBar({
   selectedCount,
+  canPreview = selectedCount === 1,
   onDelete,
   onUpload,
   onDownload,
@@ -163,7 +165,7 @@ export function ActionBar({
         onClick: onDownload,
       })}
       {btn(<IconEye size={12} />, "Preview", {
-        disabled: selectedCount !== 1,
+        disabled: !canPreview,
         onClick: onPreview,
       })}
       {sep}
@@ -299,6 +301,7 @@ interface BlobTableProps {
   rows: BlobRow[];
   selected: Set<number>;
   onToggleSelect: (i: number) => void;
+  onSelectRow: (i: number, event: React.MouseEvent<HTMLDivElement>) => void;
   onSelectAll: () => void;
   onDelete: () => void;
   onActivateRow?: (i: number) => void;
@@ -308,6 +311,7 @@ export function BlobTable({
   rows,
   selected,
   onToggleSelect,
+  onSelectRow,
   onSelectAll,
   onActivateRow,
   onContextMenuRow,
@@ -489,7 +493,7 @@ export function BlobTable({
         return (
           <div
             key={i}
-            onClick={() => onToggleSelect(i)}
+            onClick={(event) => onSelectRow(i, event)}
             onDoubleClick={() => onActivateRow?.(i)}
             onContextMenu={(event) => onContextMenuRow?.(i, r, event)}
             style={{

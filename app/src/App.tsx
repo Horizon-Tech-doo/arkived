@@ -288,6 +288,7 @@ function App() {
   const containerStatesRef = useRef<Record<string, ContainerListState>>({});
   const browserPaneRef = useRef<HTMLDivElement | null>(null);
   const previewRequestId = useRef(0);
+  const blobSelectionAnchors = useRef<Record<string, number>>({});
 
   browserTabsRef.current = browserTabs;
   connectionsRef.current = connections;
@@ -302,9 +303,11 @@ function App() {
   const selectedRows = new Set(selectedIndices);
   const selectedIndex = selectedIndices.length > 0 ? [...selectedIndices].sort((a, b) => a - b)[0] : null;
   const selectedRow = selectedIndex == null ? null : activeRows[selectedIndex] ?? null;
-  const selectedBlobRows = selectedIndices
+  const selectedResourceRows = selectedIndices
     .map((index) => activeRows[index])
-    .filter((row): row is BlobRow => Boolean(row) && row.kind !== "dir");
+    .filter((row): row is BlobRow => Boolean(row));
+  const selectedBlobRows = selectedResourceRows.filter((row) => row.kind !== "dir");
+  const canPreviewSelection = selectedBlobRows.length === 1 && selectedResourceRows.length === 1;
   const prefix = activeTab?.prefix ?? "";
   const breadcrumbSegments = splitPrefix(prefix);
   const resourceUrl =
@@ -1156,6 +1159,7 @@ function App() {
       return;
     }
 
+    blobSelectionAnchors.current[activeTab.id] = index;
     updateTab(activeTab.id, (tab) => {
       const next = new Set(tab.selectedIndices);
       if (next.has(index)) {
@@ -1164,6 +1168,38 @@ function App() {
         next.add(index);
       }
       return { ...tab, selectedIndices: Array.from(next) };
+    });
+  }
+
+  function handleSelectRow(index: number, event: React.MouseEvent<HTMLDivElement>) {
+    if (!activeTab) {
+      return;
+    }
+
+    const tabId = activeTab.id;
+    updateTab(tabId, (tab) => {
+      let selectedIndices: number[];
+
+      if (event.shiftKey) {
+        const anchor = blobSelectionAnchors.current[tabId] ?? tab.selectedIndices[tab.selectedIndices.length - 1] ?? index;
+        const start = Math.min(anchor, index);
+        const end = Math.max(anchor, index);
+        selectedIndices = Array.from({ length: end - start + 1 }, (_, offset) => start + offset);
+      } else if (event.ctrlKey || event.metaKey) {
+        const next = new Set(tab.selectedIndices);
+        if (next.has(index)) {
+          next.delete(index);
+        } else {
+          next.add(index);
+        }
+        selectedIndices = Array.from(next).sort((a, b) => a - b);
+        blobSelectionAnchors.current[tabId] = index;
+      } else {
+        selectedIndices = [index];
+        blobSelectionAnchors.current[tabId] = index;
+      }
+
+      return { ...tab, selectedIndices };
     });
   }
 
@@ -1268,7 +1304,7 @@ function App() {
   }
 
   async function handlePreviewSelection() {
-    if (selectedBlobRows.length !== 1) {
+    if (!canPreviewSelection) {
       return;
     }
 
@@ -1342,24 +1378,28 @@ function App() {
   }
 
   async function handleDownloadSelection(openAfterDownload = false) {
-    if (selectedBlobRows.length === 0) {
+    if (selectedResourceRows.length === 0) {
       return;
     }
 
-    for (const row of selectedBlobRows) {
-      await handleDownloadBlob(row, openAfterDownload && selectedBlobRows.length === 1);
+    for (const row of selectedResourceRows) {
+      if (row.kind === "dir") {
+        await handleDownloadPrefix(row);
+      } else {
+        await handleDownloadBlob(row, openAfterDownload && selectedResourceRows.length === 1);
+      }
     }
   }
 
   async function handleDeleteSelection() {
-    if (!activeConnection || !activeContainer || !activeTab || selectedBlobRows.length === 0) {
+    if (!activeConnection || !activeContainer || !activeTab || selectedResourceRows.length === 0) {
       return;
     }
 
     const label =
-      selectedBlobRows.length === 1
-        ? `"${selectedBlobRows[0].path ?? selectedBlobRows[0].name}"`
-        : `${selectedBlobRows.length} blobs`;
+      selectedResourceRows.length === 1
+        ? `"${selectedResourceRows[0].path ?? selectedResourceRows[0].name}"`
+        : `${selectedResourceRows.length} items`;
     const confirmed = window.confirm(`Delete ${label} from "${activeContainer}"?`);
     if (!confirmed) {
       return;
@@ -1367,8 +1407,13 @@ function App() {
 
     setShellError(null);
     try {
-      for (const row of selectedBlobRows) {
-        if (row.path) {
+      for (const row of selectedResourceRows) {
+        if (!row.path) {
+          continue;
+        }
+        if (row.kind === "dir") {
+          await deleteBlobPrefix(activeConnection.id, activeContainer, row.path, false);
+        } else {
           await deleteBlob(activeConnection.id, activeContainer, row.path, false);
         }
       }
@@ -2522,7 +2567,8 @@ function App() {
               </div>
 
               <ActionBar
-                selectedCount={selectedBlobRows.length}
+                selectedCount={selectedResourceRows.length}
+                canPreview={canPreviewSelection}
                 onUpload={() => {
                   void handleUploadFiles();
                 }}
@@ -2583,6 +2629,7 @@ function App() {
                         rows={activeRows}
                         selected={selectedRows}
                         onToggleSelect={handleToggleSelection}
+                        onSelectRow={handleSelectRow}
                         onSelectAll={handleToggleSelectAll}
                         onDelete={() => undefined}
                         onActivateRow={handleActivateRow}
@@ -2597,6 +2644,9 @@ function App() {
                             activeConnection && activeContainer && row.path
                               ? buildResourceUrl(activeConnection.endpoint, activeContainer, row.path)
                               : null;
+                          const contextRows = selectedRows.has(index) ? selectedResourceRows : [row];
+                          const contextBlobRows = contextRows.filter((item) => item.kind !== "dir");
+                          const contextHasFolders = contextRows.some((item) => item.kind === "dir");
                           openContextMenu(event, [
                             {
                               label: row.kind === "dir" ? "Open" : "Open",
@@ -2609,9 +2659,11 @@ function App() {
                               },
                             },
                             {
-                              label: "Download",
+                              label: contextRows.length > 1 ? `Download (${contextRows.length})` : "Download",
                               action: () => {
-                                if (row.kind === "dir") {
+                                if (selectedRows.has(index) && contextRows.length > 1) {
+                                  void handleDownloadSelection(false);
+                                } else if (row.kind === "dir") {
                                   void handleDownloadPrefix(row);
                                 } else {
                                   void handleDownloadBlob(row, false);
@@ -2620,7 +2672,7 @@ function App() {
                             },
                             {
                               label: "Preview",
-                              disabled: row.kind === "dir",
+                              disabled: contextRows.length !== 1 || row.kind === "dir",
                               action: () => {
                                 void handlePreviewBlob(row);
                               },
@@ -2655,10 +2707,12 @@ function App() {
                             },
                             menuSeparator(),
                             {
-                              label: "Delete",
+                              label: contextRows.length > 1 ? `Delete (${contextRows.length})` : "Delete",
                               danger: true,
                               action: () => {
-                                if (row.kind === "dir") {
+                                if (selectedRows.has(index) && contextRows.length > 1) {
+                                  void handleDeleteSelection();
+                                } else if (row.kind === "dir") {
                                   void handleDeletePrefix(row);
                                 } else {
                                   void handleDeleteBlob(row);
@@ -2739,7 +2793,7 @@ function App() {
                               label: "Selection Statistics",
                               action: () => {
                                 void copyText(
-                                  `${selectedRows.size || 1} selected • ${row.size ?? "size unavailable"}`,
+                                  `${contextRows.length} selected • ${contextBlobRows.length} blob${contextBlobRows.length === 1 ? "" : "s"} • ${contextHasFolders ? "folders included" : "no folders"}`,
                                 );
                               },
                             },
@@ -4171,7 +4225,7 @@ function BlobPreviewPane({
               </span>
               <span>{formatNumber(result.columns.length)} columns</span>
               <span>{formatBytesLabel(result.byte_count)}</span>
-              {result.truncated && <span>sampled</span>}
+              {result.truncated && <span>partial file</span>}
             </div>
 
             {result.warning && (
