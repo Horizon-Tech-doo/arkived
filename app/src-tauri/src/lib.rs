@@ -83,6 +83,7 @@ pub fn run() {
             commands::copy_blob_item,
             commands::disconnect_connection,
             commands::list_activities,
+            commands::cancel_activity,
             commands::agent_transcript,
         ])
         .run(tauri::generate_context!())

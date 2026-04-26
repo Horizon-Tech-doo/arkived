@@ -582,10 +582,11 @@ interface ActivityBarProps {
   expanded: boolean;
   onToggle: () => void;
   activities: Activity[];
+  onCancelActivity?: (activityId: string) => void;
 }
-export function ActivityBar({ expanded, onToggle, activities }: ActivityBarProps) {
+export function ActivityBar({ expanded, onToggle, activities, onCancelActivity }: ActivityBarProps) {
   const running = activities.filter((a) => a.status === "running");
-  const done = activities.filter((a) => a.status === "done");
+  const done = activities.filter((a) => a.status !== "running");
   const activityIcon = (activity: Activity) => {
     if (activity.kind === "delete") {
       return <IconTrash size={11} />;
@@ -655,8 +656,8 @@ export function ActivityBar({ expanded, onToggle, activities }: ActivityBarProps
             }}>
               <div style={{
                 width: 20, height: 20, borderRadius: 3,
-                background: a.status === "running" ? "var(--accent-ghost)" : a.kind === "delete" ? "var(--red-dim)" : "var(--blue-dim)",
-                color: a.status === "running" ? "var(--accent)" : a.kind === "delete" ? "var(--red)" : "var(--blue)",
+                background: a.status === "running" ? "var(--accent-ghost)" : a.status === "cancelled" ? "rgba(255, 193, 7, 0.12)" : a.kind === "delete" ? "var(--red-dim)" : "var(--blue-dim)",
+                color: a.status === "running" ? "var(--accent)" : a.status === "cancelled" ? "var(--yellow)" : a.kind === "delete" ? "var(--red)" : "var(--blue)",
                 display: "flex", alignItems: "center", justifyContent: "center",
                 flexShrink: 0,
               }}>
@@ -671,7 +672,7 @@ export function ActivityBar({ expanded, onToggle, activities }: ActivityBarProps
                   <span>started {a.started}</span>
                   {a.duration && <span>· {a.duration}</span>}
                   {a.result && (
-                    <span style={{ color: a.status === "running" ? "var(--fg-2)" : "var(--green)" }}>· {a.result}</span>
+                    <span style={{ color: a.status === "running" ? "var(--fg-2)" : a.status === "error" ? "var(--red)" : a.status === "cancelled" ? "var(--yellow)" : "var(--green)" }}>· {a.result}</span>
                   )}
                 </div>
                 {a.status === "running" && (
@@ -694,6 +695,25 @@ export function ActivityBar({ expanded, onToggle, activities }: ActivityBarProps
                   </div>
                 )}
               </div>
+              {a.status === "running" && onCancelActivity && (
+                <button
+                  type="button"
+                  onClick={() => onCancelActivity(a.id)}
+                  style={{
+                    height: 22,
+                    padding: "0 7px",
+                    borderRadius: 3,
+                    border: "1px solid var(--border-1)",
+                    background: "var(--bg-2)",
+                    color: "var(--fg-2)",
+                    fontFamily: "var(--mono)",
+                    fontSize: 10,
+                    cursor: "pointer",
+                  }}
+                >
+                  Cancel
+                </button>
+              )}
             </div>
           ))}
         </div>

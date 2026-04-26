@@ -23,8 +23,8 @@ use arkived_core::backend::{
 use arkived_core::policy::AllowAllPolicy;
 use arkived_core::store::{AttachedResource, SignIn};
 use arkived_core::types::{AuthKind, AzureEnvironment, ResourceKind};
-use arkived_core::Ctx;
 use arkived_core::Store;
+use arkived_core::{CancellationToken, Ctx};
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
 use bytes::Bytes;
@@ -71,6 +71,7 @@ struct InnerState {
     pending_tenant_browser_logins: HashMap<String, PendingLogin>,
     sign_ins: HashMap<String, SignInSession>,
     activities: Vec<Activity>,
+    activity_cancellations: HashMap<String, CancellationToken>,
 }
 
 #[derive(Clone)]
@@ -79,6 +80,7 @@ struct ActivityProgress {
     activity_id: String,
     total_bytes: Option<u64>,
     base_bytes: u64,
+    cancel: CancellationToken,
 }
 
 #[derive(Clone)]
@@ -1773,7 +1775,7 @@ pub async fn upload_blob(
     let blob_path = normalize_blob_path(&format!("{prefix}{file_name}"))?;
     let byte_count = metadata.len();
     let backend = build_backend(&connection).await?;
-    let activity_id = begin_activity(
+    let (activity_id, cancel_token) = begin_cancellable_activity(
         &state,
         "upload",
         format!("Upload `{blob_path}`"),
@@ -1786,21 +1788,21 @@ pub async fn upload_blob(
         activity_id: activity_id.clone(),
         total_bytes: Some(byte_count),
         base_bytes: 0,
+        cancel: cancel_token.clone(),
     };
     let body = match file_byte_stream_with_progress(&source_path, Some(progress)).await {
         Ok(body) => body,
         Err(error) => {
-            finish_activity(
+            finish_transfer_error(
                 &state,
                 &activity_id,
-                "error",
                 activity_timer.elapsed(),
-                Some(error.clone()),
+                error.clone(),
             );
             return Err(error);
         }
     };
-    let ctx = app_operation_ctx();
+    let ctx = app_operation_ctx().with_cancel(cancel_token.clone());
     let result = match backend
         .write_blob(
             &ctx,
@@ -1822,12 +1824,11 @@ pub async fn upload_blob(
                 Some(container.as_str()),
                 &error_to_string(error),
             );
-            finish_activity(
+            finish_transfer_error(
                 &state,
                 &activity_id,
-                "error",
                 activity_timer.elapsed(),
-                Some(error.clone()),
+                error.clone(),
             );
             return Err(error);
         }
@@ -1889,7 +1890,6 @@ pub async fn upload_folder(
     let root_blob_prefix = ensure_blob_prefix(&format!("{prefix}{folder_name}"))?;
     let files = collect_regular_files(&source_path)?;
     let backend = build_backend(&connection).await?;
-    let ctx = app_operation_ctx();
     let mut uploaded_count = 0u64;
     let mut uploaded_bytes = 0u64;
     let total_bytes = files.iter().try_fold(0u64, |total, file_path| {
@@ -1902,7 +1902,7 @@ pub async fn upload_folder(
                 )
             })
     })?;
-    let activity_id = begin_activity(
+    let (activity_id, cancel_token) = begin_cancellable_activity(
         &state,
         "upload",
         format!("Upload folder `{folder_name}`"),
@@ -1910,6 +1910,7 @@ pub async fn upload_folder(
         activity_started,
         Some(if total_bytes == 0 { 1.0 } else { 0.0 }),
     );
+    let ctx = app_operation_ctx().with_cancel(cancel_token.clone());
 
     if files.is_empty() {
         let mut metadata = HashMap::new();
@@ -1995,16 +1996,16 @@ pub async fn upload_folder(
                 activity_id: activity_id.clone(),
                 total_bytes: Some(total_bytes),
                 base_bytes: uploaded_bytes,
+                cancel: cancel_token.clone(),
             };
             let body = match file_byte_stream_with_progress(&file_path, Some(progress)).await {
                 Ok(body) => body,
                 Err(error) => {
-                    finish_activity(
+                    finish_transfer_error(
                         &state,
                         &activity_id,
-                        "error",
                         activity_timer.elapsed(),
-                        Some(error.clone()),
+                        error.clone(),
                     );
                     return Err(error);
                 }
@@ -2028,12 +2029,11 @@ pub async fn upload_folder(
                     Some(container.as_str()),
                     &error_to_string(error),
                 );
-                finish_activity(
+                finish_transfer_error(
                     &state,
                     &activity_id,
-                    "error",
                     activity_timer.elapsed(),
-                    Some(error.clone()),
+                    error.clone(),
                 );
                 return Err(error);
             }
@@ -2083,7 +2083,7 @@ pub async fn download_blob(
     let blob_path = normalize_blob_path(&path)?;
     let backend = build_backend(&connection).await?;
     let target_path = unique_download_path(&blob_path)?;
-    let activity_id = begin_activity(
+    let (activity_id, cancel_token) = begin_cancellable_activity(
         &state,
         "download",
         format!("Download `{blob_path}`"),
@@ -2096,6 +2096,7 @@ pub async fn download_blob(
         activity_id: activity_id.clone(),
         total_bytes: None,
         base_bytes: 0,
+        cancel: cancel_token.clone(),
     };
     let bytes = match stream_blob_to_file(
         &backend,
@@ -2114,12 +2115,11 @@ pub async fn download_blob(
                 Some(container.as_str()),
                 &error,
             );
-            finish_activity(
+            finish_transfer_error(
                 &state,
                 &activity_id,
-                "error",
                 activity_timer.elapsed(),
-                Some(error.clone()),
+                error.clone(),
             );
             return Err(error);
         }
@@ -2231,7 +2231,7 @@ pub async fn download_blob_prefix(
     }
 
     let target_dir = unique_download_dir(&prefix)?;
-    let activity_id = begin_activity(
+    let (activity_id, cancel_token) = begin_cancellable_activity(
         &state,
         "download",
         format!("Download folder `{prefix}`"),
@@ -2256,6 +2256,7 @@ pub async fn download_blob_prefix(
             activity_id: activity_id.clone(),
             total_bytes: None,
             base_bytes: bytes,
+            cancel: cancel_token.clone(),
         };
         let blob_bytes = match stream_blob_to_file(
             &backend,
@@ -2274,12 +2275,11 @@ pub async fn download_blob_prefix(
                     Some(container.as_str()),
                     &error,
                 );
-                finish_activity(
+                finish_transfer_error(
                     &state,
                     &activity_id,
-                    "error",
                     activity_timer.elapsed(),
-                    Some(error.clone()),
+                    error.clone(),
                 );
                 return Err(error);
             }
@@ -2797,6 +2797,34 @@ pub fn list_activities(state: State<'_, AppState>) -> Vec<Activity> {
 }
 
 #[tauri::command]
+pub fn cancel_activity(state: State<'_, AppState>, activity_id: String) -> Result<(), String> {
+    let mut guard = state.inner.lock().unwrap();
+    let activity_status = guard
+        .activities
+        .iter()
+        .find(|activity| activity.id == activity_id)
+        .map(|activity| activity.status.clone());
+    let Some(token) = guard.activity_cancellations.get(&activity_id).cloned() else {
+        if activity_status.as_deref() != Some("running") {
+            return Ok(());
+        }
+        return Err(format!(
+            "activity `{activity_id}` is not a running transfer"
+        ));
+    };
+
+    token.cancel();
+    if let Some(activity) = guard
+        .activities
+        .iter_mut()
+        .find(|activity| activity.id == activity_id)
+    {
+        activity.result = Some("cancelling...".into());
+    }
+    Ok(())
+}
+
+#[tauri::command]
 pub fn agent_transcript() -> serde_json::Value {
     serde_json::json!([])
 }
@@ -2855,6 +2883,25 @@ fn begin_activity(
     id
 }
 
+fn begin_cancellable_activity(
+    state: &AppState,
+    kind: impl Into<String>,
+    title: impl Into<String>,
+    detail: impl Into<String>,
+    started_at: chrono::DateTime<Utc>,
+    progress: Option<f64>,
+) -> (String, CancellationToken) {
+    let activity_id = begin_activity(state, kind, title, detail, started_at, progress);
+    let cancel = CancellationToken::new();
+
+    let mut guard = state.inner.lock().unwrap();
+    guard
+        .activity_cancellations
+        .insert(activity_id.clone(), cancel.clone());
+
+    (activity_id, cancel)
+}
+
 fn update_activity_progress(
     inner: &Arc<Mutex<InnerState>>,
     activity_id: &str,
@@ -2885,6 +2932,16 @@ fn update_activity_progress(
     }
 }
 
+fn is_activity_cancelled(state: &AppState, activity_id: &str) -> bool {
+    state
+        .inner
+        .lock()
+        .unwrap()
+        .activity_cancellations
+        .get(activity_id)
+        .is_some_and(CancellationToken::is_cancelled)
+}
+
 fn finish_activity(
     state: &AppState,
     activity_id: &str,
@@ -2893,6 +2950,7 @@ fn finish_activity(
     result: Option<String>,
 ) {
     let status = status.into();
+    let is_running = status == "running";
     let mut guard = state.inner.lock().unwrap();
     if let Some(activity) = guard
         .activities
@@ -2906,6 +2964,25 @@ fn finish_activity(
         }
         activity.result = result;
     }
+    if !is_running {
+        guard.activity_cancellations.remove(activity_id);
+    }
+}
+
+fn finish_transfer_error(
+    state: &AppState,
+    activity_id: &str,
+    duration: StdDuration,
+    error: String,
+) {
+    let cancelled = is_activity_cancelled(state, activity_id);
+    finish_activity(
+        state,
+        activity_id,
+        if cancelled { "cancelled" } else { "error" },
+        duration,
+        Some(if cancelled { "cancelled".into() } else { error }),
+    );
 }
 
 fn format_activity_duration(duration: StdDuration) -> String {
@@ -3672,7 +3749,19 @@ async fn stream_blob_to_file(
     let mut total = 0u64;
 
     while let Some(chunk) = stream.next().await {
+        if progress
+            .as_ref()
+            .is_some_and(|progress| progress.cancel.is_cancelled())
+        {
+            return Err("transfer cancelled".into());
+        }
         let bytes = chunk.map_err(error_to_string)?;
+        if progress
+            .as_ref()
+            .is_some_and(|progress| progress.cancel.is_cancelled())
+        {
+            return Err("transfer cancelled".into());
+        }
         file.write_all(&bytes).map_err(|error| {
             format!(
                 "failed to write download file `{}`: {error}",
@@ -4300,10 +4389,28 @@ async fn file_byte_stream_with_progress(
     Ok(stream::unfold(
         (file, path_label, 0u64, progress),
         |(mut file, path_label, mut total_read, progress)| async move {
+            if progress
+                .as_ref()
+                .is_some_and(|progress| progress.cancel.is_cancelled())
+            {
+                return Some((
+                    Err(arkived_core::Error::Backend("transfer cancelled".into())),
+                    (file, path_label, total_read, progress),
+                ));
+            }
             let mut buffer = vec![0u8; READ_CHUNK_BYTES];
             match file.read(&mut buffer).await {
                 Ok(0) => None,
                 Ok(read) => {
+                    if progress
+                        .as_ref()
+                        .is_some_and(|progress| progress.cancel.is_cancelled())
+                    {
+                        return Some((
+                            Err(arkived_core::Error::Backend("transfer cancelled".into())),
+                            (file, path_label, total_read, progress),
+                        ));
+                    }
                     buffer.truncate(read);
                     total_read = total_read.saturating_add(read as u64);
                     if let Some(progress) = &progress {

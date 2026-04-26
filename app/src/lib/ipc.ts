@@ -494,3 +494,7 @@ export async function disconnectConnection(connectionId: string): Promise<void> 
 export async function fetchActivities(): Promise<Activity[]> {
   return callTauri<Activity[]>("list_activities");
 }
+
+export async function cancelActivity(activityId: string): Promise<void> {
+  return callTauri<void>("cancel_activity", { activityId });
+}

@@ -36,6 +36,7 @@ import {
   BrowserSubscription,
   BrowserTenant,
   BlobPreviewResult,
+  cancelActivity,
   DeviceCodePrompt,
   connectAzurite,
   connectDiscoveredStorageAccount,
@@ -487,6 +488,19 @@ function App() {
 
     try {
       setActivities(await fetchActivities());
+    } catch (error) {
+      setShellError(getErrorMessage(error));
+    }
+  }
+
+  async function handleCancelActivity(activityId: string) {
+    if (!tauriAvailable.current) {
+      return;
+    }
+
+    try {
+      await cancelActivity(activityId);
+      await refreshActivities();
     } catch (error) {
       setShellError(getErrorMessage(error));
     }
@@ -3132,6 +3146,9 @@ function App() {
             expanded={activityExpanded}
             onToggle={() => setActivityExpanded((current) => !current)}
             activities={activities}
+            onCancelActivity={(activityId) => {
+              void handleCancelActivity(activityId);
+            }}
           />
         </main>
       </div>

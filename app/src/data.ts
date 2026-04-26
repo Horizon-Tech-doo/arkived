@@ -181,7 +181,7 @@ export const BLOB_ROWS: BlobRow[] = [
 export interface Activity {
   id: string;
   kind: "delete" | "upload" | "download" | "copy";
-  status: "running" | "done" | "error";
+  status: "running" | "done" | "error" | "cancelled";
   title: string;
   detail: string;
   started: string;
