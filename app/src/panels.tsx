@@ -586,6 +586,15 @@ interface ActivityBarProps {
 export function ActivityBar({ expanded, onToggle, activities }: ActivityBarProps) {
   const running = activities.filter((a) => a.status === "running");
   const done = activities.filter((a) => a.status === "done");
+  const activityIcon = (activity: Activity) => {
+    if (activity.kind === "delete") {
+      return <IconTrash size={11} />;
+    }
+    if (activity.kind === "download") {
+      return <IconDownload size={11} />;
+    }
+    return <IconUpload size={11} />;
+  };
 
   return (
     <div style={{
@@ -651,7 +660,7 @@ export function ActivityBar({ expanded, onToggle, activities }: ActivityBarProps
                 display: "flex", alignItems: "center", justifyContent: "center",
                 flexShrink: 0,
               }}>
-                {a.kind === "delete" ? <IconTrash size={11} /> : <IconUpload size={11} />}
+                {activityIcon(a)}
               </div>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ display: "flex", gap: 6, alignItems: "baseline", marginBottom: 2 }}>
@@ -661,7 +670,9 @@ export function ActivityBar({ expanded, onToggle, activities }: ActivityBarProps
                 <div style={{ display: "flex", gap: 10, color: "var(--fg-3)", fontSize: 10 }}>
                   <span>started {a.started}</span>
                   {a.duration && <span>· {a.duration}</span>}
-                  {a.result && <span style={{ color: "var(--green)" }}>· {a.result}</span>}
+                  {a.result && (
+                    <span style={{ color: a.status === "running" ? "var(--fg-2)" : "var(--green)" }}>· {a.result}</span>
+                  )}
                 </div>
                 {a.status === "running" && (
                   <div style={{

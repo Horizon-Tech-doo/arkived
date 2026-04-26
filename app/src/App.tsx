@@ -1858,6 +1858,31 @@ function App() {
   ]);
 
   useEffect(() => {
+    if (!shellInitialized || !tauriAvailable.current) {
+      return;
+    }
+
+    let cancelled = false;
+    let timerId: number | null = null;
+
+    const poll = async () => {
+      await refreshActivities();
+      if (!cancelled) {
+        timerId = window.setTimeout(poll, 1000);
+      }
+    };
+
+    timerId = window.setTimeout(poll, 1000);
+
+    return () => {
+      cancelled = true;
+      if (timerId != null) {
+        window.clearTimeout(timerId);
+      }
+    };
+  }, [shellInitialized]);
+
+  useEffect(() => {
     if (!browserPrompt) {
       return;
     }

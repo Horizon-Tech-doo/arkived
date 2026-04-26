@@ -74,6 +74,14 @@ struct InnerState {
 }
 
 #[derive(Clone)]
+struct ActivityProgress {
+    inner: Arc<Mutex<InnerState>>,
+    activity_id: String,
+    total_bytes: Option<u64>,
+    base_bytes: u64,
+}
+
+#[derive(Clone)]
 struct ConnectionOrigin {
     sign_in_id: String,
     subscription_id: String,
@@ -1743,10 +1751,36 @@ pub async fn upload_blob(
     let prefix = normalize_prefix(destination_prefix).unwrap_or_default();
     let blob_path = normalize_blob_path(&format!("{prefix}{file_name}"))?;
     let byte_count = metadata.len();
-    let body = file_byte_stream(&source_path).await?;
     let backend = build_backend(&connection).await?;
+    let activity_id = begin_activity(
+        &state,
+        "upload",
+        format!("Upload `{blob_path}`"),
+        format!("to `{container}`"),
+        activity_started,
+        Some(if byte_count == 0 { 1.0 } else { 0.0 }),
+    );
+    let progress = ActivityProgress {
+        inner: state.inner.clone(),
+        activity_id: activity_id.clone(),
+        total_bytes: Some(byte_count),
+        base_bytes: 0,
+    };
+    let body = match file_byte_stream_with_progress(&source_path, Some(progress)).await {
+        Ok(body) => body,
+        Err(error) => {
+            finish_activity(
+                &state,
+                &activity_id,
+                "error",
+                activity_timer.elapsed(),
+                Some(error.clone()),
+            );
+            return Err(error);
+        }
+    };
     let ctx = app_operation_ctx();
-    let result = backend
+    let result = match backend
         .write_blob(
             &ctx,
             &BlobPath::new(container.clone(), blob_path.clone()),
@@ -1758,22 +1792,30 @@ pub async fn upload_blob(
             },
         )
         .await
-        .map_err(|error| {
-            compact_live_browse_error(
+    {
+        Ok(result) => result,
+        Err(error) => {
+            let error = compact_live_browse_error(
                 &connection,
                 "Blob upload",
                 Some(container.as_str()),
                 &error_to_string(error),
-            )
-        })?;
+            );
+            finish_activity(
+                &state,
+                &activity_id,
+                "error",
+                activity_timer.elapsed(),
+                Some(error.clone()),
+            );
+            return Err(error);
+        }
+    };
 
-    record_activity(
+    finish_activity(
         &state,
-        "upload",
+        &activity_id,
         "done",
-        format!("Upload `{blob_path}`"),
-        format!("to `{container}`"),
-        activity_started,
         activity_timer.elapsed(),
         Some(format!("{} uploaded", format_bytes(byte_count))),
     );
@@ -1829,11 +1871,29 @@ pub async fn upload_folder(
     let ctx = app_operation_ctx();
     let mut uploaded_count = 0u64;
     let mut uploaded_bytes = 0u64;
+    let total_bytes = files.iter().try_fold(0u64, |total, file_path| {
+        std::fs::metadata(file_path)
+            .map(|metadata| total.saturating_add(metadata.len()))
+            .map_err(|error| {
+                format!(
+                    "failed to inspect upload source `{}`: {error}",
+                    file_path.display()
+                )
+            })
+    })?;
+    let activity_id = begin_activity(
+        &state,
+        "upload",
+        format!("Upload folder `{folder_name}`"),
+        format!("to `{container}/{root_blob_prefix}`"),
+        activity_started,
+        Some(if total_bytes == 0 { 1.0 } else { 0.0 }),
+    );
 
     if files.is_empty() {
         let mut metadata = HashMap::new();
         metadata.insert("hdi_isfolder".into(), "true".into());
-        backend
+        if let Err(error) = backend
             .write_blob(
                 &ctx,
                 &BlobPath::new(container.clone(), root_blob_prefix.clone()),
@@ -1846,28 +1906,89 @@ pub async fn upload_folder(
                 },
             )
             .await
-            .map_err(|error| {
-                compact_live_browse_error(
-                    &connection,
-                    "Folder upload",
-                    Some(container.as_str()),
-                    &error_to_string(error),
-                )
-            })?;
+        {
+            let error = compact_live_browse_error(
+                &connection,
+                "Folder upload",
+                Some(container.as_str()),
+                &error_to_string(error),
+            );
+            finish_activity(
+                &state,
+                &activity_id,
+                "error",
+                activity_timer.elapsed(),
+                Some(error.clone()),
+            );
+            return Err(error);
+        }
     } else {
         for file_path in files {
-            let relative_path = local_relative_path_to_blob(&source_path, &file_path)?;
-            let blob_path = normalize_blob_path(&format!("{root_blob_prefix}{relative_path}"))?;
-            let byte_count = std::fs::metadata(&file_path)
-                .map_err(|error| {
-                    format!(
-                        "failed to inspect upload source `{}`: {error}",
-                        file_path.display()
-                    )
-                })?
-                .len();
-            let body = file_byte_stream(&file_path).await?;
-            backend
+            let relative_path = match local_relative_path_to_blob(&source_path, &file_path) {
+                Ok(relative_path) => relative_path,
+                Err(error) => {
+                    finish_activity(
+                        &state,
+                        &activity_id,
+                        "error",
+                        activity_timer.elapsed(),
+                        Some(error.clone()),
+                    );
+                    return Err(error);
+                }
+            };
+            let blob_path = match normalize_blob_path(&format!("{root_blob_prefix}{relative_path}"))
+            {
+                Ok(blob_path) => blob_path,
+                Err(error) => {
+                    finish_activity(
+                        &state,
+                        &activity_id,
+                        "error",
+                        activity_timer.elapsed(),
+                        Some(error.clone()),
+                    );
+                    return Err(error);
+                }
+            };
+            let byte_count = match std::fs::metadata(&file_path).map_err(|error| {
+                format!(
+                    "failed to inspect upload source `{}`: {error}",
+                    file_path.display()
+                )
+            }) {
+                Ok(metadata) => metadata.len(),
+                Err(error) => {
+                    finish_activity(
+                        &state,
+                        &activity_id,
+                        "error",
+                        activity_timer.elapsed(),
+                        Some(error.clone()),
+                    );
+                    return Err(error);
+                }
+            };
+            let progress = ActivityProgress {
+                inner: state.inner.clone(),
+                activity_id: activity_id.clone(),
+                total_bytes: Some(total_bytes),
+                base_bytes: uploaded_bytes,
+            };
+            let body = match file_byte_stream_with_progress(&file_path, Some(progress)).await {
+                Ok(body) => body,
+                Err(error) => {
+                    finish_activity(
+                        &state,
+                        &activity_id,
+                        "error",
+                        activity_timer.elapsed(),
+                        Some(error.clone()),
+                    );
+                    return Err(error);
+                }
+            };
+            if let Err(error) = backend
                 .write_blob(
                     &ctx,
                     &BlobPath::new(container.clone(), blob_path),
@@ -1879,26 +2000,37 @@ pub async fn upload_folder(
                     },
                 )
                 .await
-                .map_err(|error| {
-                    compact_live_browse_error(
-                        &connection,
-                        "Folder upload",
-                        Some(container.as_str()),
-                        &error_to_string(error),
-                    )
-                })?;
+            {
+                let error = compact_live_browse_error(
+                    &connection,
+                    "Folder upload",
+                    Some(container.as_str()),
+                    &error_to_string(error),
+                );
+                finish_activity(
+                    &state,
+                    &activity_id,
+                    "error",
+                    activity_timer.elapsed(),
+                    Some(error.clone()),
+                );
+                return Err(error);
+            }
             uploaded_count += 1;
             uploaded_bytes += byte_count;
+            update_activity_progress(
+                &state.inner,
+                &activity_id,
+                uploaded_bytes,
+                Some(total_bytes),
+            );
         }
     }
 
-    record_activity(
+    finish_activity(
         &state,
-        "upload",
+        &activity_id,
         "done",
-        format!("Upload folder `{folder_name}`"),
-        format!("to `{container}/{root_blob_prefix}`"),
-        activity_started,
         activity_timer.elapsed(),
         Some(format!(
             "{} in {} file{} uploaded",
@@ -1930,16 +2062,47 @@ pub async fn download_blob(
     let blob_path = normalize_blob_path(&path)?;
     let backend = build_backend(&connection).await?;
     let target_path = unique_download_path(&blob_path)?;
-    let bytes = stream_blob_to_file(&backend, &container, &blob_path, &target_path)
-        .await
-        .map_err(|error| {
-            compact_live_browse_error(
+    let activity_id = begin_activity(
+        &state,
+        "download",
+        format!("Download `{blob_path}`"),
+        format!("from `{container}`"),
+        activity_started,
+        None,
+    );
+    let progress = ActivityProgress {
+        inner: state.inner.clone(),
+        activity_id: activity_id.clone(),
+        total_bytes: None,
+        base_bytes: 0,
+    };
+    let bytes = match stream_blob_to_file(
+        &backend,
+        &container,
+        &blob_path,
+        &target_path,
+        Some(progress),
+    )
+    .await
+    {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            let error = compact_live_browse_error(
                 &connection,
                 "Blob download",
                 Some(container.as_str()),
                 &error,
-            )
-        })?;
+            );
+            finish_activity(
+                &state,
+                &activity_id,
+                "error",
+                activity_timer.elapsed(),
+                Some(error.clone()),
+            );
+            return Err(error);
+        }
+    };
 
     let mut opened = false;
     if open_after_download {
@@ -1958,13 +2121,10 @@ pub async fn download_blob(
         }
     }
 
-    record_activity(
+    finish_activity(
         &state,
-        "download",
+        &activity_id,
         "done",
-        format!("Download `{blob_path}`"),
-        format!("from `{container}`"),
-        activity_started,
         activity_timer.elapsed(),
         Some(format!("{} downloaded", format_bytes(bytes))),
     );
@@ -2050,6 +2210,14 @@ pub async fn download_blob_prefix(
     }
 
     let target_dir = unique_download_dir(&prefix)?;
+    let activity_id = begin_activity(
+        &state,
+        "download",
+        format!("Download folder `{prefix}`"),
+        format!("from `{container}`"),
+        activity_started,
+        None,
+    );
     let mut bytes = 0u64;
     let mut item_count = 0u64;
     for blob_name in blob_names {
@@ -2062,26 +2230,48 @@ pub async fn download_blob_prefix(
         }
 
         let target_path = target_dir.join(sanitize_relative_path(relative));
-        bytes += stream_blob_to_file(&backend, &container, &blob_name, &target_path)
-            .await
-            .map_err(|error| {
-                compact_live_browse_error(
+        let progress = ActivityProgress {
+            inner: state.inner.clone(),
+            activity_id: activity_id.clone(),
+            total_bytes: None,
+            base_bytes: bytes,
+        };
+        let blob_bytes = match stream_blob_to_file(
+            &backend,
+            &container,
+            &blob_name,
+            &target_path,
+            Some(progress),
+        )
+        .await
+        {
+            Ok(blob_bytes) => blob_bytes,
+            Err(error) => {
+                let error = compact_live_browse_error(
                     &connection,
                     "Folder download",
                     Some(container.as_str()),
                     &error,
-                )
-            })?;
+                );
+                finish_activity(
+                    &state,
+                    &activity_id,
+                    "error",
+                    activity_timer.elapsed(),
+                    Some(error.clone()),
+                );
+                return Err(error);
+            }
+        };
+        bytes += blob_bytes;
         item_count += 1;
+        update_activity_progress(&state.inner, &activity_id, bytes, None);
     }
 
-    record_activity(
+    finish_activity(
         &state,
-        "download",
+        &activity_id,
         "done",
-        format!("Download folder `{prefix}`"),
-        format!("from `{container}`"),
-        activity_started,
         activity_timer.elapsed(),
         Some(format!(
             "{} across {} blob{}",
@@ -2615,6 +2805,86 @@ fn record_activity(
     let mut guard = state.inner.lock().unwrap();
     guard.activities.insert(0, activity);
     guard.activities.truncate(200);
+}
+
+fn begin_activity(
+    state: &AppState,
+    kind: impl Into<String>,
+    title: impl Into<String>,
+    detail: impl Into<String>,
+    started_at: chrono::DateTime<Utc>,
+    progress: Option<f64>,
+) -> String {
+    let activity = Activity {
+        id: Uuid::new_v4().to_string(),
+        kind: kind.into(),
+        status: "running".into(),
+        title: title.into(),
+        detail: detail.into(),
+        started: started_at.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+        duration: None,
+        progress,
+        result: None,
+    };
+    let id = activity.id.clone();
+
+    let mut guard = state.inner.lock().unwrap();
+    guard.activities.insert(0, activity);
+    guard.activities.truncate(200);
+    id
+}
+
+fn update_activity_progress(
+    inner: &Arc<Mutex<InnerState>>,
+    activity_id: &str,
+    completed_bytes: u64,
+    total_bytes: Option<u64>,
+) {
+    let mut guard = inner.lock().unwrap();
+    if let Some(activity) = guard
+        .activities
+        .iter_mut()
+        .find(|activity| activity.id == activity_id)
+    {
+        activity.progress = total_bytes.map(|total| {
+            if total == 0 {
+                1.0
+            } else {
+                (completed_bytes as f64 / total as f64).clamp(0.0, 1.0)
+            }
+        });
+        activity.result = Some(match total_bytes {
+            Some(total) => format!(
+                "{} / {}",
+                format_bytes(completed_bytes),
+                format_bytes(total)
+            ),
+            None => format!("{} transferred", format_bytes(completed_bytes)),
+        });
+    }
+}
+
+fn finish_activity(
+    state: &AppState,
+    activity_id: &str,
+    status: impl Into<String>,
+    duration: StdDuration,
+    result: Option<String>,
+) {
+    let status = status.into();
+    let mut guard = state.inner.lock().unwrap();
+    if let Some(activity) = guard
+        .activities
+        .iter_mut()
+        .find(|activity| activity.id == activity_id)
+    {
+        activity.status = status;
+        activity.duration = Some(format_activity_duration(duration));
+        if activity.status == "done" {
+            activity.progress = Some(1.0);
+        }
+        activity.result = result;
+    }
 }
 
 fn format_activity_duration(duration: StdDuration) -> String {
@@ -3357,6 +3627,7 @@ async fn stream_blob_to_file(
     container: &str,
     blob_path: &str,
     target_path: &Path,
+    progress: Option<ActivityProgress>,
 ) -> Result<u64, String> {
     if let Some(parent) = target_path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| {
@@ -3388,6 +3659,14 @@ async fn stream_blob_to_file(
             )
         })?;
         total += bytes.len() as u64;
+        if let Some(progress) = &progress {
+            update_activity_progress(
+                &progress.inner,
+                &progress.activity_id,
+                progress.base_bytes.saturating_add(total),
+                progress.total_bytes,
+            );
+        }
     }
     file.flush().map_err(|error| {
         format!(
@@ -3984,7 +4263,10 @@ fn file_extension(path: &str) -> Option<String> {
         .map(|extension| extension.to_ascii_lowercase())
 }
 
-async fn file_byte_stream(source_path: &Path) -> Result<ByteStream, String> {
+async fn file_byte_stream_with_progress(
+    source_path: &Path,
+    progress: Option<ActivityProgress>,
+) -> Result<ByteStream, String> {
     const READ_CHUNK_BYTES: usize = 8 * 1024 * 1024;
 
     let file = tokio::fs::File::open(source_path).await.map_err(|error| {
@@ -3994,25 +4276,38 @@ async fn file_byte_stream(source_path: &Path) -> Result<ByteStream, String> {
         )
     })?;
     let path_label = source_path.display().to_string();
-    Ok(
-        stream::unfold((file, path_label), |(mut file, path_label)| async move {
+    Ok(stream::unfold(
+        (file, path_label, 0u64, progress),
+        |(mut file, path_label, mut total_read, progress)| async move {
             let mut buffer = vec![0u8; READ_CHUNK_BYTES];
             match file.read(&mut buffer).await {
                 Ok(0) => None,
                 Ok(read) => {
                     buffer.truncate(read);
-                    Some((Ok(Bytes::from(buffer)), (file, path_label)))
+                    total_read = total_read.saturating_add(read as u64);
+                    if let Some(progress) = &progress {
+                        update_activity_progress(
+                            &progress.inner,
+                            &progress.activity_id,
+                            progress.base_bytes.saturating_add(total_read),
+                            progress.total_bytes,
+                        );
+                    }
+                    Some((
+                        Ok(Bytes::from(buffer)),
+                        (file, path_label, total_read, progress),
+                    ))
                 }
                 Err(error) => Some((
                     Err(arkived_core::Error::Backend(format!(
                         "failed to read upload source `{path_label}`: {error}"
                     ))),
-                    (file, path_label),
+                    (file, path_label, total_read, progress),
                 )),
             }
-        })
-        .boxed(),
+        },
     )
+    .boxed())
 }
 
 fn collect_regular_files(root: &Path) -> Result<Vec<PathBuf>, String> {
