@@ -83,6 +83,21 @@ type ConnectMethod =
   | "sas"
   | "azurite";
 type TenantMode = "all" | "organizations" | "specific";
+type BlobFilterKind = "any" | "blob" | "dir";
+
+interface BlobAdvancedFilters {
+  text: string;
+  regex: string;
+  extension: string;
+  kind: BlobFilterKind;
+  tier: string;
+  blobType: string;
+  lease: string;
+  minSize: string;
+  maxSize: string;
+  modifiedFrom: string;
+  modifiedTo: string;
+}
 
 interface ConnectionFormState {
   displayName: string;
@@ -116,6 +131,7 @@ interface BrowserTabState {
   prefix: string;
   filter: string;
   search: string;
+  advancedFilters: BlobAdvancedFilters;
   searchDeep: boolean;
   sortKey: BlobSortKey;
   sortDirection: SortDirection;
@@ -176,6 +192,7 @@ interface PersistedBrowserTab {
   prefix?: string;
   filter?: string;
   search?: string;
+  advancedFilters?: Partial<BlobAdvancedFilters>;
   searchDeep?: boolean;
   sortKey?: BlobSortKey;
   sortDirection?: SortDirection;
@@ -212,6 +229,19 @@ const ACTIVITY_PANE_MAX_HEIGHT = 520;
 const PANE_RESIZE_HANDLE_WIDTH = 7;
 const DEFAULT_BLOB_SORT_KEY: BlobSortKey = "name";
 const DEFAULT_BLOB_SORT_DIRECTION: SortDirection = "asc";
+const EMPTY_BLOB_FILTERS: BlobAdvancedFilters = {
+  text: "",
+  regex: "",
+  extension: "",
+  kind: "any",
+  tier: "",
+  blobType: "",
+  lease: "",
+  minSize: "",
+  maxSize: "",
+  modifiedFrom: "",
+  modifiedTo: "",
+};
 const PREVIEW_DEFAULT_ROW_LIMIT = 50;
 const PREVIEW_PAGE_SIZE_OPTIONS = [25, 50, 100, 250, 500];
 const PREVIEW_COLUMN_MIN_WIDTH = 72;
@@ -302,6 +332,7 @@ function App() {
   const [activityPaneHeight, setActivityPaneHeight] = useState(ACTIVITY_PANE_DEFAULT_HEIGHT);
   const [activities, setActivities] = useState<Activity[]>([]);
   const [activityExpanded, setActivityExpanded] = useState(false);
+  const [advancedFiltersOpen, setAdvancedFiltersOpen] = useState(false);
   const [connectionsBusy, setConnectionsBusy] = useState(false);
   const [signInsBusy, setSignInsBusy] = useState(false);
   const [connectBusy, setConnectBusy] = useState(false);
@@ -335,14 +366,17 @@ function App() {
   const activeContainer = activeTab?.containerName ?? null;
   const activeRows = activeTab?.rows ?? [];
   const deferredSearch = useDeferredValue(activeTab?.search ?? "");
+  const deferredAdvancedFilters = useDeferredValue(activeTab?.advancedFilters ?? EMPTY_BLOB_FILTERS);
   const activeVisibleRows = activeTab
     ? buildVisibleBlobRows(
         activeRows,
         deferredSearch,
+        deferredAdvancedFilters,
         activeTab.sortKey ?? DEFAULT_BLOB_SORT_KEY,
         activeTab.sortDirection ?? DEFAULT_BLOB_SORT_DIRECTION,
       )
     : [];
+  const activeAdvancedFilterCount = activeTab ? countActiveBlobFilters(activeTab.advancedFilters) : 0;
   const activeRowsHaveMore = Boolean(activeTab?.loaded && activeTab?.continuation);
   const selectedIndices = activeTab?.selectedIndices ?? [];
   const selectedRows = new Set(selectedIndices);
@@ -1070,6 +1104,7 @@ function App() {
           prefix: "",
           filter: "",
           search: "",
+          advancedFilters: emptyBlobFilters(),
           searchDeep: false,
           sortKey: DEFAULT_BLOB_SORT_KEY,
           sortDirection: DEFAULT_BLOB_SORT_DIRECTION,
@@ -1373,6 +1408,7 @@ function App() {
         prefix: persistedTab.prefix ?? "",
         filter: persistedTab.filter ?? "",
         search: persistedTab.search ?? "",
+        advancedFilters: sanitizeBlobFilters(persistedTab.advancedFilters),
         searchDeep: Boolean(persistedTab.searchDeep),
         sortKey: sanitizeBlobSortKey(persistedTab.sortKey),
         sortDirection: sanitizeSortDirection(persistedTab.sortDirection),
@@ -1526,6 +1562,32 @@ function App() {
       ...tab,
       sortKey: key,
       sortDirection: tab.sortKey === key && tab.sortDirection === "asc" ? "desc" : "asc",
+    }));
+  }
+
+  function updateActiveAdvancedFilters(patch: Partial<BlobAdvancedFilters>) {
+    if (!activeTab) {
+      return;
+    }
+
+    startTransition(() => {
+      updateTab(activeTab.id, (tab) => ({
+        ...tab,
+        advancedFilters: sanitizeBlobFilters({ ...tab.advancedFilters, ...patch }),
+        selectedIndices: [],
+      }));
+    });
+  }
+
+  function clearActiveAdvancedFilters() {
+    if (!activeTab) {
+      return;
+    }
+
+    updateTab(activeTab.id, (tab) => ({
+      ...tab,
+      advancedFilters: emptyBlobFilters(),
+      selectedIndices: [],
     }));
   }
 
@@ -2166,6 +2228,7 @@ function App() {
             prefix: tab.prefix,
             filter: tab.filter,
             search: tab.search,
+            advancedFilters: tab.advancedFilters,
             searchDeep: tab.searchDeep,
             sortKey: tab.sortKey,
             sortDirection: tab.sortDirection,
@@ -3060,6 +3123,17 @@ function App() {
                   />
                   <button
                     type="button"
+                    title="Open structured filters for kind, extension, tier, size, dates, lease, blob type, text, and regex."
+                    style={{
+                      ...styles.pathToggleButton,
+                      ...(activeAdvancedFilterCount > 0 || advancedFiltersOpen ? styles.pathToggleButtonActive : {}),
+                    }}
+                    onClick={() => setAdvancedFiltersOpen((current) => !current)}
+                  >
+                    Filters{activeAdvancedFilterCount > 0 ? ` ${activeAdvancedFilterCount}` : ""}
+                  </button>
+                  <button
+                    type="button"
                     title="Deep search recursively scans blobs under the current prefix instead of only the current folder level."
                     style={{
                       ...styles.pathToggleButton,
@@ -3092,6 +3166,15 @@ function App() {
                   </span>
                 </div>
               </div>
+
+              {advancedFiltersOpen && (
+                <AdvancedBlobFilterPanel
+                  filters={activeTab.advancedFilters}
+                  activeCount={activeAdvancedFilterCount}
+                  onChange={updateActiveAdvancedFilters}
+                  onClear={clearActiveAdvancedFilters}
+                />
+              )}
 
               <ActionBar
                 selectedCount={selectedResourceRows.length}
@@ -4621,6 +4704,119 @@ function MainEmptyState({ title, body, primaryLabel, onPrimary, secondaryLabel }
   );
 }
 
+interface AdvancedBlobFilterPanelProps {
+  filters: BlobAdvancedFilters;
+  activeCount: number;
+  onChange: (patch: Partial<BlobAdvancedFilters>) => void;
+  onClear: () => void;
+}
+
+function AdvancedBlobFilterPanel({
+  filters,
+  activeCount,
+  onChange,
+  onClear,
+}: AdvancedBlobFilterPanelProps) {
+  const input = (
+    key: keyof BlobAdvancedFilters,
+    label: string,
+    placeholder: string,
+    type: "text" | "date" = "text",
+  ) => (
+    <label style={styles.filterField}>
+      <span style={styles.filterLabel}>{label}</span>
+      <input
+        type={type}
+        value={String(filters[key] ?? "")}
+        placeholder={placeholder}
+        style={styles.filterInput}
+        onChange={(event) => onChange({ [key]: event.currentTarget.value })}
+      />
+    </label>
+  );
+
+  const select = (
+    key: keyof BlobAdvancedFilters,
+    label: string,
+    options: Array<{ value: string; label: string }>,
+  ) => (
+    <label style={styles.filterField}>
+      <span style={styles.filterLabel}>{label}</span>
+      <select
+        value={String(filters[key] ?? "")}
+        style={styles.filterSelect}
+        onChange={(event) => onChange({ [key]: event.currentTarget.value })}
+      >
+        {options.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+
+  return (
+    <section style={styles.filterPanel}>
+      <div style={styles.filterPanelHeader}>
+        <div>
+          <div style={styles.filterPanelTitle}>Advanced filters</div>
+          <div style={styles.filterPanelSubtitle}>
+            Structured filters combine with the search query, prefix, deep scan, and current sort.
+          </div>
+        </div>
+        <div style={styles.filterPanelActions}>
+          {activeCount > 0 && <span style={styles.filterChip}>{activeCount} active</span>}
+          <button
+            type="button"
+            style={{
+              ...styles.filterClearButton,
+              ...(activeCount === 0 ? styles.filterClearButtonDisabled : {}),
+            }}
+            disabled={activeCount === 0}
+            onClick={onClear}
+          >
+            Clear
+          </button>
+        </div>
+      </div>
+
+      <div style={styles.filterPanelGrid}>
+        {input("text", "Name or path contains", "device twins")}
+        {input("regex", "Regex", "/createdAt_Year=2026/")}
+        {input("extension", "Extension", "parquet, csv, json")}
+        {select("kind", "Kind", [
+          { value: "any", label: "Any" },
+          { value: "blob", label: "Blobs only" },
+          { value: "dir", label: "Folders only" },
+        ])}
+        {select("tier", "Access tier", [
+          { value: "", label: "Any tier" },
+          { value: "Hot", label: "Hot" },
+          { value: "Cool", label: "Cool" },
+          { value: "Cold", label: "Cold" },
+          { value: "Archive", label: "Archive" },
+        ])}
+        {select("blobType", "Blob type", [
+          { value: "", label: "Any blob type" },
+          { value: "BlockBlob", label: "BlockBlob" },
+          { value: "AppendBlob", label: "AppendBlob" },
+          { value: "PageBlob", label: "PageBlob" },
+        ])}
+        {input("lease", "Lease contains", "available, leased")}
+        {input("minSize", "Min size", "10 MiB")}
+        {input("maxSize", "Max size", "2 GiB")}
+        {input("modifiedFrom", "Modified from", "", "date")}
+        {input("modifiedTo", "Modified to", "", "date")}
+      </div>
+
+      <div style={styles.filterHint}>
+        Use the Prefix box for Azure server-side narrowing. Use Deep + Scan all when filters need to inspect a whole subtree.
+      </div>
+    </section>
+  );
+}
+
 interface BlobPreviewPaneProps {
   state: PreviewDialogState;
   onClose: () => void;
@@ -5131,14 +5327,18 @@ function clampNumber(value: number, min: number, max: number): number {
 function buildVisibleBlobRows(
   rows: BlobRow[],
   query: string,
+  filters: BlobAdvancedFilters,
   sortKey: BlobSortKey,
   sortDirection: SortDirection,
 ): IndexedBlobRow[] {
   const normalizedQuery = query.trim();
   const indexed = rows.map((row, index) => ({ row, index }));
-  const filtered = normalizedQuery
-    ? indexed.filter((item) => matchesAdvancedBlobSearch(item.row, normalizedQuery))
-    : indexed;
+  const filtered = indexed.filter((item) => {
+    if (normalizedQuery && !matchesAdvancedBlobSearch(item.row, normalizedQuery)) {
+      return false;
+    }
+    return matchesStructuredBlobFilters(item.row, filters);
+  });
   const direction = sortDirection === "desc" ? -1 : 1;
 
   return [...filtered].sort((left, right) => {
@@ -5202,6 +5402,81 @@ function matchesAdvancedBlobSearch(row: BlobRow, query: string): boolean {
     const matched = matchBlobSearchToken(row, token);
     return token.negated ? !matched : matched;
   });
+}
+
+function matchesStructuredBlobFilters(row: BlobRow, filters: BlobAdvancedFilters): boolean {
+  if (filters.text.trim() && !matchText(blobSearchHaystack(row), filters.text.trim(), ":")) {
+    return false;
+  }
+
+  if (filters.regex.trim() && !matchRegex(blobSearchHaystack(row), filters.regex.trim())) {
+    return false;
+  }
+
+  if (filters.extension.trim()) {
+    const allowed = filters.extension
+      .split(/[,\s]+/)
+      .map((value) => value.trim().replace(/^\./, "").toLowerCase())
+      .filter(Boolean);
+    if (allowed.length > 0 && !allowed.includes(extensionForBlob(row).toLowerCase())) {
+      return false;
+    }
+  }
+
+  if (filters.kind !== "any" && row.kind !== filters.kind) {
+    return false;
+  }
+
+  if (filters.tier && !compareStringValue(row.tier ?? "", filters.tier, "=")) {
+    return false;
+  }
+
+  if (filters.blobType && !compareStringValue(row.blob_type ?? "", filters.blobType, "=")) {
+    return false;
+  }
+
+  if (filters.lease.trim() && !matchText(row.lease ?? "", filters.lease.trim(), ":")) {
+    return false;
+  }
+
+  const size = blobSizeBytes(row);
+  if (filters.minSize.trim()) {
+    const minSize = parseStorageSize(filters.minSize);
+    if (Number.isFinite(minSize) && !compareNumberValue(size, minSize, ">=")) {
+      return false;
+    }
+  }
+  if (filters.maxSize.trim()) {
+    const maxSize = parseStorageSize(filters.maxSize);
+    if (Number.isFinite(maxSize) && !compareNumberValue(size, maxSize, "<=")) {
+      return false;
+    }
+  }
+
+  const modified = parseBlobDate(row.modified);
+  if (filters.modifiedFrom) {
+    const modifiedFrom = startOfLocalDay(filters.modifiedFrom);
+    if (Number.isFinite(modifiedFrom) && !compareNumberValue(modified, modifiedFrom, ">=")) {
+      return false;
+    }
+  }
+  if (filters.modifiedTo) {
+    const modifiedTo = endOfLocalDay(filters.modifiedTo);
+    if (Number.isFinite(modifiedTo) && !compareNumberValue(modified, modifiedTo, "<=")) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function countActiveBlobFilters(filters: BlobAdvancedFilters): number {
+  return Object.entries(filters).filter(([key, value]) => {
+    if (key === "kind") {
+      return value !== "any";
+    }
+    return String(value ?? "").trim().length > 0;
+  }).length;
 }
 
 interface SearchToken {
@@ -5442,6 +5717,43 @@ function parseBlobDate(value: string): number {
   }
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY;
+}
+
+function startOfLocalDay(value: string): number {
+  const parsed = new Date(`${value}T00:00:00`);
+  const time = parsed.getTime();
+  return Number.isFinite(time) ? time : Number.NaN;
+}
+
+function endOfLocalDay(value: string): number {
+  const parsed = new Date(`${value}T23:59:59.999`);
+  const time = parsed.getTime();
+  return Number.isFinite(time) ? time : Number.NaN;
+}
+
+function emptyBlobFilters(): BlobAdvancedFilters {
+  return { ...EMPTY_BLOB_FILTERS };
+}
+
+function sanitizeBlobFilters(value: unknown): BlobAdvancedFilters {
+  if (!value || typeof value !== "object") {
+    return emptyBlobFilters();
+  }
+
+  const raw = value as Partial<BlobAdvancedFilters>;
+  return {
+    text: typeof raw.text === "string" ? raw.text : "",
+    regex: typeof raw.regex === "string" ? raw.regex : "",
+    extension: typeof raw.extension === "string" ? raw.extension : "",
+    kind: raw.kind === "blob" || raw.kind === "dir" ? raw.kind : "any",
+    tier: typeof raw.tier === "string" ? raw.tier : "",
+    blobType: typeof raw.blobType === "string" ? raw.blobType : "",
+    lease: typeof raw.lease === "string" ? raw.lease : "",
+    minSize: typeof raw.minSize === "string" ? raw.minSize : "",
+    maxSize: typeof raw.maxSize === "string" ? raw.maxSize : "",
+    modifiedFrom: typeof raw.modifiedFrom === "string" ? raw.modifiedFrom : "",
+    modifiedTo: typeof raw.modifiedTo === "string" ? raw.modifiedTo : "",
+  };
 }
 
 function sanitizeBlobSortKey(value: unknown): BlobSortKey {
@@ -5770,6 +6082,7 @@ function loadPersistedShellSnapshot(): PersistedShellSnapshot | null {
           prefix: typeof tab.prefix === "string" ? tab.prefix : "",
           filter: typeof tab.filter === "string" ? tab.filter : "",
           search: typeof tab.search === "string" ? tab.search : "",
+          advancedFilters: sanitizeBlobFilters(tab.advancedFilters),
           searchDeep: Boolean(tab.searchDeep),
           sortKey: sanitizeBlobSortKey(tab.sortKey),
           sortDirection: sanitizeSortDirection(tab.sortDirection),
@@ -6164,6 +6477,113 @@ const styles: Record<string, CSSProperties> = {
     color: "var(--fg-3)",
     fontSize: 11,
     fontFamily: "var(--mono)",
+  },
+  filterPanel: {
+    flexShrink: 0,
+    margin: "0 10px 8px",
+    border: "1px solid var(--border-1)",
+    borderRadius: 12,
+    background:
+      "linear-gradient(180deg, rgba(20,22,28,0.96), rgba(13,14,18,0.98))",
+    boxShadow: "0 14px 36px rgba(0,0,0,0.24)",
+    overflow: "hidden",
+  },
+  filterPanelHeader: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+    padding: "10px 12px",
+    borderBottom: "1px solid var(--border-0)",
+  },
+  filterPanelTitle: {
+    color: "var(--fg-0)",
+    fontWeight: 700,
+    fontSize: 13,
+  },
+  filterPanelSubtitle: {
+    color: "var(--fg-3)",
+    fontSize: 11,
+    marginTop: 2,
+  },
+  filterPanelActions: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    flexShrink: 0,
+  },
+  filterPanelGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+    gap: 10,
+    padding: 12,
+  },
+  filterField: {
+    minWidth: 0,
+    display: "flex",
+    flexDirection: "column",
+    gap: 5,
+  },
+  filterLabel: {
+    color: "var(--fg-3)",
+    fontFamily: "var(--mono)",
+    fontSize: 9,
+    textTransform: "uppercase",
+    letterSpacing: "0.06em",
+  },
+  filterInput: {
+    height: 28,
+    border: "1px solid var(--border-1)",
+    borderRadius: 6,
+    background: "var(--bg-1)",
+    color: "var(--fg-1)",
+    padding: "0 9px",
+    fontFamily: "var(--mono)",
+    fontSize: 10,
+    outline: "none",
+  },
+  filterSelect: {
+    height: 28,
+    border: "1px solid var(--border-1)",
+    borderRadius: 6,
+    background: "var(--bg-1)",
+    color: "var(--fg-1)",
+    padding: "0 8px",
+    fontFamily: "var(--mono)",
+    fontSize: 10,
+    outline: "none",
+  },
+  filterChip: {
+    height: 22,
+    display: "inline-flex",
+    alignItems: "center",
+    padding: "0 8px",
+    borderRadius: 999,
+    border: "1px solid var(--accent-dim)",
+    background: "var(--accent-ghost)",
+    color: "var(--accent)",
+    fontFamily: "var(--mono)",
+    fontSize: 10,
+  },
+  filterClearButton: {
+    height: 24,
+    padding: "0 9px",
+    borderRadius: 5,
+    border: "1px solid var(--border-1)",
+    background: "var(--bg-2)",
+    color: "var(--fg-1)",
+    fontFamily: "var(--mono)",
+    fontSize: 10,
+  },
+  filterClearButtonDisabled: {
+    opacity: 0.45,
+    cursor: "default",
+  },
+  filterHint: {
+    padding: "0 12px 12px",
+    color: "var(--fg-3)",
+    fontSize: 11,
+    lineHeight: 1.5,
   },
   browserPane: {
     flex: 1,
