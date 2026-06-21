@@ -9,6 +9,7 @@ import {
   IconUnlock, IconLock, IconCheck,
 } from "./icons";
 import { BlobRow, BreadcrumbEntry } from "./data";
+import type { BlobProperties } from "./lib/ipc";
 
 export type BlobSortKey = "name" | "mod" | "size" | "tier" | "blobType" | "tierMod" | "lease" | "etag";
 export type SortDirection = "asc" | "desc";
@@ -620,5 +621,83 @@ export function Inspector({ row, resourceUrl, containerName, endpoint, authKind 
       {kv("modified", row.modified || "—")}
       {row.lease && kv("lease state", row.lease === "avail" ? "available" : "leased")}
     </div>
+  );
+}
+
+export interface BlobPropertiesPaneState {
+  row: BlobRow;
+  properties: BlobProperties | null;
+  metadata: Record<string, string> | null;
+  busy: boolean;
+  error: string | null;
+}
+
+export function BlobPropertiesPane({
+  state,
+  onClose,
+}: {
+  state: BlobPropertiesPaneState;
+  onClose: () => void;
+}) {
+  const { row, properties, metadata, busy, error } = state;
+  const kv = (k: string, v: ReactNode, mono = true) => (
+    <div style={{ display: "flex", gap: 10, fontSize: 10, minHeight: 16 }}>
+      <div style={{ width: 110, color: "var(--fg-3)", textTransform: "uppercase", letterSpacing: "0.04em", fontWeight: 600, fontSize: 9 }}>{k}</div>
+      <div style={{ color: "var(--fg-1)", fontFamily: mono ? "var(--mono)" : "var(--sans)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{v}</div>
+    </div>
+  );
+  const metaEntries = metadata ? Object.entries(metadata) : [];
+
+  return (
+    <aside style={{ flex: 1, minWidth: 0, overflow: "auto", padding: "8px 12px", fontFamily: "var(--mono)", display: "flex", flexDirection: "column", gap: 2 }}>
+      <div style={{
+        fontSize: 10, fontWeight: 600, color: "var(--fg-3)",
+        textTransform: "uppercase", letterSpacing: "0.08em",
+        paddingBottom: 6, borderBottom: "1px solid var(--border-0)", marginBottom: 6,
+        display: "flex", alignItems: "center", gap: 6,
+      }}>
+        <IconInfo size={11} />
+        <span>Live properties</span>
+        <span style={{ flex: 1 }} />
+        <button
+          type="button"
+          onClick={onClose}
+          title="Close"
+          style={{ display: "flex", alignItems: "center", background: "transparent", border: "none", color: "var(--fg-3)", cursor: "pointer", padding: 2 }}
+        >
+          <IconX size={11} />
+        </button>
+      </div>
+      {kv("name", row.name)}
+      {row.path && kv("path", row.path)}
+      {busy && <div style={{ fontSize: 10, color: "var(--fg-3)", padding: "8px 0" }}>Loading…</div>}
+      {error && <div style={{ fontSize: 10, color: "var(--danger, #e55)", padding: "8px 0" }}>{error}</div>}
+      {properties && (
+        <>
+          {kv("content type", properties.content_type ?? "—")}
+          {kv("size (bytes)", String(properties.content_length))}
+          {kv("blob type", properties.blob_type ?? "—")}
+          {kv("access tier", properties.access_tier ?? "—")}
+          {properties.cache_control && kv("cache control", properties.cache_control)}
+          {properties.content_encoding && kv("encoding", properties.content_encoding)}
+          {properties.content_language && kv("language", properties.content_language)}
+          {properties.content_md5 && kv("md5", properties.content_md5)}
+          {kv("etag", properties.etag ?? "—")}
+          {kv("lease state", properties.lease_state ?? "—")}
+        </>
+      )}
+      {!busy && !error && (
+        <>
+          <div style={{ fontSize: 9, fontWeight: 600, color: "var(--fg-3)", textTransform: "uppercase", letterSpacing: "0.06em", marginTop: 10, marginBottom: 4 }}>
+            Metadata
+          </div>
+          {metaEntries.length === 0 ? (
+            <div style={{ fontSize: 10, color: "var(--fg-4)" }}>No user metadata.</div>
+          ) : (
+            metaEntries.map(([k, v]) => kv(k, v))
+          )}
+        </>
+      )}
+    </aside>
   );
 }
