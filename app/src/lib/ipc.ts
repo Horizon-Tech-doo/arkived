@@ -489,6 +489,84 @@ export async function copyBlobItem(
   });
 }
 
+export interface BlobProperties {
+  content_length: number;
+  content_type: string | null;
+  content_encoding: string | null;
+  content_language: string | null;
+  cache_control: string | null;
+  content_disposition: string | null;
+  content_md5: string | null;
+  etag: string | null;
+  blob_type: string | null;
+  access_tier: string | null;
+  lease_state: string | null;
+  lease_status: string | null;
+}
+
+export async function generateBlobSas(
+  connectionId: string,
+  container: string,
+  path: string | null,
+  permissions: string,
+  expiryHours: number,
+): Promise<string> {
+  return callTauri<string>("generate_blob_sas", {
+    connectionId,
+    container,
+    path,
+    permissions,
+    expiryHours,
+  });
+}
+
+export async function setBlobTier(
+  connectionId: string,
+  container: string,
+  path: string,
+  tier: string,
+): Promise<void> {
+  return callTauri<void>("set_blob_tier", { connectionId, container, path, tier });
+}
+
+export async function getBlobProperties(
+  connectionId: string,
+  container: string,
+  path: string,
+): Promise<BlobProperties> {
+  return callTauri<BlobProperties>("get_blob_properties", {
+    connectionId,
+    container,
+    path,
+  });
+}
+
+export async function getBlobMetadata(
+  connectionId: string,
+  container: string,
+  path: string,
+): Promise<Record<string, string>> {
+  return callTauri<Record<string, string>>("get_blob_metadata", {
+    connectionId,
+    container,
+    path,
+  });
+}
+
+export async function setBlobMetadata(
+  connectionId: string,
+  container: string,
+  path: string,
+  metadata: Record<string, string>,
+): Promise<void> {
+  return callTauri<void>("set_blob_metadata", {
+    connectionId,
+    container,
+    path,
+    metadata,
+  });
+}
+
 export async function disconnectConnection(connectionId: string): Promise<void> {
   return callTauri<void>("disconnect_connection", { connectionId });
 }

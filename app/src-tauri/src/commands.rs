@@ -18,7 +18,8 @@ use arkived_core::auth::{
     ConnectionStringProvider, ResolvedCredential, SasTokenProvider,
 };
 use arkived_core::backend::{
-    AzureBlobBackend, BlobEntry, BlobPath, ByteStream, DeleteOpts, Page, WriteOpts,
+    AzureBlobBackend, BlobEntry, BlobPath, BlobProperties, ByteStream, DeleteOpts, Page,
+    SasOptions, SasProtocol, SasResource, Tier, WriteOpts,
 };
 use arkived_core::policy::AllowAllPolicy;
 use arkived_core::store::{AttachedResource, SignIn};
@@ -2358,6 +2359,199 @@ pub async fn delete_blob(
         activity_started,
         activity_timer.elapsed(),
         Some("1 deleted".into()),
+    );
+    Ok(())
+}
+
+/// Generate an account-key Service SAS URL for a container or blob.
+#[tauri::command]
+pub async fn generate_blob_sas(
+    state: State<'_, AppState>,
+    connection_id: String,
+    container: String,
+    path: Option<String>,
+    permissions: String,
+    expiry_hours: i64,
+) -> Result<String, String> {
+    let activity_started = Utc::now();
+    let activity_timer = Instant::now();
+    let connection = get_connection(&state, &connection_id)?;
+    let container = resolved_container_name(&connection, &container)?;
+    let backend = build_backend(&connection).await?;
+    let ctx = app_operation_ctx();
+
+    let resource = match path.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+        Some(p) => SasResource::Blob(BlobPath::new(container.clone(), normalize_blob_path(p)?)),
+        None => SasResource::Container(container.clone()),
+    };
+    let expiry = time::OffsetDateTime::now_utc() + time::Duration::hours(expiry_hours.max(1));
+    let opts = SasOptions {
+        permissions,
+        expiry,
+        start: None,
+        protocol: SasProtocol::HttpsOnly,
+        ip: None,
+    };
+    let url = backend
+        .generate_sas(&ctx, &resource, &opts)
+        .await
+        .map_err(|error| {
+            compact_live_browse_error(
+                &connection,
+                "Generate SAS",
+                Some(container.as_str()),
+                &error_to_string(error),
+            )
+        })?;
+
+    record_activity(
+        &state,
+        "sas",
+        "done",
+        format!("Generate SAS for `{container}`"),
+        String::new(),
+        activity_started,
+        activity_timer.elapsed(),
+        Some("1 SAS issued".into()),
+    );
+    Ok(url)
+}
+
+/// Change a blob's access tier (Hot/Cool/Cold/Archive).
+#[tauri::command]
+pub async fn set_blob_tier(
+    state: State<'_, AppState>,
+    connection_id: String,
+    container: String,
+    path: String,
+    tier: String,
+) -> Result<(), String> {
+    let activity_started = Utc::now();
+    let activity_timer = Instant::now();
+    let connection = get_connection(&state, &connection_id)?;
+    let container = resolved_container_name(&connection, &container)?;
+    let blob_path = normalize_blob_path(&path)?;
+    let parsed = Tier::parse(&tier)
+        .ok_or_else(|| format!("invalid access tier `{tier}` (use hot, cool, cold, or archive)"))?;
+    let backend = build_backend(&connection).await?;
+    let ctx = app_operation_ctx();
+    backend
+        .set_access_tier(&ctx, &BlobPath::new(container.clone(), blob_path.clone()), parsed)
+        .await
+        .map_err(|error| {
+            compact_live_browse_error(
+                &connection,
+                "Set access tier",
+                Some(container.as_str()),
+                &error_to_string(error),
+            )
+        })?;
+
+    record_activity(
+        &state,
+        "tier",
+        "done",
+        format!("Set tier of `{blob_path}` to {}", parsed.as_str()),
+        format!("in `{container}`"),
+        activity_started,
+        activity_timer.elapsed(),
+        Some(format!("tier {}", parsed.as_str())),
+    );
+    Ok(())
+}
+
+/// Read a blob's system (HTTP) properties.
+#[tauri::command]
+pub async fn get_blob_properties(
+    state: State<'_, AppState>,
+    connection_id: String,
+    container: String,
+    path: String,
+) -> Result<BlobProperties, String> {
+    let connection = get_connection(&state, &connection_id)?;
+    let container = resolved_container_name(&connection, &container)?;
+    let blob_path = normalize_blob_path(&path)?;
+    let backend = build_backend(&connection).await?;
+    backend
+        .get_properties(&BlobPath::new(container.clone(), blob_path))
+        .await
+        .map_err(|error| {
+            compact_live_browse_error(
+                &connection,
+                "Blob properties",
+                Some(container.as_str()),
+                &error_to_string(error),
+            )
+        })
+}
+
+/// Read a blob's user-defined metadata.
+#[tauri::command]
+pub async fn get_blob_metadata(
+    state: State<'_, AppState>,
+    connection_id: String,
+    container: String,
+    path: String,
+) -> Result<HashMap<String, String>, String> {
+    let connection = get_connection(&state, &connection_id)?;
+    let container = resolved_container_name(&connection, &container)?;
+    let blob_path = normalize_blob_path(&path)?;
+    let backend = build_backend(&connection).await?;
+    backend
+        .get_metadata(&BlobPath::new(container.clone(), blob_path))
+        .await
+        .map_err(|error| {
+            compact_live_browse_error(
+                &connection,
+                "Blob metadata",
+                Some(container.as_str()),
+                &error_to_string(error),
+            )
+        })
+}
+
+/// Replace a blob's user-defined metadata.
+#[tauri::command]
+pub async fn set_blob_metadata(
+    state: State<'_, AppState>,
+    connection_id: String,
+    container: String,
+    path: String,
+    metadata: HashMap<String, String>,
+) -> Result<(), String> {
+    let activity_started = Utc::now();
+    let activity_timer = Instant::now();
+    let connection = get_connection(&state, &connection_id)?;
+    let container = resolved_container_name(&connection, &container)?;
+    let blob_path = normalize_blob_path(&path)?;
+    let entry_count = metadata.len();
+    let backend = build_backend(&connection).await?;
+    let ctx = app_operation_ctx();
+    backend
+        .set_metadata(
+            &ctx,
+            &BlobPath::new(container.clone(), blob_path.clone()),
+            &metadata,
+        )
+        .await
+        .map_err(|error| {
+            compact_live_browse_error(
+                &connection,
+                "Set metadata",
+                Some(container.as_str()),
+                &error_to_string(error),
+            )
+        })?;
+
+    record_activity(
+        &state,
+        "metadata",
+        "done",
+        format!("Set metadata on `{blob_path}`"),
+        format!("in `{container}`"),
+        activity_started,
+        activity_timer.elapsed(),
+        Some(format!("{entry_count} entries")),
     );
     Ok(())
 }
