@@ -127,5 +127,168 @@ pub struct DeleteOpts {
     pub include_snapshots: bool,
 }
 
+/// Blob access tier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Tier {
+    /// Hot — frequent access, lowest access cost.
+    Hot,
+    /// Cool — infrequent access, ~30-day minimum.
+    Cool,
+    /// Cold — rare access, ~90-day minimum.
+    Cold,
+    /// Archive — offline, must be rehydrated before read.
+    Archive,
+}
+
+impl Tier {
+    /// The Azure `x-ms-access-tier` header value for this tier.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Tier::Hot => "Hot",
+            Tier::Cool => "Cool",
+            Tier::Cold => "Cold",
+            Tier::Archive => "Archive",
+        }
+    }
+
+    /// Parse a tier from a case-insensitive string (e.g. CLI argument).
+    pub fn parse(s: &str) -> Option<Tier> {
+        match s.to_ascii_lowercase().as_str() {
+            "hot" => Some(Tier::Hot),
+            "cool" => Some(Tier::Cool),
+            "cold" => Some(Tier::Cold),
+            "archive" => Some(Tier::Archive),
+            _ => None,
+        }
+    }
+}
+
+/// Container public-access level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PublicAccess {
+    /// No anonymous access (private container).
+    Private,
+    /// Anonymous read access to blobs only.
+    Blob,
+    /// Anonymous read access to blobs and container metadata.
+    Container,
+}
+
+impl PublicAccess {
+    /// The `x-ms-blob-public-access` header value, or `None` for `Private`
+    /// (the header is omitted entirely for private containers).
+    pub fn header_value(&self) -> Option<&'static str> {
+        match self {
+            PublicAccess::Private => None,
+            PublicAccess::Blob => Some("blob"),
+            PublicAccess::Container => Some("container"),
+        }
+    }
+
+    /// Parse from a case-insensitive string (`private`/`blob`/`container`).
+    pub fn parse(s: &str) -> Option<PublicAccess> {
+        match s.to_ascii_lowercase().as_str() {
+            "private" | "none" | "off" => Some(PublicAccess::Private),
+            "blob" => Some(PublicAccess::Blob),
+            "container" => Some(PublicAccess::Container),
+            _ => None,
+        }
+    }
+}
+
+/// System (HTTP) properties of a blob, as returned by `get_properties`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlobProperties {
+    /// Size of the blob in bytes (`Content-Length`).
+    pub content_length: u64,
+    /// `Content-Type`.
+    pub content_type: Option<String>,
+    /// `Content-Encoding`.
+    pub content_encoding: Option<String>,
+    /// `Content-Language`.
+    pub content_language: Option<String>,
+    /// `Cache-Control`.
+    pub cache_control: Option<String>,
+    /// `Content-Disposition`.
+    pub content_disposition: Option<String>,
+    /// `Content-MD5` (base64).
+    pub content_md5: Option<String>,
+    /// `ETag`.
+    pub etag: Option<String>,
+    /// Blob type (`"BlockBlob"`, `"PageBlob"`, `"AppendBlob"`).
+    pub blob_type: Option<String>,
+    /// Access tier (`"Hot"`, `"Cool"`, `"Cold"`, `"Archive"`).
+    pub access_tier: Option<String>,
+    /// Lease state (`"available"`, `"leased"`, …).
+    pub lease_state: Option<String>,
+    /// Lease status (`"locked"`, `"unlocked"`).
+    pub lease_status: Option<String>,
+}
+
+/// Settable system (HTTP) properties for `set_properties`.
+///
+/// Azure's "Set Blob Properties" replaces *all* system properties in one call:
+/// any field left `None` is cleared on the blob. Callers should read current
+/// properties first if they want to preserve unspecified fields.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BlobPropertiesUpdate {
+    /// `Content-Type`.
+    pub content_type: Option<String>,
+    /// `Content-Encoding`.
+    pub content_encoding: Option<String>,
+    /// `Content-Language`.
+    pub content_language: Option<String>,
+    /// `Cache-Control`.
+    pub cache_control: Option<String>,
+    /// `Content-Disposition`.
+    pub content_disposition: Option<String>,
+    /// `Content-MD5` (base64).
+    pub content_md5: Option<String>,
+}
+
+/// The resource a SAS grants access to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SasResource {
+    /// A whole container (signed resource `"c"`).
+    Container(String),
+    /// A single blob (signed resource `"b"`).
+    Blob(BlobPath),
+}
+
+/// SAS protocol restriction (`spr`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SasProtocol {
+    /// HTTPS only (`"https"`). The safe default.
+    HttpsOnly,
+    /// HTTPS or HTTP (`"https,http"`).
+    HttpsAndHttp,
+}
+
+impl SasProtocol {
+    /// The `spr` query/sign value.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SasProtocol::HttpsOnly => "https",
+            SasProtocol::HttpsAndHttp => "https,http",
+        }
+    }
+}
+
+/// Options for generating a Service SAS.
+#[derive(Debug, Clone)]
+pub struct SasOptions {
+    /// Permission letters (e.g. `"r"`, `"rwd"`). Reordered into Azure's
+    /// canonical order during signing; unknown letters are dropped.
+    pub permissions: String,
+    /// Expiry time (`se`).
+    pub expiry: OffsetDateTime,
+    /// Optional start time (`st`).
+    pub start: Option<OffsetDateTime>,
+    /// Protocol restriction (`spr`).
+    pub protocol: SasProtocol,
+    /// Optional allowed IP or IP range (`sip`).
+    pub ip: Option<String>,
+}
+
 /// Convenience alias for a byte-producing stream.
 pub type ByteStream = BoxStream<'static, crate::Result<Bytes>>;
