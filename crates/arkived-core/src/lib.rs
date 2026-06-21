@@ -21,6 +21,7 @@
 
 pub mod auth;
 pub mod config;
+pub mod connect;
 pub mod ctx;
 pub mod error;
 pub mod policy;
@@ -44,6 +45,7 @@ pub use backend::{
     WriteOpts, WriteResult,
 };
 pub use config::{ArkivedConfig, ConfirmMode, OutputFormat};
+pub use connect::ConnectionParts;
 pub use ctx::{CancellationToken, Ctx};
 pub use error::{Error, Result};
 pub use policy::{Action, ActionContext, Policy, PolicyDecision};

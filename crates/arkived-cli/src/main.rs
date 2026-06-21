@@ -201,7 +201,7 @@ async fn dispatch(
             "saved sign-in / account management lands in the next CLI increment. \
              For now, connect with --connection-string, --sas, --account-key, or --azurite."
         ),
-        Command::Mcp => bail!("`arkived mcp` arrives with the MCP server crate (Phase 3)."),
+        Command::Mcp => arkived_mcp::run().await,
         Command::ServeAcp => bail!("`arkived serve-acp` is a later milestone (v0.4)."),
         Command::Gui => bail!("`arkived gui` will launch the desktop app in a later milestone."),
     }
