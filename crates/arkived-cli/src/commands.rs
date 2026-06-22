@@ -8,11 +8,12 @@ use anyhow::{bail, Context, Result};
 use arkived_core::auth::AzuriteEmulatorProvider;
 use arkived_core::config::{ConfirmMode, OutputFormat};
 use arkived_core::{
-    AzureBlobBackend, BlobEntry, BlobPath, Container, Ctx, SasOptions, SasProtocol, SasResource,
-    Tier, WriteOpts,
+    AzureBlobBackend, BlobEntry, BlobPath, BlobPropertiesUpdate, Container, Ctx, PublicAccess,
+    SasOptions, SasProtocol, SasResource, Tier, WriteOpts,
 };
 use bytes::Bytes;
 use futures::StreamExt;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
@@ -230,6 +231,107 @@ pub async fn set_tier(
         .set_access_tier(ctx, &BlobPath::new(remote.container, blob), tier)
         .await?;
     eprintln!("access tier set to {}", tier.as_str());
+    Ok(())
+}
+
+/// Parse a `private|blob|container` access level argument.
+fn parse_public_access(s: &str) -> Result<PublicAccess> {
+    PublicAccess::parse(s)
+        .with_context(|| format!("invalid access level '{s}' (use private|blob|container)"))
+}
+
+/// `arkived container create <name> [--public-access ...]`
+pub async fn container_create(
+    backend: &AzureBlobBackend,
+    ctx: &Ctx,
+    name: String,
+    public_access: Option<String>,
+) -> Result<()> {
+    let access = match public_access {
+        Some(s) => parse_public_access(&s)?,
+        None => PublicAccess::Private,
+    };
+    backend.create_container(ctx, &name, access).await?;
+    eprintln!("created container {name}");
+    Ok(())
+}
+
+/// `arkived container delete <name>` — policy-gated.
+pub async fn container_delete(backend: &AzureBlobBackend, ctx: &Ctx, name: String) -> Result<()> {
+    backend.delete_container(ctx, &name).await?;
+    eprintln!("deleted container {name}");
+    Ok(())
+}
+
+/// `arkived container set-access <name> <private|blob|container>` — policy-gated.
+pub async fn container_set_access(
+    backend: &AzureBlobBackend,
+    ctx: &Ctx,
+    name: String,
+    access: String,
+) -> Result<()> {
+    let access = parse_public_access(&access)?;
+    backend
+        .set_container_public_access(ctx, &name, access)
+        .await?;
+    eprintln!("set public access of {name}");
+    Ok(())
+}
+
+/// `arkived set-meta <container/blob> key=value...` — replaces all metadata.
+pub async fn set_meta(
+    backend: &AzureBlobBackend,
+    ctx: &Ctx,
+    path: String,
+    pairs: Vec<String>,
+) -> Result<()> {
+    let remote = parse_remote(&path)?;
+    let blob = remote
+        .blob
+        .context("set-meta needs a blob path like 'container/file.txt'")?;
+    let mut metadata = HashMap::new();
+    for pair in &pairs {
+        let (k, v) = pair
+            .split_once('=')
+            .with_context(|| format!("metadata must be key=value, got '{pair}'"))?;
+        metadata.insert(k.trim().to_string(), v.to_string());
+    }
+    backend
+        .set_metadata(ctx, &BlobPath::new(remote.container, blob), &metadata)
+        .await?;
+    eprintln!("set {} metadata entries on {path}", pairs.len());
+    Ok(())
+}
+
+/// `arkived set-props <container/blob> [--content-type ...] ...` — read-modify-write
+/// so unspecified system properties are preserved (Azure otherwise clears them).
+#[allow(clippy::too_many_arguments)]
+pub async fn set_props(
+    backend: &AzureBlobBackend,
+    ctx: &Ctx,
+    path: String,
+    content_type: Option<String>,
+    cache_control: Option<String>,
+    content_encoding: Option<String>,
+    content_language: Option<String>,
+    content_disposition: Option<String>,
+) -> Result<()> {
+    let remote = parse_remote(&path)?;
+    let blob = remote
+        .blob
+        .context("set-props needs a blob path like 'container/file.txt'")?;
+    let blob_path = BlobPath::new(remote.container, blob);
+    let current = backend.get_properties(&blob_path).await?;
+    let update = BlobPropertiesUpdate {
+        content_type: content_type.or(current.content_type),
+        content_encoding: content_encoding.or(current.content_encoding),
+        content_language: content_language.or(current.content_language),
+        cache_control: cache_control.or(current.cache_control),
+        content_disposition: content_disposition.or(current.content_disposition),
+        content_md5: current.content_md5,
+    };
+    backend.set_properties(ctx, &blob_path, &update).await?;
+    eprintln!("updated properties on {path}");
     Ok(())
 }
 

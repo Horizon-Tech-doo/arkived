@@ -101,6 +101,34 @@ enum Command {
         /// Blob path, e.g. `mycontainer/file.txt`
         path: String,
     },
+    /// Replace a blob's user-defined metadata (key=value pairs)
+    SetMeta {
+        /// Blob path, e.g. `mycontainer/file.txt`
+        path: String,
+        /// One or more `key=value` pairs (replaces all existing metadata)
+        #[arg(required = true)]
+        pairs: Vec<String>,
+    },
+    /// Update a blob's system properties (preserves unspecified ones)
+    SetProps {
+        /// Blob path, e.g. `mycontainer/file.txt`
+        path: String,
+        #[arg(long)]
+        content_type: Option<String>,
+        #[arg(long)]
+        cache_control: Option<String>,
+        #[arg(long)]
+        content_encoding: Option<String>,
+        #[arg(long)]
+        content_language: Option<String>,
+        #[arg(long)]
+        content_disposition: Option<String>,
+    },
+    /// Manage containers
+    Container {
+        #[command(subcommand)]
+        action: ContainerAction,
+    },
     /// Run as an MCP server over stdio (Stage 2)
     Mcp,
     /// Run as an ACP host (Stage 4)
@@ -119,6 +147,30 @@ enum AccountAction {
     Use {
         /// Storage account name
         name: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum ContainerAction {
+    /// Create a container
+    Create {
+        /// Container name
+        name: String,
+        /// Public access level: private, blob, or container
+        #[arg(long)]
+        public_access: Option<String>,
+    },
+    /// Delete a container and all its blobs
+    Delete {
+        /// Container name
+        name: String,
+    },
+    /// Set a container's public access level
+    SetAccess {
+        /// Container name
+        name: String,
+        /// Access level: private, blob, or container
+        access: String,
     },
 }
 
@@ -195,6 +247,49 @@ async fn dispatch(
         Command::Meta { path } => {
             let backend = auth.resolve_backend().await?;
             commands::metadata(&backend, path, format).await
+        }
+        Command::SetMeta { path, pairs } => {
+            let backend = auth.resolve_backend().await?;
+            let ctx = commands::make_ctx(confirm_mode, yes);
+            commands::set_meta(&backend, &ctx, path, pairs).await
+        }
+        Command::SetProps {
+            path,
+            content_type,
+            cache_control,
+            content_encoding,
+            content_language,
+            content_disposition,
+        } => {
+            let backend = auth.resolve_backend().await?;
+            let ctx = commands::make_ctx(confirm_mode, yes);
+            commands::set_props(
+                &backend,
+                &ctx,
+                path,
+                content_type,
+                cache_control,
+                content_encoding,
+                content_language,
+                content_disposition,
+            )
+            .await
+        }
+        Command::Container { action } => {
+            let backend = auth.resolve_backend().await?;
+            let ctx = commands::make_ctx(confirm_mode, yes);
+            match action {
+                ContainerAction::Create {
+                    name,
+                    public_access,
+                } => commands::container_create(&backend, &ctx, name, public_access).await,
+                ContainerAction::Delete { name } => {
+                    commands::container_delete(&backend, &ctx, name).await
+                }
+                ContainerAction::SetAccess { name, access } => {
+                    commands::container_set_access(&backend, &ctx, name, access).await
+                }
+            }
         }
         Command::Doctor => commands::doctor(auth).await,
         Command::Login | Command::Account { .. } => bail!(
