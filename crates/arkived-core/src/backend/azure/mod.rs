@@ -12,6 +12,7 @@ pub(crate) mod error;
 pub(crate) mod http;
 pub(crate) mod models;
 pub(crate) mod ops;
+pub mod queue;
 pub(crate) mod retry;
 pub(crate) mod xml;
 

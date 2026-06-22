@@ -40,9 +40,9 @@ pub mod backend;
 // focused.
 pub use auth::{AuthProvider, ResolvedCredential};
 pub use backend::{
-    AzureBlobBackend, BlobEntry, BlobPath, BlobProperties, BlobPropertiesUpdate, ByteStream,
-    Container, DeleteOpts, Page, PublicAccess, Range, SasOptions, SasProtocol, SasResource, Tier,
-    WriteOpts, WriteResult,
+    AzureBlobBackend, AzureQueueBackend, BlobEntry, BlobPath, BlobProperties, BlobPropertiesUpdate,
+    ByteStream, Container, DeleteOpts, Page, PublicAccess, Queue, QueueMessage, Range, SasOptions,
+    SasProtocol, SasResource, Tier, WriteOpts, WriteResult,
 };
 pub use config::{ArkivedConfig, ConfirmMode, OutputFormat};
 pub use connect::ConnectionParts;

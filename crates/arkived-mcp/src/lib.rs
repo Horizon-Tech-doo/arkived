@@ -10,8 +10,8 @@
 use arkived_core::auth::AzuriteEmulatorProvider;
 use arkived_core::policy::AllowAllPolicy;
 use arkived_core::{
-    AzureBlobBackend, BlobEntry, BlobPath, ConnectionParts, Ctx, SasOptions, SasProtocol,
-    SasResource, Tier, WriteOpts,
+    AzureBlobBackend, AzureQueueBackend, BlobEntry, BlobPath, ConnectionParts, Ctx, SasOptions,
+    SasProtocol, SasResource, Tier, WriteOpts,
 };
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use bytes::Bytes;
@@ -29,6 +29,7 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct ArkivedServer {
     backend: Arc<AzureBlobBackend>,
+    queue: Arc<AzureQueueBackend>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -184,12 +185,47 @@ struct SnapshotView {
     snapshot: String,
 }
 
+#[derive(Deserialize, schemars::JsonSchema)]
+struct QueueArg {
+    /// Queue name.
+    queue: String,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+struct QueuePutArg {
+    /// Queue name.
+    queue: String,
+    /// Message text to enqueue.
+    text: String,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+struct QueuePeekArg {
+    /// Queue name.
+    queue: String,
+    /// Number of messages to peek (default 1).
+    count: Option<u32>,
+}
+
+#[derive(Serialize, schemars::JsonSchema)]
+struct QueueView {
+    name: String,
+}
+
+#[derive(Serialize, schemars::JsonSchema)]
+struct QueueMessageView {
+    message_id: String,
+    message_text: String,
+    dequeue_count: Option<u64>,
+}
+
 #[tool_router]
 impl ArkivedServer {
-    /// Build a server from a connected backend.
-    pub fn new(backend: AzureBlobBackend) -> Self {
+    /// Build a server from connected blob + queue backends.
+    pub fn new(backend: AzureBlobBackend, queue: AzureQueueBackend) -> Self {
         Self {
             backend: Arc::new(backend),
+            queue: Arc::new(queue),
             tool_router: Self::tool_router(),
         }
     }
@@ -532,6 +568,102 @@ impl ArkivedServer {
             detail: format!("undeleted {}/{}", arg.container, arg.blob),
         }))
     }
+
+    // -- Queue tools ------------------------------------------------------
+
+    #[tool(description = "List all queues in the account (read-only).")]
+    async fn list_queues(
+        &self,
+        Parameters(Empty {}): Parameters<Empty>,
+    ) -> Result<Json<Vec<QueueView>>, ErrorData> {
+        let queues = self.queue.list_queues().await.map_err(op_err)?;
+        Ok(Json(
+            queues
+                .into_iter()
+                .map(|q| QueueView { name: q.name })
+                .collect(),
+        ))
+    }
+
+    #[tool(description = "Peek messages in a queue without dequeuing them (read-only).")]
+    async fn peek_messages(
+        &self,
+        Parameters(arg): Parameters<QueuePeekArg>,
+    ) -> Result<Json<Vec<QueueMessageView>>, ErrorData> {
+        let msgs = self
+            .queue
+            .peek_messages(&arg.queue, arg.count.unwrap_or(1))
+            .await
+            .map_err(op_err)?;
+        Ok(Json(msgs.into_iter().map(queue_message_view).collect()))
+    }
+
+    #[tool(description = "Create a queue (idempotent).")]
+    async fn create_queue(
+        &self,
+        Parameters(arg): Parameters<QueueArg>,
+    ) -> Result<Json<OkView>, ErrorData> {
+        self.queue.create_queue(&arg.queue).await.map_err(op_err)?;
+        Ok(Json(OkView {
+            ok: true,
+            detail: format!("created queue {}", arg.queue),
+        }))
+    }
+
+    #[tool(description = "Enqueue a text message to a queue.")]
+    async fn put_message(
+        &self,
+        Parameters(arg): Parameters<QueuePutArg>,
+    ) -> Result<Json<OkView>, ErrorData> {
+        self.queue
+            .put_message(&arg.queue, &arg.text)
+            .await
+            .map_err(op_err)?;
+        Ok(Json(OkView {
+            ok: true,
+            detail: format!("enqueued message to {}", arg.queue),
+        }))
+    }
+
+    #[tool(
+        description = "DESTRUCTIVE: Delete a queue and all its messages. Requires human approval."
+    )]
+    async fn delete_queue(
+        &self,
+        Parameters(arg): Parameters<QueueArg>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<Json<OkView>, ErrorData> {
+        approve(&ctx, &format!("delete queue {}", arg.queue)).await?;
+        self.queue
+            .delete_queue(&allow_ctx(), &arg.queue)
+            .await
+            .map_err(op_err)?;
+        Ok(Json(OkView {
+            ok: true,
+            detail: format!("deleted queue {}", arg.queue),
+        }))
+    }
+
+    #[tool(description = "DESTRUCTIVE: Clear all messages from a queue. Requires human approval.")]
+    async fn clear_messages(
+        &self,
+        Parameters(arg): Parameters<QueueArg>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<Json<OkView>, ErrorData> {
+        approve(
+            &ctx,
+            &format!("clear all messages from queue {}", arg.queue),
+        )
+        .await?;
+        self.queue
+            .clear_messages(&allow_ctx(), &arg.queue)
+            .await
+            .map_err(op_err)?;
+        Ok(Json(OkView {
+            ok: true,
+            detail: format!("cleared queue {}", arg.queue),
+        }))
+    }
 }
 
 #[tool_handler]
@@ -580,6 +712,14 @@ fn blob_view(entry: BlobEntry) -> BlobView {
             tier: None,
             blob_type: None,
         },
+    }
+}
+
+fn queue_message_view(m: arkived_core::QueueMessage) -> QueueMessageView {
+    QueueMessageView {
+        message_id: m.message_id,
+        message_text: m.message_text,
+        dequeue_count: m.dequeue_count,
     }
 }
 
@@ -632,8 +772,9 @@ pub async fn run() -> anyhow::Result<()> {
         );
     }
     let backend = parts.resolve().await?;
+    let queue = parts.resolve_queue().await?;
     tracing::info!(connection = %parts.describe(), "arkived-mcp starting");
-    let server = ArkivedServer::new(backend);
+    let server = ArkivedServer::new(backend, queue);
 
     let service = server.serve(stdio()).await?;
     service.waiting().await?;
@@ -677,8 +818,9 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
-        let backend = rt.block_on(backend.resolve()).unwrap();
-        let server = ArkivedServer::new(backend);
+        let queue = rt.block_on(backend.resolve_queue()).unwrap();
+        let blob = rt.block_on(backend.resolve()).unwrap();
+        let server = ArkivedServer::new(blob, queue);
         let info = server.get_info();
         assert_eq!(info.server_info.name, "arkived");
         assert!(info.capabilities.tools.is_some());

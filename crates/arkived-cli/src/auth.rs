@@ -6,7 +6,7 @@
 //! so the CLI and the MCP server share one path.
 
 use anyhow::Result;
-use arkived_core::{AzureBlobBackend, ConnectionParts};
+use arkived_core::{AzureBlobBackend, AzureQueueBackend, ConnectionParts};
 use clap::Args;
 
 /// Global connection flags, available on every subcommand.
@@ -60,6 +60,18 @@ impl AuthArgs {
             );
         }
         parts.resolve().await.map_err(Into::into)
+    }
+
+    /// Resolve these flags into a connected [`AzureQueueBackend`].
+    pub async fn resolve_queue_backend(&self) -> Result<AzureQueueBackend> {
+        let parts = self.parts();
+        if parts.is_empty() {
+            anyhow::bail!(
+                "no credentials provided. Use --azurite, --connection-string, \
+                 --sas (+ --account/--endpoint), or --account-key --account."
+            );
+        }
+        parts.resolve_queue().await.map_err(Into::into)
     }
 
     /// A short human label for the active connection (for `doctor`).

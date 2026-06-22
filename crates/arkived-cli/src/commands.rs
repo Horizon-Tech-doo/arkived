@@ -494,6 +494,78 @@ pub async fn metadata(
     output::emit_serialized(&md, format)
 }
 
+/// `arkived queue list`
+pub async fn queue_list(
+    backend: &arkived_core::AzureQueueBackend,
+    format: OutputFormat,
+) -> Result<()> {
+    let queues = backend.list_queues().await?;
+    output::emit_serialized(&queues, format)
+}
+
+/// `arkived queue create <name>`
+pub async fn queue_create(backend: &arkived_core::AzureQueueBackend, name: String) -> Result<()> {
+    backend.create_queue(&name).await?;
+    eprintln!("created queue {name}");
+    Ok(())
+}
+
+/// `arkived queue delete <name>` — policy-gated.
+pub async fn queue_delete(
+    backend: &arkived_core::AzureQueueBackend,
+    ctx: &Ctx,
+    name: String,
+) -> Result<()> {
+    backend.delete_queue(ctx, &name).await?;
+    eprintln!("deleted queue {name}");
+    Ok(())
+}
+
+/// `arkived queue put <name> <text>`
+pub async fn queue_put(
+    backend: &arkived_core::AzureQueueBackend,
+    name: String,
+    text: String,
+) -> Result<()> {
+    backend.put_message(&name, &text).await?;
+    eprintln!("enqueued message to {name}");
+    Ok(())
+}
+
+/// `arkived queue peek <name> [--count N]`
+pub async fn queue_peek(
+    backend: &arkived_core::AzureQueueBackend,
+    name: String,
+    count: u32,
+    format: OutputFormat,
+) -> Result<()> {
+    let msgs = backend.peek_messages(&name, count).await?;
+    output::emit_serialized(&msgs, format)
+}
+
+/// `arkived queue get <name> [--count N] [--visibility S]` — dequeue.
+pub async fn queue_get(
+    backend: &arkived_core::AzureQueueBackend,
+    name: String,
+    count: u32,
+    visibility: u32,
+    format: OutputFormat,
+) -> Result<()> {
+    let msgs = backend.get_messages(&name, count, visibility).await?;
+    output::emit_serialized(&msgs, format)
+}
+
+/// `arkived queue clear <name>` — policy-gated.
+pub async fn queue_clear(
+    backend: &arkived_core::AzureQueueBackend,
+    ctx: &Ctx,
+    name: String,
+) -> Result<()> {
+    backend.clear_messages(ctx, &name).await?;
+    eprintln!("cleared queue {name}");
+    Ok(())
+}
+
 /// `arkived doctor` — verify the resolved connection can reach the account.
 pub async fn doctor(auth: &AuthArgs) -> Result<()> {
     println!("connection: {}", auth.describe());

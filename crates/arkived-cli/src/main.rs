@@ -167,6 +167,11 @@ enum Command {
         #[command(subcommand)]
         action: LeaseAction,
     },
+    /// Manage queues and messages
+    Queue {
+        #[command(subcommand)]
+        action: QueueAction,
+    },
     /// Run as an MCP server over stdio (Stage 2)
     Mcp,
     /// Run as an ACP host (Stage 4)
@@ -233,6 +238,53 @@ enum LeaseAction {
     Break {
         /// Blob path
         path: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum QueueAction {
+    /// List queues
+    List,
+    /// Create a queue
+    Create {
+        /// Queue name
+        name: String,
+    },
+    /// Delete a queue and all its messages
+    Delete {
+        /// Queue name
+        name: String,
+    },
+    /// Enqueue a message
+    Put {
+        /// Queue name
+        name: String,
+        /// Message text
+        text: String,
+    },
+    /// Peek messages without dequeuing
+    Peek {
+        /// Queue name
+        name: String,
+        /// Number of messages to peek
+        #[arg(long, default_value_t = 1)]
+        count: u32,
+    },
+    /// Dequeue messages (hides them for a visibility window)
+    Get {
+        /// Queue name
+        name: String,
+        /// Number of messages to dequeue
+        #[arg(long, default_value_t = 1)]
+        count: u32,
+        /// Visibility timeout in seconds
+        #[arg(long, default_value_t = 30)]
+        visibility: u32,
+    },
+    /// Clear all messages from a queue
+    Clear {
+        /// Queue name
+        name: String,
     },
 }
 
@@ -387,6 +439,30 @@ async fn dispatch(
                 LeaseAction::Break { path } => {
                     let ctx = commands::make_ctx(confirm_mode, yes);
                     commands::lease_break(&backend, &ctx, path).await
+                }
+            }
+        }
+        Command::Queue { action } => {
+            let backend = auth.resolve_queue_backend().await?;
+            match action {
+                QueueAction::List => commands::queue_list(&backend, format).await,
+                QueueAction::Create { name } => commands::queue_create(&backend, name).await,
+                QueueAction::Delete { name } => {
+                    let ctx = commands::make_ctx(confirm_mode, yes);
+                    commands::queue_delete(&backend, &ctx, name).await
+                }
+                QueueAction::Put { name, text } => commands::queue_put(&backend, name, text).await,
+                QueueAction::Peek { name, count } => {
+                    commands::queue_peek(&backend, name, count, format).await
+                }
+                QueueAction::Get {
+                    name,
+                    count,
+                    visibility,
+                } => commands::queue_get(&backend, name, count, visibility, format).await,
+                QueueAction::Clear { name } => {
+                    let ctx = commands::make_ctx(confirm_mode, yes);
+                    commands::queue_clear(&backend, &ctx, name).await
                 }
             }
         }

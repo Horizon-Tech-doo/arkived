@@ -74,9 +74,29 @@ impl ConnectionParts {
 
     /// Resolve these parts into a connected [`AzureBlobBackend`].
     pub async fn resolve(&self) -> crate::Result<AzureBlobBackend> {
+        let (credential, endpoint) = self.materialize().await?;
+        AzureBlobBackend::new(endpoint, credential)
+    }
+
+    /// Resolve these parts into a connected [`AzureQueueBackend`].
+    ///
+    /// The queue endpoint is derived from the blob endpoint (swapping `.blob.`
+    /// for `.queue.`), except for Azurite where the emulator's queue port is used.
+    pub async fn resolve_queue(&self) -> crate::Result<crate::AzureQueueBackend> {
         if self.azurite {
             let credential = AzuriteEmulatorProvider::new().resolve().await?;
-            return AzureBlobBackend::new(parse_endpoint(AZURITE_BLOB_ENDPOINT)?, credential);
+            let endpoint = parse_endpoint("http://127.0.0.1:10001/devstoreaccount1")?;
+            return crate::AzureQueueBackend::new(endpoint, credential);
+        }
+        let (credential, blob_endpoint) = self.materialize().await?;
+        crate::AzureQueueBackend::from_blob_endpoint(&blob_endpoint, credential)
+    }
+
+    /// Resolve the credential and blob endpoint shared by both backends.
+    async fn materialize(&self) -> crate::Result<(crate::auth::ResolvedCredential, url::Url)> {
+        if self.azurite {
+            let credential = AzuriteEmulatorProvider::new().resolve().await?;
+            return Ok((credential, parse_endpoint(AZURITE_BLOB_ENDPOINT)?));
         }
 
         if let Some(cs) = &self.connection_string {
@@ -91,13 +111,13 @@ impl ConnectionParts {
             let credential = ConnectionStringProvider::new("connection-string", secret(cs))?
                 .resolve()
                 .await?;
-            return AzureBlobBackend::new(parse_endpoint(&endpoint)?, credential);
+            return Ok((credential, parse_endpoint(&endpoint)?));
         }
 
         if let Some(sas) = &self.sas {
             let endpoint = self.endpoint_for_account("a SAS token")?;
             let credential = SasTokenProvider::new("sas", secret(sas))?.resolve().await?;
-            return AzureBlobBackend::new(parse_endpoint(&endpoint)?, credential);
+            return Ok((credential, parse_endpoint(&endpoint)?));
         }
 
         if let Some(key) = &self.account_key {
@@ -109,7 +129,7 @@ impl ConnectionParts {
             let credential = AccountKeyProvider::new(account, secret(key))
                 .resolve()
                 .await?;
-            return AzureBlobBackend::new(parse_endpoint(&endpoint)?, credential);
+            return Ok((credential, parse_endpoint(&endpoint)?));
         }
 
         Err(Error::AuthFailed(

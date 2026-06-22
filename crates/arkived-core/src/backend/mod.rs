@@ -11,6 +11,7 @@ pub mod azure;
 pub mod types;
 
 #[allow(unused_imports)]
+pub use azure::queue::{AzureQueueBackend, Queue, QueueMessage};
 pub use azure::AzureBlobBackend;
 pub use types::{
     BlobEntry, BlobPath, BlobProperties, BlobPropertiesUpdate, ByteStream, Container, DeleteOpts,
