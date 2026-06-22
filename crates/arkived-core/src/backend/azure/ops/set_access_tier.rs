@@ -62,6 +62,69 @@ impl AzureBlobBackend {
             .await?;
         Ok(())
     }
+
+    /// Rehydrate an archived blob to an online tier (Hot/Cool/Cold) with a
+    /// rehydration priority. `high_priority` requests the (more expensive)
+    /// High priority; otherwise Standard. Policy-gated like a tier change.
+    pub async fn rehydrate_blob(
+        &self,
+        ctx: &Ctx,
+        path: &BlobPath,
+        target_tier: Tier,
+        high_priority: bool,
+    ) -> crate::Result<()> {
+        let priority = if high_priority { "High" } else { "Standard" };
+        let decision = ctx
+            .policy
+            .confirm(
+                &Action {
+                    verb: "rehydrate_blob".into(),
+                    target: format!("{}/{}", path.container, path.blob),
+                    summary: format!(
+                        "rehydrate {}/{} to {} ({priority} priority)",
+                        path.container,
+                        path.blob,
+                        target_tier.as_str()
+                    ),
+                    reversible: true,
+                },
+                &ActionContext {
+                    item_count: Some(1),
+                    ..Default::default()
+                },
+            )
+            .await;
+        match decision {
+            PolicyDecision::Allow | PolicyDecision::AllowAlways => {}
+            PolicyDecision::Deny(reason) => return Err(Error::PolicyDenied(reason)),
+        }
+
+        let mut url = self.endpoint.clone();
+        url.set_path(&format!("/{}/{}", path.container, path.blob));
+        url.set_query(Some("comp=tier"));
+
+        let headers = vec![
+            (
+                "x-ms-access-tier".to_string(),
+                target_tier.as_str().to_string(),
+            ),
+            ("x-ms-rehydrate-priority".to_string(), priority.to_string()),
+        ];
+
+        let pipeline = HttpPipeline {
+            http: &self.http,
+            credential: &self.credential,
+        };
+        let _ = pipeline
+            .send(RequestTemplate {
+                method: Method::PUT,
+                url,
+                headers,
+                body: Body::Empty,
+            })
+            .await?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
