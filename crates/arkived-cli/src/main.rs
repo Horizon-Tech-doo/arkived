@@ -129,6 +129,44 @@ enum Command {
         #[command(subcommand)]
         action: ContainerAction,
     },
+    /// Show a blob's index tags
+    Tags {
+        /// Blob path, e.g. `mycontainer/file.txt`
+        path: String,
+    },
+    /// Replace a blob's index tags (key=value pairs)
+    SetTags {
+        /// Blob path, e.g. `mycontainer/file.txt`
+        path: String,
+        /// One or more `key=value` pairs (replaces all existing tags)
+        #[arg(required = true)]
+        pairs: Vec<String>,
+    },
+    /// Create a snapshot of a blob (prints the snapshot id)
+    Snapshot {
+        /// Blob path, e.g. `mycontainer/file.txt`
+        path: String,
+    },
+    /// Restore a soft-deleted blob
+    Undelete {
+        /// Blob path, e.g. `mycontainer/file.txt`
+        path: String,
+    },
+    /// Rehydrate an archived blob to an online tier
+    Rehydrate {
+        /// Blob path, e.g. `mycontainer/file.txt`
+        path: String,
+        /// Target tier: hot, cool, or cold
+        tier: String,
+        /// Use High rehydrate priority (more expensive, faster)
+        #[arg(long)]
+        high: bool,
+    },
+    /// Manage blob leases
+    Lease {
+        #[command(subcommand)]
+        action: LeaseAction,
+    },
     /// Run as an MCP server over stdio (Stage 2)
     Mcp,
     /// Run as an ACP host (Stage 4)
@@ -171,6 +209,30 @@ enum ContainerAction {
         name: String,
         /// Access level: private, blob, or container
         access: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum LeaseAction {
+    /// Acquire a lease on a blob (prints the lease id)
+    Acquire {
+        /// Blob path
+        path: String,
+        /// Lease duration in seconds (15-60, or -1 for infinite)
+        #[arg(long, default_value_t = -1)]
+        duration: i32,
+    },
+    /// Release a held lease
+    Release {
+        /// Blob path
+        path: String,
+        /// The lease id to release
+        lease_id: String,
+    },
+    /// Forcibly break a blob's lease
+    Break {
+        /// Blob path
+        path: String,
     },
 }
 
@@ -288,6 +350,43 @@ async fn dispatch(
                 }
                 ContainerAction::SetAccess { name, access } => {
                     commands::container_set_access(&backend, &ctx, name, access).await
+                }
+            }
+        }
+        Command::Tags { path } => {
+            let backend = auth.resolve_backend().await?;
+            commands::tags(&backend, path, format).await
+        }
+        Command::SetTags { path, pairs } => {
+            let backend = auth.resolve_backend().await?;
+            let ctx = commands::make_ctx(confirm_mode, yes);
+            commands::set_tags(&backend, &ctx, path, pairs).await
+        }
+        Command::Snapshot { path } => {
+            let backend = auth.resolve_backend().await?;
+            commands::snapshot(&backend, path).await
+        }
+        Command::Undelete { path } => {
+            let backend = auth.resolve_backend().await?;
+            commands::undelete(&backend, path).await
+        }
+        Command::Rehydrate { path, tier, high } => {
+            let backend = auth.resolve_backend().await?;
+            let ctx = commands::make_ctx(confirm_mode, yes);
+            commands::rehydrate(&backend, &ctx, path, tier, high).await
+        }
+        Command::Lease { action } => {
+            let backend = auth.resolve_backend().await?;
+            match action {
+                LeaseAction::Acquire { path, duration } => {
+                    commands::lease_acquire(&backend, path, duration).await
+                }
+                LeaseAction::Release { path, lease_id } => {
+                    commands::lease_release(&backend, path, lease_id).await
+                }
+                LeaseAction::Break { path } => {
+                    let ctx = commands::make_ctx(confirm_mode, yes);
+                    commands::lease_break(&backend, &ctx, path).await
                 }
             }
         }

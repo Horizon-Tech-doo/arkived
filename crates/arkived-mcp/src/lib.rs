@@ -92,6 +92,16 @@ struct SasArg {
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
+struct SetTagsArg {
+    /// Container name.
+    container: String,
+    /// Blob name.
+    blob: String,
+    /// Index tags to set (replaces all existing tags).
+    tags: HashMap<String, String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
 struct SetTierArg {
     /// Container name.
     container: String,
@@ -167,6 +177,11 @@ struct OkView {
 #[derive(Serialize, schemars::JsonSchema)]
 struct SasView {
     url: String,
+}
+
+#[derive(Serialize, schemars::JsonSchema)]
+struct SnapshotView {
+    snapshot: String,
 }
 
 #[tool_router]
@@ -290,6 +305,19 @@ impl ArkivedServer {
         let metadata = self
             .backend
             .get_metadata(&BlobPath::new(arg.container, arg.blob))
+            .await
+            .map_err(op_err)?;
+        Ok(Json(MetadataView { metadata }))
+    }
+
+    #[tool(description = "Get a blob's index tags (read-only).")]
+    async fn get_tags(
+        &self,
+        Parameters(arg): Parameters<BlobArg>,
+    ) -> Result<Json<MetadataView>, ErrorData> {
+        let metadata = self
+            .backend
+            .get_tags(&BlobPath::new(arg.container, arg.blob))
             .await
             .map_err(op_err)?;
         Ok(Json(MetadataView { metadata }))
@@ -444,6 +472,64 @@ impl ArkivedServer {
         Ok(Json(OkView {
             ok: true,
             detail: format!("tier set to {}", tier.as_str()),
+        }))
+    }
+
+    #[tool(description = "DESTRUCTIVE: Replace a blob's index tags. Requires human approval.")]
+    async fn set_tags(
+        &self,
+        Parameters(arg): Parameters<SetTagsArg>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<Json<OkView>, ErrorData> {
+        approve(
+            &ctx,
+            &format!("replace index tags of {}/{}", arg.container, arg.blob),
+        )
+        .await?;
+        self.backend
+            .set_tags(
+                &allow_ctx(),
+                &BlobPath::new(arg.container.clone(), arg.blob.clone()),
+                &arg.tags,
+            )
+            .await
+            .map_err(op_err)?;
+        Ok(Json(OkView {
+            ok: true,
+            detail: format!(
+                "set {} tags on {}/{}",
+                arg.tags.len(),
+                arg.container,
+                arg.blob
+            ),
+        }))
+    }
+
+    #[tool(description = "Create a read-only snapshot of a blob. Returns the snapshot id.")]
+    async fn create_snapshot(
+        &self,
+        Parameters(arg): Parameters<BlobArg>,
+    ) -> Result<Json<SnapshotView>, ErrorData> {
+        let snapshot = self
+            .backend
+            .create_snapshot(&BlobPath::new(arg.container, arg.blob))
+            .await
+            .map_err(op_err)?;
+        Ok(Json(SnapshotView { snapshot }))
+    }
+
+    #[tool(description = "Restore a soft-deleted blob (recovery; not destructive).")]
+    async fn undelete_blob(
+        &self,
+        Parameters(arg): Parameters<BlobArg>,
+    ) -> Result<Json<OkView>, ErrorData> {
+        self.backend
+            .undelete_blob(&BlobPath::new(arg.container.clone(), arg.blob.clone()))
+            .await
+            .map_err(op_err)?;
+        Ok(Json(OkView {
+            ok: true,
+            detail: format!("undeleted {}/{}", arg.container, arg.blob),
         }))
     }
 }

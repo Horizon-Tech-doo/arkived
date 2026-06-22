@@ -335,6 +335,133 @@ pub async fn set_props(
     Ok(())
 }
 
+/// `arkived tags <container/blob>` — show a blob's index tags.
+pub async fn tags(backend: &AzureBlobBackend, path: String, format: OutputFormat) -> Result<()> {
+    let remote = parse_remote(&path)?;
+    let blob = remote
+        .blob
+        .context("tags needs a blob path like 'container/file.txt'")?;
+    let tags = backend
+        .get_tags(&BlobPath::new(remote.container, blob))
+        .await?;
+    output::emit_serialized(&tags, format)
+}
+
+/// `arkived set-tags <container/blob> key=value...` — replaces all index tags.
+pub async fn set_tags(
+    backend: &AzureBlobBackend,
+    ctx: &Ctx,
+    path: String,
+    pairs: Vec<String>,
+) -> Result<()> {
+    let remote = parse_remote(&path)?;
+    let blob = remote
+        .blob
+        .context("set-tags needs a blob path like 'container/file.txt'")?;
+    let mut tags = HashMap::new();
+    for pair in &pairs {
+        let (k, v) = pair
+            .split_once('=')
+            .with_context(|| format!("tags must be key=value, got '{pair}'"))?;
+        tags.insert(k.trim().to_string(), v.to_string());
+    }
+    backend
+        .set_tags(ctx, &BlobPath::new(remote.container, blob), &tags)
+        .await?;
+    eprintln!("set {} index tags on {path}", pairs.len());
+    Ok(())
+}
+
+/// `arkived snapshot <container/blob>` — create a snapshot, print its id.
+pub async fn snapshot(backend: &AzureBlobBackend, path: String) -> Result<()> {
+    let remote = parse_remote(&path)?;
+    let blob = remote
+        .blob
+        .context("snapshot needs a blob path like 'container/file.txt'")?;
+    let id = backend
+        .create_snapshot(&BlobPath::new(remote.container, blob))
+        .await?;
+    println!("{id}");
+    Ok(())
+}
+
+/// `arkived undelete <container/blob>` — restore a soft-deleted blob.
+pub async fn undelete(backend: &AzureBlobBackend, path: String) -> Result<()> {
+    let remote = parse_remote(&path)?;
+    let blob = remote
+        .blob
+        .context("undelete needs a blob path like 'container/file.txt'")?;
+    backend
+        .undelete_blob(&BlobPath::new(remote.container, blob))
+        .await?;
+    eprintln!("undeleted {path}");
+    Ok(())
+}
+
+/// `arkived rehydrate <container/blob> <tier> [--high]`
+pub async fn rehydrate(
+    backend: &AzureBlobBackend,
+    ctx: &Ctx,
+    path: String,
+    tier: String,
+    high: bool,
+) -> Result<()> {
+    let remote = parse_remote(&path)?;
+    let blob = remote
+        .blob
+        .context("rehydrate needs a blob path like 'container/file.txt'")?;
+    let tier =
+        Tier::parse(&tier).with_context(|| format!("invalid tier '{tier}' (use hot|cool|cold)"))?;
+    backend
+        .rehydrate_blob(ctx, &BlobPath::new(remote.container, blob), tier, high)
+        .await?;
+    eprintln!("rehydration to {} requested", tier.as_str());
+    Ok(())
+}
+
+/// `arkived lease acquire <container/blob> [--duration N]`
+pub async fn lease_acquire(backend: &AzureBlobBackend, path: String, duration: i32) -> Result<()> {
+    let remote = parse_remote(&path)?;
+    let blob = remote
+        .blob
+        .context("lease needs a blob path like 'container/file.txt'")?;
+    let id = backend
+        .acquire_lease(&BlobPath::new(remote.container, blob), duration)
+        .await?;
+    println!("{id}");
+    Ok(())
+}
+
+/// `arkived lease release <container/blob> <lease-id>`
+pub async fn lease_release(
+    backend: &AzureBlobBackend,
+    path: String,
+    lease_id: String,
+) -> Result<()> {
+    let remote = parse_remote(&path)?;
+    let blob = remote
+        .blob
+        .context("lease needs a blob path like 'container/file.txt'")?;
+    backend
+        .release_lease(&BlobPath::new(remote.container, blob), &lease_id)
+        .await?;
+    eprintln!("released lease on {path}");
+    Ok(())
+}
+
+/// `arkived lease break <container/blob>` — policy-gated.
+pub async fn lease_break(backend: &AzureBlobBackend, ctx: &Ctx, path: String) -> Result<()> {
+    let remote = parse_remote(&path)?;
+    let blob = remote
+        .blob
+        .context("lease needs a blob path like 'container/file.txt'")?;
+    backend
+        .break_lease(ctx, &BlobPath::new(remote.container, blob))
+        .await?;
+    eprintln!("broke lease on {path}");
+    Ok(())
+}
+
 /// `arkived properties <container/blob>` — show a blob's system properties.
 pub async fn properties(
     backend: &AzureBlobBackend,
