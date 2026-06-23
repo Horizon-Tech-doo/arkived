@@ -582,3 +582,131 @@ export async function clearActivities(scope: "completed" | "successful"): Promis
 export async function cancelActivity(activityId: string): Promise<void> {
   return callTauri<void>("cancel_activity", { activityId });
 }
+
+export interface BlobSnapshotResult {
+  path: string;
+  snapshot: string;
+}
+
+export interface BlobLeaseResult {
+  path: string;
+  lease_id: string;
+}
+
+export async function getBlobTags(
+  connectionId: string,
+  container: string,
+  path: string,
+): Promise<Record<string, string>> {
+  return callTauri<Record<string, string>>("get_blob_tags", {
+    connectionId,
+    container,
+    path,
+  });
+}
+
+export async function setBlobTags(
+  connectionId: string,
+  container: string,
+  path: string,
+  tags: Record<string, string>,
+): Promise<void> {
+  return callTauri<void>("set_blob_tags", {
+    connectionId,
+    container,
+    path,
+    tags,
+  });
+}
+
+export async function createBlobSnapshot(
+  connectionId: string,
+  container: string,
+  path: string,
+): Promise<BlobSnapshotResult> {
+  return callTauri<BlobSnapshotResult>("create_blob_snapshot", {
+    connectionId,
+    container,
+    path,
+  });
+}
+
+export async function undeleteBlob(
+  connectionId: string,
+  container: string,
+  path: string,
+): Promise<void> {
+  return callTauri<void>("undelete_blob", {
+    connectionId,
+    container,
+    path,
+  });
+}
+
+export async function acquireBlobLease(
+  connectionId: string,
+  container: string,
+  path: string,
+  durationSecs: number,
+): Promise<BlobLeaseResult> {
+  return callTauri<BlobLeaseResult>("acquire_blob_lease", {
+    connectionId,
+    container,
+    path,
+    durationSecs,
+  });
+}
+
+export async function releaseBlobLease(
+  connectionId: string,
+  container: string,
+  path: string,
+  leaseId: string,
+): Promise<void> {
+  return callTauri<void>("release_blob_lease", {
+    connectionId,
+    container,
+    path,
+    leaseId,
+  });
+}
+
+export async function breakBlobLease(
+  connectionId: string,
+  container: string,
+  path: string,
+): Promise<void> {
+  return callTauri<void>("break_blob_lease", {
+    connectionId,
+    container,
+    path,
+  });
+}
+
+export async function rehydrateBlob(
+  connectionId: string,
+  container: string,
+  path: string,
+  targetTier: string,
+  highPriority: boolean,
+): Promise<void> {
+  return callTauri<void>("rehydrate_blob", {
+    connectionId,
+    container,
+    path,
+    targetTier,
+    highPriority,
+  });
+}
+
+export async function setContainerPublicAccess(
+  connectionId: string,
+  container: string,
+  access: string,
+): Promise<void> {
+  return callTauri<void>("set_container_public_access", {
+    connectionId,
+    container,
+    access,
+  });
+}

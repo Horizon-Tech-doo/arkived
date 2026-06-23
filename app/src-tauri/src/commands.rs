@@ -19,7 +19,7 @@ use arkived_core::auth::{
 };
 use arkived_core::backend::{
     AzureBlobBackend, BlobEntry, BlobPath, BlobProperties, ByteStream, DeleteOpts, Page,
-    SasOptions, SasProtocol, SasResource, Tier, WriteOpts,
+    PublicAccess, SasOptions, SasProtocol, SasResource, Tier, WriteOpts,
 };
 use arkived_core::policy::AllowAllPolicy;
 use arkived_core::store::{AttachedResource, SignIn};
@@ -317,6 +317,18 @@ pub struct BlobBulkResult {
     pub path: String,
     pub bytes: u64,
     pub item_count: u64,
+}
+
+#[derive(Serialize)]
+pub struct BlobSnapshotResult {
+    pub path: String,
+    pub snapshot: String,
+}
+
+#[derive(Serialize)]
+pub struct BlobLeaseResult {
+    pub path: String,
+    pub lease_id: String,
 }
 
 #[derive(Serialize)]
@@ -2436,7 +2448,11 @@ pub async fn set_blob_tier(
     let backend = build_backend(&connection).await?;
     let ctx = app_operation_ctx();
     backend
-        .set_access_tier(&ctx, &BlobPath::new(container.clone(), blob_path.clone()), parsed)
+        .set_access_tier(
+            &ctx,
+            &BlobPath::new(container.clone(), blob_path.clone()),
+            parsed,
+        )
         .await
         .map_err(|error| {
             compact_live_browse_error(
@@ -2552,6 +2568,387 @@ pub async fn set_blob_metadata(
         activity_started,
         activity_timer.elapsed(),
         Some(format!("{entry_count} entries")),
+    );
+    Ok(())
+}
+
+/// Read a blob's index tags (read-only).
+#[tauri::command]
+pub async fn get_blob_tags(
+    state: State<'_, AppState>,
+    connection_id: String,
+    container: String,
+    path: String,
+) -> Result<HashMap<String, String>, String> {
+    let connection = get_connection(&state, &connection_id)?;
+    let container = resolved_container_name(&connection, &container)?;
+    let blob_path = normalize_blob_path(&path)?;
+    let backend = build_backend(&connection).await?;
+    backend
+        .get_tags(&BlobPath::new(container.clone(), blob_path))
+        .await
+        .map_err(|error| {
+            compact_live_browse_error(
+                &connection,
+                "Blob tags",
+                Some(container.as_str()),
+                &error_to_string(error),
+            )
+        })
+}
+
+/// Replace a blob's index tags.
+#[tauri::command]
+pub async fn set_blob_tags(
+    state: State<'_, AppState>,
+    connection_id: String,
+    container: String,
+    path: String,
+    tags: HashMap<String, String>,
+) -> Result<(), String> {
+    let activity_started = Utc::now();
+    let activity_timer = Instant::now();
+    let connection = get_connection(&state, &connection_id)?;
+    let container = resolved_container_name(&connection, &container)?;
+    let blob_path = normalize_blob_path(&path)?;
+    let entry_count = tags.len();
+    let backend = build_backend(&connection).await?;
+    let ctx = app_operation_ctx();
+    backend
+        .set_tags(
+            &ctx,
+            &BlobPath::new(container.clone(), blob_path.clone()),
+            &tags,
+        )
+        .await
+        .map_err(|error| {
+            compact_live_browse_error(
+                &connection,
+                "Set tags",
+                Some(container.as_str()),
+                &error_to_string(error),
+            )
+        })?;
+
+    record_activity(
+        &state,
+        "tags",
+        "done",
+        format!("Set tags on `{blob_path}`"),
+        format!("in `{container}`"),
+        activity_started,
+        activity_timer.elapsed(),
+        Some(format!("{entry_count} tags")),
+    );
+    Ok(())
+}
+
+/// Create a read-only snapshot of a blob. Returns the snapshot timestamp.
+#[tauri::command]
+pub async fn create_blob_snapshot(
+    state: State<'_, AppState>,
+    connection_id: String,
+    container: String,
+    path: String,
+) -> Result<BlobSnapshotResult, String> {
+    let activity_started = Utc::now();
+    let activity_timer = Instant::now();
+    let connection = get_connection(&state, &connection_id)?;
+    let container = resolved_container_name(&connection, &container)?;
+    let blob_path = normalize_blob_path(&path)?;
+    let backend = build_backend(&connection).await?;
+    let snapshot = backend
+        .create_snapshot(&BlobPath::new(container.clone(), blob_path.clone()))
+        .await
+        .map_err(|error| {
+            compact_live_browse_error(
+                &connection,
+                "Create snapshot",
+                Some(container.as_str()),
+                &error_to_string(error),
+            )
+        })?;
+
+    record_activity(
+        &state,
+        "snapshot",
+        "done",
+        format!("Snapshot `{blob_path}`"),
+        format!("in `{container}`"),
+        activity_started,
+        activity_timer.elapsed(),
+        Some(format!("snapshot {snapshot}")),
+    );
+    Ok(BlobSnapshotResult {
+        path: blob_path,
+        snapshot,
+    })
+}
+
+/// Restore a soft-deleted blob (and its snapshots).
+#[tauri::command]
+pub async fn undelete_blob(
+    state: State<'_, AppState>,
+    connection_id: String,
+    container: String,
+    path: String,
+) -> Result<(), String> {
+    let activity_started = Utc::now();
+    let activity_timer = Instant::now();
+    let connection = get_connection(&state, &connection_id)?;
+    let container = resolved_container_name(&connection, &container)?;
+    let blob_path = normalize_blob_path(&path)?;
+    let backend = build_backend(&connection).await?;
+    backend
+        .undelete_blob(&BlobPath::new(container.clone(), blob_path.clone()))
+        .await
+        .map_err(|error| {
+            compact_live_browse_error(
+                &connection,
+                "Undelete blob",
+                Some(container.as_str()),
+                &error_to_string(error),
+            )
+        })?;
+
+    record_activity(
+        &state,
+        "undelete",
+        "done",
+        format!("Undelete `{blob_path}`"),
+        format!("in `{container}`"),
+        activity_started,
+        activity_timer.elapsed(),
+        Some("1 restored".into()),
+    );
+    Ok(())
+}
+
+/// Acquire a lease on a blob. `duration_secs` is 15–60, or -1 for an infinite
+/// lease. Returns the lease id.
+#[tauri::command]
+pub async fn acquire_blob_lease(
+    state: State<'_, AppState>,
+    connection_id: String,
+    container: String,
+    path: String,
+    duration_secs: i32,
+) -> Result<BlobLeaseResult, String> {
+    let activity_started = Utc::now();
+    let activity_timer = Instant::now();
+    let connection = get_connection(&state, &connection_id)?;
+    let container = resolved_container_name(&connection, &container)?;
+    let blob_path = normalize_blob_path(&path)?;
+    let backend = build_backend(&connection).await?;
+    let lease_id = backend
+        .acquire_lease(
+            &BlobPath::new(container.clone(), blob_path.clone()),
+            duration_secs,
+        )
+        .await
+        .map_err(|error| {
+            compact_live_browse_error(
+                &connection,
+                "Acquire lease",
+                Some(container.as_str()),
+                &error_to_string(error),
+            )
+        })?;
+
+    record_activity(
+        &state,
+        "lease",
+        "done",
+        format!("Acquire lease on `{blob_path}`"),
+        format!("in `{container}`"),
+        activity_started,
+        activity_timer.elapsed(),
+        Some(format!("lease {lease_id}")),
+    );
+    Ok(BlobLeaseResult {
+        path: blob_path,
+        lease_id,
+    })
+}
+
+/// Release a held lease on a blob.
+#[tauri::command]
+pub async fn release_blob_lease(
+    state: State<'_, AppState>,
+    connection_id: String,
+    container: String,
+    path: String,
+    lease_id: String,
+) -> Result<(), String> {
+    let activity_started = Utc::now();
+    let activity_timer = Instant::now();
+    let connection = get_connection(&state, &connection_id)?;
+    let container = resolved_container_name(&connection, &container)?;
+    let blob_path = normalize_blob_path(&path)?;
+    let backend = build_backend(&connection).await?;
+    backend
+        .release_lease(
+            &BlobPath::new(container.clone(), blob_path.clone()),
+            &lease_id,
+        )
+        .await
+        .map_err(|error| {
+            compact_live_browse_error(
+                &connection,
+                "Release lease",
+                Some(container.as_str()),
+                &error_to_string(error),
+            )
+        })?;
+
+    record_activity(
+        &state,
+        "lease",
+        "done",
+        format!("Release lease on `{blob_path}`"),
+        format!("in `{container}`"),
+        activity_started,
+        activity_timer.elapsed(),
+        Some("lease released".into()),
+    );
+    Ok(())
+}
+
+/// Forcibly break a lease on a blob (regardless of who holds it).
+#[tauri::command]
+pub async fn break_blob_lease(
+    state: State<'_, AppState>,
+    connection_id: String,
+    container: String,
+    path: String,
+) -> Result<(), String> {
+    let activity_started = Utc::now();
+    let activity_timer = Instant::now();
+    let connection = get_connection(&state, &connection_id)?;
+    let container = resolved_container_name(&connection, &container)?;
+    let blob_path = normalize_blob_path(&path)?;
+    let backend = build_backend(&connection).await?;
+    let ctx = app_operation_ctx();
+    backend
+        .break_lease(&ctx, &BlobPath::new(container.clone(), blob_path.clone()))
+        .await
+        .map_err(|error| {
+            compact_live_browse_error(
+                &connection,
+                "Break lease",
+                Some(container.as_str()),
+                &error_to_string(error),
+            )
+        })?;
+
+    record_activity(
+        &state,
+        "lease",
+        "done",
+        format!("Break lease on `{blob_path}`"),
+        format!("in `{container}`"),
+        activity_started,
+        activity_timer.elapsed(),
+        Some("lease broken".into()),
+    );
+    Ok(())
+}
+
+/// Rehydrate an archived blob to an online tier (Hot/Cool/Cold).
+#[tauri::command]
+pub async fn rehydrate_blob(
+    state: State<'_, AppState>,
+    connection_id: String,
+    container: String,
+    path: String,
+    target_tier: String,
+    high_priority: bool,
+) -> Result<(), String> {
+    let activity_started = Utc::now();
+    let activity_timer = Instant::now();
+    let connection = get_connection(&state, &connection_id)?;
+    let container = resolved_container_name(&connection, &container)?;
+    let blob_path = normalize_blob_path(&path)?;
+    let parsed = Tier::parse(&target_tier).ok_or_else(|| {
+        format!("invalid target tier `{target_tier}` (use hot, cool, cold, or archive)")
+    })?;
+    let backend = build_backend(&connection).await?;
+    let ctx = app_operation_ctx();
+    backend
+        .rehydrate_blob(
+            &ctx,
+            &BlobPath::new(container.clone(), blob_path.clone()),
+            parsed,
+            high_priority,
+        )
+        .await
+        .map_err(|error| {
+            compact_live_browse_error(
+                &connection,
+                "Rehydrate blob",
+                Some(container.as_str()),
+                &error_to_string(error),
+            )
+        })?;
+
+    record_activity(
+        &state,
+        "rehydrate",
+        "done",
+        format!("Rehydrate `{blob_path}` to {}", parsed.as_str()),
+        format!("in `{container}`"),
+        activity_started,
+        activity_timer.elapsed(),
+        Some(format!(
+            "{} ({} priority)",
+            parsed.as_str(),
+            if high_priority { "High" } else { "Standard" }
+        )),
+    );
+    Ok(())
+}
+
+/// Change a container's public-access level (private/blob/container).
+#[tauri::command]
+pub async fn set_container_public_access(
+    state: State<'_, AppState>,
+    connection_id: String,
+    container: String,
+    access: String,
+) -> Result<(), String> {
+    let activity_started = Utc::now();
+    let activity_timer = Instant::now();
+    let connection = get_connection(&state, &connection_id)?;
+    let container = resolved_container_name(&connection, &container)?;
+    let parsed = PublicAccess::parse(&access).ok_or_else(|| {
+        format!("invalid public access `{access}` (use private, blob, or container)")
+    })?;
+    let backend = build_backend(&connection).await?;
+    let ctx = app_operation_ctx();
+    backend
+        .set_container_public_access(&ctx, &container, parsed)
+        .await
+        .map_err(|error| {
+            compact_live_browse_error(
+                &connection,
+                "Set public access",
+                Some(container.as_str()),
+                &error_to_string(error),
+            )
+        })?;
+
+    record_activity(
+        &state,
+        "container",
+        "done",
+        format!("Set public access of `{container}`"),
+        String::new(),
+        activity_started,
+        activity_timer.elapsed(),
+        Some(format!(
+            "access {}",
+            parsed.header_value().unwrap_or("private")
+        )),
     );
     Ok(())
 }

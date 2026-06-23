@@ -9,7 +9,8 @@ mod commands;
 use arkived_core::auth::credentials::{CredentialStore, OsKeyring};
 use arkived_core::Store;
 use std::sync::Arc;
-use tauri::Manager;
+use tauri::menu::{MenuBuilder, SubmenuBuilder};
+use tauri::{Emitter, Manager};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -46,6 +47,63 @@ pub fn run() {
             .map_err(std::io::Error::other)?;
 
             app.manage(state);
+
+            let file_menu = SubmenuBuilder::new(app, "File")
+                .text("file.connect", "Connect…")
+                .text("file.refresh", "Refresh")
+                .separator()
+                .text("file.close-tab", "Close Tab")
+                .quit()
+                .build()?;
+
+            let edit_menu = SubmenuBuilder::new(app, "Edit")
+                .text("edit.copy", "Copy")
+                .text("edit.paste", "Paste")
+                .text("edit.delete", "Delete")
+                .text("edit.select-all", "Select All")
+                .build()?;
+
+            let view_menu = SubmenuBuilder::new(app, "View")
+                .text("view.toggle-sidebar", "Toggle Sidebar")
+                .text("view.toggle-details", "Toggle Details")
+                .text("view.toggle-activities", "Toggle Activities")
+                .separator()
+                .text("view.refresh", "Refresh")
+                .build()?;
+
+            let account_menu = SubmenuBuilder::new(app, "Account")
+                .text("account.sign-in", "Sign in…")
+                .text("account.manage", "Manage Accounts…")
+                .text("account.discover", "Discover")
+                .separator()
+                .text("account.sign-out", "Sign out")
+                .build()?;
+
+            let help_menu = SubmenuBuilder::new(app, "Help")
+                .text("help.docs", "Documentation")
+                .text("help.shortcuts", "Keyboard Shortcuts")
+                .text("help.about", "About arkived")
+                .build()?;
+
+            let menu = MenuBuilder::new(app)
+                .item(&file_menu)
+                .item(&edit_menu)
+                .item(&view_menu)
+                .item(&account_menu)
+                .item(&help_menu)
+                .build()?;
+
+            app.set_menu(menu)?;
+
+            app.on_menu_event(|app, event| {
+                let id = event.id().as_ref().to_string();
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.emit("menu-action", id);
+                } else {
+                    let _ = app.emit("menu-action", id);
+                }
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -83,6 +141,15 @@ pub fn run() {
             commands::get_blob_properties,
             commands::get_blob_metadata,
             commands::set_blob_metadata,
+            commands::get_blob_tags,
+            commands::set_blob_tags,
+            commands::create_blob_snapshot,
+            commands::undelete_blob,
+            commands::acquire_blob_lease,
+            commands::release_blob_lease,
+            commands::break_blob_lease,
+            commands::rehydrate_blob,
+            commands::set_container_public_access,
             commands::create_blob_folder,
             commands::rename_blob_item,
             commands::copy_blob_item,
