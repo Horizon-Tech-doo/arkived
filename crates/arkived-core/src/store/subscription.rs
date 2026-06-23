@@ -21,6 +21,24 @@ pub struct Subscription {
     pub discovered_at: DateTime<Utc>,
 }
 
+impl Subscription {
+    /// Build a subscription stamped with the current UTC discovery time.
+    pub fn now(
+        id: impl Into<String>,
+        sign_in_id: impl Into<String>,
+        name: impl Into<String>,
+        tenant_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            sign_in_id: sign_in_id.into(),
+            name: name.into(),
+            tenant_id: tenant_id.into(),
+            discovered_at: Utc::now(),
+        }
+    }
+}
+
 impl Store {
     /// Insert or update a subscription (upsert on `id`).
     pub fn subscription_upsert(&self, s: &Subscription) -> Result<(), Error> {

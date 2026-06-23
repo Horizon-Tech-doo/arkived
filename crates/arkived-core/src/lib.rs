@@ -19,6 +19,7 @@
 #![deny(rust_2018_idioms, unsafe_code, missing_docs)]
 #![warn(clippy::all)]
 
+pub mod arm;
 pub mod auth;
 pub mod config;
 pub mod connect;
@@ -38,6 +39,7 @@ pub mod backend;
 // ProgressEvent, ProgressSink, NoopSink, MemorySink) stay reachable via their
 // module path (`arkived_core::store::SignIn` etc.) to keep the top-level namespace
 // focused.
+pub use arm::{ArmClient, DiscoveredAccount, DiscoveredSubscription};
 pub use auth::credentials::{CredentialStore, OsKeyring};
 pub use auth::{AuthProvider, ResolvedCredential};
 pub use backend::{
@@ -52,5 +54,6 @@ pub use error::{Error, Result};
 pub use policy::{Action, ActionContext, Policy, PolicyDecision};
 pub use store::context::CurrentContext;
 pub use store::storage_account::StorageAccount;
+pub use store::subscription::Subscription;
 pub use store::Store;
 pub use types::{AuthKind, AzureEnvironment, ResourceKind};

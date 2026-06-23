@@ -8,6 +8,7 @@ use std::path::PathBuf;
 mod account;
 mod auth;
 mod commands;
+mod discover;
 mod output;
 mod path;
 mod policy;
@@ -196,6 +197,8 @@ enum AccountAction {
         /// Friendly name to save this account under
         name: String,
     },
+    /// Discover subscriptions + storage accounts for the active sign-in (ARM)
+    Discover,
     /// List saved storage accounts
     List,
     /// Set the active storage account by name
@@ -494,6 +497,18 @@ async fn dispatch(
                     let parts = auth.connection_parts();
                     account::add(&store, &secrets, &name, &parts)?;
                     println!("saved account '{name}' (credentials stored in the OS keychain)");
+                    Ok(())
+                }
+                AccountAction::Discover => {
+                    let s = discover::discover(&store, &secrets).await?;
+                    println!(
+                        "discovered {} subscription(s), {} storage account(s) \
+                         ({} ready to use, {} metadata-only)",
+                        s.subscriptions, s.accounts, s.with_keys, s.metadata_only
+                    );
+                    if s.accounts > 0 {
+                        println!("run `arkived account list`, then `arkived account use <name>`.");
+                    }
                     Ok(())
                 }
                 AccountAction::List => output::print_accounts(&account::list(&store)?, format),
