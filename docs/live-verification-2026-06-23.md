@@ -71,6 +71,27 @@ semantics**:
 - `clear` empties the queue; `delete` removes it.
 - XML message parsing, pop receipts, and visibility timeouts all correct.
 
+### Blob — additional corners (account #2)
+| Scenario | Result |
+|----------|--------|
+| Remote→remote copy | `cp arkcorner/s.txt arkcorner/s-copy.txt` — both present |
+| Multi-block upload (5 MiB) | Uploaded via PutBlock/PutBlockList; **md5 round-trip matches** |
+| Missing blob | `cat` → `not found: BlobNotFound` (`Error::NotFound`) |
+| Overwrite without `--force` | `cp` → `conflict: BlobAlreadyExists` (`Error::Conflict`) |
+| Malformed account key | `ls` → `authentication failed: SharedKey sign: BadKey` (`Error::AuthFailed`, caught locally before any network call) |
+
+### MCP server — end-to-end over stdio (account #2)
+Drove the `arkived mcp` stdio server with a JSON-RPC client against live Azure:
+- `initialize` → server `arkived 0.0.1`; `tools/list` → **20 tools**.
+- `list_containers` → live containers (incl. correct `public_access: blob`).
+- `list_queues` → live queue list.
+- `peek_messages` → returned a message seeded via the CLI.
+
+This verifies the full MCP stack (stdio transport → rmcp → `ArkivedServer` →
+`AzureBlobBackend`/`AzureQueueBackend` → live Azure). Read-only tools were
+exercised directly; destructive tools require MCP elicitation (a client-side
+confirm round-trip) and were not driven by the bare smoke client.
+
 ### Policy gate
 Destructive/mutating ops (`rm`, `container delete`, `set-meta`, `set-props`,
 `set-tags`, `set-tier`, `snapshot`, `lease break`, `sas`, `queue clear/delete`)
@@ -148,7 +169,22 @@ definitively identified account #1 as HNS.
 - Core tests: **156 pass** (4 added this session), clippy clean, fmt clean.
 - Two fixes committed locally on `worktree-arkived-completion` (`c6c6f70`,
   `5c1bd11`); **not pushed**.
-- Every CLI surface is now live-verified across the two accounts. Remaining
-  un-verified items are the GUI/AAD/signing-gated ones tracked in
-  `.remember/remember.md` (desktop policy + UI, CLI login, installers,
-  user-delegation SAS).
+- Every CLI surface **and** the MCP server are now live-verified across the two
+  accounts, including error paths (NotFound/Conflict/AuthFailed), multi-block
+  upload integrity, and remote→remote copy.
+
+## What remains un-verifiable here (gated)
+
+These cannot be truly verified in a headless CLI session; they need a human,
+a GUI, an AAD interaction, or signing material:
+
+| Item | Why it's gated | What *can* be done without the gate |
+|------|----------------|-------------------------------------|
+| Desktop app (Tauri commands + UI, native policy) | Needs a rendered GUI to click | `cargo check` + `npm run build` (compile/typecheck only) |
+| CLI `login` / `account` (AAD device-code) | Not implemented; needs interactive browser sign-in | Unit-test the device-code/ARM logic |
+| User-delegation (AAD) SAS | Not implemented; needs a live Entra token | Unit-test the signing |
+| Installers / auto-update | Needs signing certs + full platform toolchain | Configure bundle targets |
+| Destructive MCP tools end-to-end | Need an MCP client that answers elicitation | Verified the gate exists; read tools verified live |
+
+Everything that does **not** require one of those gates has been verified
+against real Azure.
