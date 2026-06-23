@@ -38,6 +38,7 @@ pub mod backend;
 // ProgressEvent, ProgressSink, NoopSink, MemorySink) stay reachable via their
 // module path (`arkived_core::store::SignIn` etc.) to keep the top-level namespace
 // focused.
+pub use auth::credentials::{CredentialStore, OsKeyring};
 pub use auth::{AuthProvider, ResolvedCredential};
 pub use backend::{
     AzureBlobBackend, AzureQueueBackend, BlobEntry, BlobPath, BlobProperties, BlobPropertiesUpdate,
@@ -49,5 +50,7 @@ pub use connect::ConnectionParts;
 pub use ctx::{CancellationToken, Ctx};
 pub use error::{Error, Result};
 pub use policy::{Action, ActionContext, Policy, PolicyDecision};
+pub use store::context::CurrentContext;
+pub use store::storage_account::StorageAccount;
 pub use store::Store;
 pub use types::{AuthKind, AzureEnvironment, ResourceKind};

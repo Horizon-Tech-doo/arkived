@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use arkived_core::config::OutputFormat;
-use arkived_core::{BlobEntry, Container};
+use arkived_core::{BlobEntry, Container, StorageAccount};
 use serde::Serialize;
 
 /// Serialize any value as JSON or YAML. Used for `--format json|yaml` on
@@ -52,6 +52,42 @@ pub fn print_containers(items: &[Container], format: OutputFormat) -> Result<()>
         }
     }
     Ok(())
+}
+
+/// Render a list of saved storage accounts.
+pub fn print_accounts(items: &[StorageAccount], format: OutputFormat) -> Result<()> {
+    match format {
+        OutputFormat::Json => println!("{}", serde_json::to_string_pretty(items)?),
+        OutputFormat::Yaml => print!("{}", serde_yaml::to_string(items)?),
+        OutputFormat::Tsv => {
+            println!("NAME\tENDPOINT\tSOURCE");
+            for a in items {
+                println!("{}\t{}\t{}", a.name, a.endpoint, account_source(a));
+            }
+        }
+        OutputFormat::Table => {
+            if items.is_empty() {
+                println!("(no saved accounts — use `arkived account add <name>`)");
+                return Ok(());
+            }
+            let rows: Vec<[String; 3]> = items
+                .iter()
+                .map(|a| [a.name.clone(), a.endpoint.clone(), account_source(a)])
+                .collect();
+            print_table(&["NAME", "ENDPOINT", "SOURCE"], &rows);
+        }
+    }
+    Ok(())
+}
+
+fn account_source(a: &StorageAccount) -> String {
+    if a.attached_directly {
+        "attached".into()
+    } else {
+        a.subscription_id
+            .clone()
+            .unwrap_or_else(|| "sign-in".into())
+    }
 }
 
 /// Render a list of blob entries (blobs and virtual-directory prefixes).
