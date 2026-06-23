@@ -105,3 +105,103 @@ where
     store.context_set_sign_in(Some(&sign_in_id))?;
     Ok(record)
 }
+
+/// Sign out a sign-in: delete its cached refresh token and its [`SignIn`]
+/// record, and clear it from the current context if it was active.
+///
+/// Idempotent — deleting an unknown sign-in is not an error.
+pub fn logout(store: &Store, secrets: &dyn CredentialStore, sign_in_id: &str) -> Result<(), Error> {
+    RefreshCache::new(secrets).delete(sign_in_id)?;
+    store.sign_in_delete(sign_in_id)?;
+    if store.context_get()?.sign_in_id.as_deref() == Some(sign_in_id) {
+        store.context_set_sign_in(None)?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use secrecy::{ExposeSecret, SecretString};
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    struct FakeStore(Mutex<HashMap<String, String>>);
+    impl CredentialStore for FakeStore {
+        fn put(&self, key: &str, secret: &SecretString) -> Result<(), Error> {
+            self.0
+                .lock()
+                .unwrap()
+                .insert(key.into(), secret.expose_secret().into());
+            Ok(())
+        }
+        fn get(&self, key: &str) -> Result<SecretString, Error> {
+            self.0
+                .lock()
+                .unwrap()
+                .get(key)
+                .map(|s| SecretString::new(s.clone()))
+                .ok_or_else(|| Error::NotFound {
+                    resource: key.into(),
+                })
+        }
+        fn delete(&self, key: &str) -> Result<(), Error> {
+            self.0.lock().unwrap().remove(key);
+            Ok(())
+        }
+    }
+
+    fn cached() -> CachedRefresh {
+        CachedRefresh {
+            refresh_token: "rt".into(),
+            tenant: "t".into(),
+            client_id: "c".into(),
+            scope: LOGIN_SCOPE.into(),
+            obtained_at: OffsetDateTime::UNIX_EPOCH,
+        }
+    }
+
+    #[test]
+    fn logout_clears_record_token_and_active_context() {
+        let store = Store::open_in_memory().unwrap();
+        let secrets = FakeStore(Mutex::new(HashMap::new()));
+        store
+            .sign_in_insert(&SignIn::now("sid-1", "u@x", "t", "azure", "u@x"))
+            .unwrap();
+        RefreshCache::new(&secrets).put("sid-1", &cached()).unwrap();
+        store.context_set_sign_in(Some("sid-1")).unwrap();
+
+        logout(&store, &secrets, "sid-1").unwrap();
+
+        assert!(store.sign_in_get("sid-1").unwrap().is_none());
+        assert!(RefreshCache::new(&secrets).get("sid-1").unwrap().is_none());
+        assert_eq!(store.context_get().unwrap().sign_in_id, None);
+    }
+
+    #[test]
+    fn logout_leaves_other_active_sign_in_untouched() {
+        let store = Store::open_in_memory().unwrap();
+        let secrets = FakeStore(Mutex::new(HashMap::new()));
+        store
+            .sign_in_insert(&SignIn::now("sid-1", "a@x", "t", "azure", "a@x"))
+            .unwrap();
+        store
+            .sign_in_insert(&SignIn::now("sid-2", "b@x", "t", "azure", "b@x"))
+            .unwrap();
+        store.context_set_sign_in(Some("sid-2")).unwrap();
+
+        // Logging out a non-active sign-in must not clear the current context.
+        logout(&store, &secrets, "sid-1").unwrap();
+        assert_eq!(
+            store.context_get().unwrap().sign_in_id.as_deref(),
+            Some("sid-2")
+        );
+    }
+
+    #[test]
+    fn logout_unknown_is_ok() {
+        let store = Store::open_in_memory().unwrap();
+        let secrets = FakeStore(Mutex::new(HashMap::new()));
+        assert!(logout(&store, &secrets, "ghost").is_ok());
+    }
+}

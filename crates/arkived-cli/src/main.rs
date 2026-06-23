@@ -45,6 +45,8 @@ enum Command {
         #[arg(long, default_value = "organizations")]
         tenant: String,
     },
+    /// Sign out the active Entra sign-in (removes its cached token)
+    Logout,
     /// Manage saved storage accounts
     Account {
         #[command(subcommand)]
@@ -540,6 +542,25 @@ async fn dispatch(
                  (next increment); for now use `account add`/`use` or direct credentials."
             );
             Ok(())
+        }
+        Command::Logout => {
+            let store = account::open_store()?;
+            let secrets = account::keyring();
+            match store.context_get()?.sign_in_id {
+                None => {
+                    println!("no active sign-in");
+                    Ok(())
+                }
+                Some(sign_in_id) => {
+                    let who = store
+                        .sign_in_get(&sign_in_id)?
+                        .map(|s| s.user_principal)
+                        .unwrap_or_else(|| sign_in_id.clone());
+                    arkived_core::auth::entra::login::logout(&store, &secrets, &sign_in_id)?;
+                    println!("signed out {who}");
+                    Ok(())
+                }
+            }
         }
         Command::Mcp => arkived_mcp::run().await,
         Command::ServeAcp => bail!("`arkived serve-acp` is a later milestone (v0.4)."),
