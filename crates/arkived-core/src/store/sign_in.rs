@@ -23,6 +23,26 @@ pub struct SignIn {
     pub added_at: DateTime<Utc>,
 }
 
+impl SignIn {
+    /// Build a sign-in stamped with the current UTC time.
+    pub fn now(
+        id: impl Into<String>,
+        display_name: impl Into<String>,
+        tenant_id: impl Into<String>,
+        environment: impl Into<String>,
+        user_principal: impl Into<String>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            display_name: display_name.into(),
+            tenant_id: tenant_id.into(),
+            environment: environment.into(),
+            user_principal: user_principal.into(),
+            added_at: Utc::now(),
+        }
+    }
+}
+
 impl Store {
     /// Insert a new sign-in. Fails on duplicate `id`.
     pub fn sign_in_insert(&self, s: &SignIn) -> Result<(), Error> {

@@ -39,8 +39,12 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Sign in to Azure (interactive AAD device-code flow)
-    Login,
+    /// Sign in to Azure (interactive Entra device-code flow)
+    Login {
+        /// Entra tenant: "organizations" (work/school), "common", "consumers", or a tenant id
+        #[arg(long, default_value = "organizations")]
+        tenant: String,
+    },
     /// Manage saved storage accounts
     Account {
         #[command(subcommand)]
@@ -511,12 +515,32 @@ async fn dispatch(
                 }
             }
         }
-        Command::Login => bail!(
-            "interactive Entra (AAD) sign-in is the next increment. For now, save and switch \
-             accounts with `arkived account add <name>` (alongside credentials) and \
-             `arkived account use <name>`, or connect directly with --connection-string, \
-             --sas, --account-key, or --azurite."
-        ),
+        Command::Login { tenant } => {
+            let store = account::open_store()?;
+            let secrets = account::keyring();
+            let sign_in =
+                arkived_core::auth::entra::login::device_login(&store, &secrets, &tenant, |dc| {
+                    use std::io::Write;
+                    println!(
+                        "\nTo sign in, open:\n  {}\nand enter code:  {}\n",
+                        dc.verification_uri, dc.user_code
+                    );
+                    println!("Waiting for you to finish signing in…");
+                    // Flush so the code shows immediately even when stdout is
+                    // piped (block-buffered), not just on a TTY.
+                    let _ = std::io::stdout().flush();
+                })
+                .await?;
+            println!(
+                "signed in as {} (tenant {})",
+                sign_in.user_principal, sign_in.tenant_id
+            );
+            println!(
+                "note: browsing storage with this sign-in needs account discovery \
+                 (next increment); for now use `account add`/`use` or direct credentials."
+            );
+            Ok(())
+        }
         Command::Mcp => arkived_mcp::run().await,
         Command::ServeAcp => bail!("`arkived serve-acp` is a later milestone (v0.4)."),
         Command::Gui => bail!("`arkived gui` will launch the desktop app in a later milestone."),
