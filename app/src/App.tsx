@@ -1,8 +1,9 @@
 import React, { CSSProperties, FormEvent, ReactNode, startTransition, useDeferredValue, useEffect, useRef, useState } from "react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { GroupHeader, TitleBar, TreeRow } from "./chrome";
-import { ActionBar, BlobTable, Inspector, TabsBar } from "./content";
+import { ActionBar, BlobPropertiesPane, BlobTable, Inspector, TabsBar } from "./content";
 import type { BlobSortKey, IndexedBlobRow, SortDirection } from "./content";
+import type { BlobPropertiesPaneState } from "./content";
 import { ActivityBar } from "./panels";
 import type { Activity, BlobRow } from "./data";
 import {
@@ -56,6 +57,10 @@ import {
   downloadBlobPrefix,
   fetchBlobs,
   fetchActivities,
+  generateBlobSas,
+  getBlobMetadata,
+  getBlobProperties,
+  setBlobTier,
   listConnections,
   listContainers,
   listDiscoveredStorageAccounts,
@@ -324,6 +329,7 @@ function App() {
   const [shellError, setShellError] = useState<string | null>(null);
   const [discoveryError, setDiscoveryError] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const [propertiesPane, setPropertiesPane] = useState<BlobPropertiesPaneState | null>(null);
   const [blobClipboard, setBlobClipboard] = useState<BlobClipboardState | null>(null);
   const [previewDialog, setPreviewDialog] = useState<PreviewDialogState | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT_WIDTH);
@@ -1723,6 +1729,93 @@ function App() {
       await refreshActivities();
     } catch (error) {
       setShellError(getErrorMessage(error));
+    }
+  }
+
+  async function handleGenerateSas(row: BlobRow) {
+    if (!activeConnection || !activeContainer || !row.path || row.kind === "dir") {
+      return;
+    }
+    const permissions = window.prompt(
+      `SAS permissions for "${row.path}" (r=read, w=write, d=delete, l=list, a=add, c=create)`,
+      "r",
+    );
+    if (permissions === null) {
+      return;
+    }
+    const hoursText = window.prompt("Hours until the SAS expires", "1");
+    if (hoursText === null) {
+      return;
+    }
+    const hours = Number.parseInt(hoursText, 10);
+    if (!Number.isFinite(hours) || hours <= 0) {
+      setShellError("SAS expiry must be a positive number of hours.");
+      return;
+    }
+    setShellError(null);
+    try {
+      const url = await generateBlobSas(
+        activeConnection.id,
+        activeContainer,
+        row.path,
+        permissions.trim() || "r",
+        hours,
+      );
+      await copyText(url);
+      setShellError(`SAS URL for "${row.path}" copied to clipboard (expires in ${hours}h).`);
+      await refreshActivities();
+    } catch (error) {
+      setShellError(getErrorMessage(error));
+    }
+  }
+
+  async function handleSetTier(row: BlobRow) {
+    if (!activeConnection || !activeContainer || !activeTab || !row.path || row.kind === "dir") {
+      return;
+    }
+    const tier = window.prompt(
+      `Set access tier for "${row.path}" (hot, cool, cold, or archive)`,
+      (row.tier ?? "hot").toLowerCase(),
+    );
+    if (tier === null) {
+      return;
+    }
+    setShellError(null);
+    try {
+      await setBlobTier(activeConnection.id, activeContainer, row.path, tier.trim());
+      updateTab(activeTab.id, (tab) => ({ ...tab, loaded: false }));
+      await refreshActivities();
+    } catch (error) {
+      setShellError(getErrorMessage(error));
+    }
+  }
+
+  async function handleShowProperties(row: BlobRow) {
+    if (!activeConnection || !activeContainer || !row.path || row.kind === "dir") {
+      return;
+    }
+    const connectionId = activeConnection.id;
+    const container = activeContainer;
+    const path = row.path;
+    setPreviewDialog(null);
+    setPropertiesPane({ row, properties: null, metadata: null, busy: true, error: null });
+    try {
+      const [properties, metadata] = await Promise.all([
+        getBlobProperties(connectionId, container, path),
+        getBlobMetadata(connectionId, container, path),
+      ]);
+      setPropertiesPane((current) =>
+        current && current.row.path === path
+          ? { ...current, properties, metadata, busy: false, error: null }
+          : current,
+      );
+    } catch (error) {
+      const message = getErrorMessage(error);
+      setPropertiesPane((current) =>
+        current && current.row.path === path
+          ? { ...current, busy: false, error: message }
+          : current,
+      );
     }
   }
 
@@ -3305,6 +3398,27 @@ function App() {
                                 void handleRenameRow(row);
                               },
                             },
+                            {
+                              label: "Properties",
+                              disabled: contextRows.length !== 1 || row.kind === "dir",
+                              action: () => {
+                                void handleShowProperties(row);
+                              },
+                            },
+                            {
+                              label: "Generate SAS…",
+                              disabled: contextRows.length !== 1 || row.kind === "dir",
+                              action: () => {
+                                void handleGenerateSas(row);
+                              },
+                            },
+                            {
+                              label: "Set access tier…",
+                              disabled: contextRows.length !== 1 || row.kind === "dir",
+                              action: () => {
+                                void handleSetTier(row);
+                              },
+                            },
                             menuSeparator(),
                             {
                               label: "Copy",
@@ -3521,6 +3635,11 @@ function App() {
                           void handleDownloadBlob(previewDialog.row, true);
                         }}
                       />
+                  ) : propertiesPane ? (
+                    <BlobPropertiesPane
+                      state={propertiesPane}
+                      onClose={() => setPropertiesPane(null)}
+                    />
                   ) : (
                     <aside style={styles.inspectorPane}>
                       <div style={styles.inspectorHeader}>

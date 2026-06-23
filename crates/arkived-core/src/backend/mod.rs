@@ -11,9 +11,11 @@ pub mod azure;
 pub mod types;
 
 #[allow(unused_imports)]
+pub use azure::queue::{AzureQueueBackend, Queue, QueueMessage};
 pub use azure::AzureBlobBackend;
 pub use types::{
-    BlobEntry, BlobPath, ByteStream, Container, DeleteOpts, Page, Range, WriteOpts, WriteResult,
+    BlobEntry, BlobPath, BlobProperties, BlobPropertiesUpdate, ByteStream, Container, DeleteOpts,
+    Page, PublicAccess, Range, SasOptions, SasProtocol, SasResource, Tier, WriteOpts, WriteResult,
 };
 
 use crate::Ctx;

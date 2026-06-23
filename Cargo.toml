@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/arkived-core",
     "crates/arkived-cli",
+    "crates/arkived-mcp",
 ]
 exclude = [
     "app",

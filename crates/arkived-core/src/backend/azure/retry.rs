@@ -121,6 +121,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn connect_error_is_not_retried() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let a2 = attempts.clone();
+        let out: crate::Result<i32> = with_retries(|| {
+            let a = a2.clone();
+            async move {
+                a.fetch_add(1, Ordering::SeqCst);
+                Err(Error::Connect("refused".into()))
+            }
+        })
+        .await;
+        assert!(matches!(out, Err(Error::Connect(_))));
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
     async fn gives_up_after_max_attempts() {
         let attempts = Arc::new(AtomicUsize::new(0));
         let a2 = attempts.clone();

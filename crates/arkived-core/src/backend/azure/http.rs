@@ -99,7 +99,7 @@ impl<'a> HttpPipeline<'a> {
             .http
             .execute(request)
             .await
-            .map_err(|e| Error::NetworkTransient(format!("execute: {e}")))?;
+            .map_err(classify_send_error)?;
 
         if resp.status().is_success() {
             return Ok(resp);
@@ -111,6 +111,33 @@ impl<'a> HttpPipeline<'a> {
         let body = resp.text().await.unwrap_or_default();
         Err(map_rest_error(status, &headers, &body))
     }
+}
+
+/// Map a `reqwest` send error onto our error taxonomy.
+///
+/// Connection-establishment failures (DNS resolution failure, connection
+/// refused, connect timeout) are mapped to the non-retryable [`Error::Connect`]
+/// so an unreachable or misconfigured endpoint fails fast. Everything else
+/// (mid-stream resets, body timeouts) stays [`Error::NetworkTransient`] and is
+/// eligible for retry.
+fn classify_send_error(e: reqwest::Error) -> Error {
+    if e.is_connect() {
+        Error::Connect(format!("{e}"))
+    } else {
+        Error::NetworkTransient(format!("execute: {e}"))
+    }
+}
+
+/// Build the shared `reqwest` client used by the storage backends.
+///
+/// A `connect_timeout` bounds the connection phase only (not the overall
+/// request), so large streaming uploads/downloads aren't capped while
+/// unreachable hosts still fail within a few seconds.
+pub(crate) fn build_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
 }
 
 #[cfg(test)]
@@ -178,5 +205,39 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, Error::NotFound { .. }));
+    }
+
+    #[tokio::test]
+    async fn connection_refused_maps_to_connect_and_fails_fast() {
+        // Port 1 on loopback refuses connections — a permanent connect failure.
+        // It must NOT be retried as transient (which would back off ~8x).
+        let http = reqwest::Client::new();
+        let cred = ResolvedCredential::Anonymous;
+        let pipeline = HttpPipeline {
+            http: &http,
+            credential: &cred,
+        };
+        let url = url::Url::parse("http://127.0.0.1:1/x").unwrap();
+        let started = std::time::Instant::now();
+        let err = pipeline
+            .send(RequestTemplate {
+                method: Method::GET,
+                url,
+                headers: vec![],
+                body: Body::Empty,
+            })
+            .await
+            .unwrap_err();
+        let elapsed = started.elapsed();
+        assert!(
+            matches!(err, Error::Connect(_)),
+            "expected Connect, got: {err:?}"
+        );
+        // Fail-fast: a single attempt, no exponential-backoff retry storm.
+        // One refused connect is ~2s on Windows; 8 retries would be ~20s+.
+        assert!(
+            elapsed < std::time::Duration::from_secs(8),
+            "connect failure took too long ({elapsed:?}) — was it retried?"
+        );
     }
 }

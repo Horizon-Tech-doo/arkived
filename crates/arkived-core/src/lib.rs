@@ -21,6 +21,7 @@
 
 pub mod auth;
 pub mod config;
+pub mod connect;
 pub mod ctx;
 pub mod error;
 pub mod policy;
@@ -39,10 +40,12 @@ pub mod backend;
 // focused.
 pub use auth::{AuthProvider, ResolvedCredential};
 pub use backend::{
-    AzureBlobBackend, BlobEntry, BlobPath, ByteStream, Container, DeleteOpts, Page, Range,
-    WriteOpts, WriteResult,
+    AzureBlobBackend, AzureQueueBackend, BlobEntry, BlobPath, BlobProperties, BlobPropertiesUpdate,
+    ByteStream, Container, DeleteOpts, Page, PublicAccess, Queue, QueueMessage, Range, SasOptions,
+    SasProtocol, SasResource, Tier, WriteOpts, WriteResult,
 };
 pub use config::{ArkivedConfig, ConfirmMode, OutputFormat};
+pub use connect::ConnectionParts;
 pub use ctx::{CancellationToken, Ctx};
 pub use error::{Error, Result};
 pub use policy::{Action, ActionContext, Policy, PolicyDecision};
