@@ -43,6 +43,7 @@ pub struct Container {
     /// Container name.
     pub name: String,
     /// Last-modified timestamp.
+    #[serde(with = "time::serde::rfc3339::option")]
     pub last_modified: Option<OffsetDateTime>,
     /// ETag.
     pub etag: Option<String>,
@@ -72,6 +73,7 @@ pub enum BlobEntry {
         /// Content-Type header from upload.
         content_type: Option<String>,
         /// Last-modified timestamp.
+        #[serde(with = "time::serde::rfc3339::option")]
         last_modified: Option<OffsetDateTime>,
         /// Lease state.
         lease_state: Option<String>,
@@ -288,6 +290,56 @@ pub struct SasOptions {
     pub protocol: SasProtocol,
     /// Optional allowed IP or IP range (`sip`).
     pub ip: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use time::{Date, Month, PrimitiveDateTime, Time};
+
+    fn sample_dt() -> OffsetDateTime {
+        PrimitiveDateTime::new(
+            Date::from_calendar_date(2026, Month::March, 17).unwrap(),
+            Time::from_hms(9, 48, 18).unwrap(),
+        )
+        .assume_utc()
+    }
+
+    #[test]
+    fn container_last_modified_serializes_as_rfc3339_string() {
+        let c = Container {
+            name: "c".into(),
+            last_modified: Some(sample_dt()),
+            etag: None,
+            lease_status: None,
+            lease_state: None,
+            public_access: None,
+        };
+        let json = serde_json::to_string(&c).unwrap();
+        assert!(
+            json.contains("\"last_modified\":\"2026-03-17T09:48:18Z\""),
+            "expected RFC3339 string, got: {json}"
+        );
+    }
+
+    #[test]
+    fn blob_last_modified_serializes_as_rfc3339_string() {
+        let b = BlobEntry::Blob {
+            name: "f.txt".into(),
+            size: 1,
+            blob_type: "BlockBlob".into(),
+            tier: None,
+            etag: None,
+            content_type: None,
+            last_modified: Some(sample_dt()),
+            lease_state: None,
+        };
+        let json = serde_json::to_string(&b).unwrap();
+        assert!(
+            json.contains("\"last_modified\":\"2026-03-17T09:48:18Z\""),
+            "expected RFC3339 string, got: {json}"
+        );
+    }
 }
 
 /// Convenience alias for a byte-producing stream.
