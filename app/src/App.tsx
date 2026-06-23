@@ -32,6 +32,14 @@ import {
   IconX,
 } from "./icons";
 import {
+  acquireBlobLease,
+  breakBlobLease,
+  createBlobSnapshot,
+  getBlobTags,
+  rehydrateBlob,
+  setBlobTags,
+  setContainerPublicAccess,
+  undeleteBlob,
   BrowserConnection,
   BrowserContainer,
   BrowserLoginPrompt,
@@ -169,6 +177,12 @@ interface ContextMenuState {
   items: ContextMenuItem[];
 }
 
+interface InfoModalState {
+  title: string;
+  subtitle?: string;
+  rows: { label: string; value: string }[];
+}
+
 interface BlobClipboardState {
   connectionId: string;
   containerName: string;
@@ -219,6 +233,7 @@ interface PersistedShellSnapshot {
 }
 
 const SHELL_STATE_STORAGE_KEY = "arkived.shell.v1";
+const APP_VERSION = "0.0.1";
 const SIDEBAR_DEFAULT_WIDTH = 340;
 const SIDEBAR_MIN_WIDTH = 260;
 const SIDEBAR_MAX_WIDTH = 640;
@@ -349,6 +364,10 @@ function App() {
   const [shellInitialized, setShellInitialized] = useState(false);
   const [shellPersistenceReady, setShellPersistenceReady] = useState(false);
   const [sidebarPanelTab, setSidebarPanelTab] = useState<"actions" | "properties">("actions");
+  const [showSidebar, setShowSidebar] = useState(true);
+  const [showDetails, setShowDetails] = useState(true);
+  const [showActivities, setShowActivities] = useState(true);
+  const [infoModal, setInfoModal] = useState<InfoModalState | null>(null);
 
   const containerRequestIds = useRef<Record<string, number>>({});
   const blobRequestIds = useRef<Record<string, number>>({});
@@ -361,6 +380,7 @@ function App() {
   const browserPaneRef = useRef<HTMLDivElement | null>(null);
   const previewRequestId = useRef(0);
   const blobSelectionAnchors = useRef<Record<string, number>>({});
+  const menuActionRef = useRef<(id: string) => void>(() => undefined);
 
   browserTabsRef.current = browserTabs;
   connectionsRef.current = connections;
@@ -1819,6 +1839,222 @@ function App() {
     }
   }
 
+  async function handleEditTags(row: BlobRow) {
+    if (!activeConnection || !activeContainer || !row.path || row.kind === "dir") {
+      return;
+    }
+    const connectionId = activeConnection.id;
+    const container = activeContainer;
+    const path = row.path;
+    setShellError(null);
+    try {
+      const current = await getBlobTags(connectionId, container, path);
+      const initial = Object.entries(current)
+        .map(([key, value]) => `${key}=${value}`)
+        .join("\n");
+      const edited = window.prompt(
+        `Edit tags for "${path}" (one key=value per line)`,
+        initial,
+      );
+      if (edited === null) {
+        return;
+      }
+      const tags: Record<string, string> = {};
+      for (const line of edited.split("\n")) {
+        const trimmed = line.trim();
+        if (!trimmed) {
+          continue;
+        }
+        const eq = trimmed.indexOf("=");
+        if (eq <= 0) {
+          continue;
+        }
+        tags[trimmed.slice(0, eq).trim()] = trimmed.slice(eq + 1).trim();
+      }
+      await setBlobTags(connectionId, container, path, tags);
+      setShellError(
+        `Saved ${Object.keys(tags).length} tag${Object.keys(tags).length === 1 ? "" : "s"} on "${path}".`,
+      );
+      await refreshActivities();
+    } catch (error) {
+      setShellError(getErrorMessage(error));
+    }
+  }
+
+  async function handleCreateSnapshot(row: BlobRow) {
+    if (!activeConnection || !activeContainer || !row.path || row.kind === "dir") {
+      return;
+    }
+    setShellError(null);
+    try {
+      const result = await createBlobSnapshot(activeConnection.id, activeContainer, row.path);
+      setShellError(`Created snapshot of "${result.path}" at ${result.snapshot}.`);
+      await refreshActivities();
+    } catch (error) {
+      setShellError(getErrorMessage(error));
+    }
+  }
+
+  async function handleUndeleteBlob(row: BlobRow) {
+    if (!activeConnection || !activeContainer || !activeTab || !row.path || row.kind === "dir") {
+      return;
+    }
+    const confirmed = window.confirm(`Undelete blob "${row.path}" in "${activeContainer}"?`);
+    if (!confirmed) {
+      return;
+    }
+    setShellError(null);
+    try {
+      await undeleteBlob(activeConnection.id, activeContainer, row.path);
+      updateTab(activeTab.id, (tab) => ({ ...tab, loaded: false, selectedIndices: [] }));
+      setShellError(`Undeleted "${row.path}".`);
+      await refreshActivities();
+    } catch (error) {
+      setShellError(getErrorMessage(error));
+    }
+  }
+
+  async function handleAcquireLease(row: BlobRow) {
+    if (!activeConnection || !activeContainer || !row.path || row.kind === "dir") {
+      return;
+    }
+    const durationText = window.prompt(
+      `Lease duration in seconds for "${row.path}" (15-60, or -1 for infinite)`,
+      "-1",
+    );
+    if (durationText === null) {
+      return;
+    }
+    const duration = Number.parseInt(durationText, 10);
+    if (!Number.isFinite(duration)) {
+      setShellError("Lease duration must be a number.");
+      return;
+    }
+    setShellError(null);
+    try {
+      const result = await acquireBlobLease(activeConnection.id, activeContainer, row.path, duration);
+      await copyText(result.lease_id);
+      setShellError(`Acquired lease on "${result.path}" (id copied to clipboard).`);
+      await refreshActivities();
+    } catch (error) {
+      setShellError(getErrorMessage(error));
+    }
+  }
+
+  async function handleBreakLease(row: BlobRow) {
+    if (!activeConnection || !activeContainer || !row.path || row.kind === "dir") {
+      return;
+    }
+    const confirmed = window.confirm(`Break the lease on "${row.path}"?`);
+    if (!confirmed) {
+      return;
+    }
+    setShellError(null);
+    try {
+      await breakBlobLease(activeConnection.id, activeContainer, row.path);
+      setShellError(`Broke lease on "${row.path}".`);
+      await refreshActivities();
+    } catch (error) {
+      setShellError(getErrorMessage(error));
+    }
+  }
+
+  async function handleChangeTierOrRehydrate(row: BlobRow) {
+    if (!activeConnection || !activeContainer || !activeTab || !row.path || row.kind === "dir") {
+      return;
+    }
+    const isArchived = (row.tier ?? "").toLowerCase() === "archive";
+    if (!isArchived) {
+      await handleSetTier(row);
+      return;
+    }
+    const target = window.prompt(
+      `Rehydrate archived blob "${row.path}" to which tier? (hot, cool, or cold)`,
+      "hot",
+    );
+    if (target === null) {
+      return;
+    }
+    const trimmed = target.trim().toLowerCase();
+    if (!["hot", "cool", "cold"].includes(trimmed)) {
+      setShellError("Rehydrate target tier must be hot, cool, or cold.");
+      return;
+    }
+    const highPriority = window.confirm("Use high-priority rehydration? (OK = high priority, Cancel = standard)");
+    setShellError(null);
+    try {
+      await rehydrateBlob(activeConnection.id, activeContainer, row.path, trimmed, highPriority);
+      updateTab(activeTab.id, (tab) => ({ ...tab, loaded: false }));
+      setShellError(
+        `Started ${highPriority ? "high-priority " : ""}rehydration of "${row.path}" to ${trimmed}.`,
+      );
+      await refreshActivities();
+    } catch (error) {
+      setShellError(getErrorMessage(error));
+    }
+  }
+
+  async function handleSetContainerAccess(connectionId: string, containerName: string) {
+    const access = window.prompt(
+      `Public access level for container "${containerName}" (private, blob, or container)`,
+      "private",
+    );
+    if (access === null) {
+      return;
+    }
+    const trimmed = access.trim().toLowerCase();
+    if (!["private", "blob", "container"].includes(trimmed)) {
+      setShellError("Public access level must be private, blob, or container.");
+      return;
+    }
+    setShellError(null);
+    try {
+      await setContainerPublicAccess(connectionId, containerName, trimmed);
+      setShellError(`Set public access for "${containerName}" to ${trimmed}.`);
+      await ensureContainersLoaded(connectionId, true);
+      await refreshActivities();
+    } catch (error) {
+      setShellError(getErrorMessage(error));
+    }
+  }
+
+  function showContainerProperties(connectionId: string, container: BrowserContainer) {
+    const connection = connectionsRef.current.find((candidate) => candidate.id === connectionId);
+    const endpoint = connection
+      ? new URL(`${container.name}/`, connection.endpoint).toString()
+      : container.name;
+    setInfoModal({
+      title: container.name,
+      subtitle: "Container",
+      rows: [
+        { label: "Name", value: container.name },
+        { label: "Public access", value: container.public_access ?? "private" },
+        { label: "Lease", value: container.lease ?? "available" },
+        {
+          label: "Blob count",
+          value: container.blob_count != null ? String(container.blob_count) : "—",
+        },
+        { label: "Endpoint", value: endpoint },
+      ],
+    });
+  }
+
+  function showAccountProperties(account: BrowserStorageAccount) {
+    setInfoModal({
+      title: account.name,
+      subtitle: "Storage account",
+      rows: [
+        { label: "Name", value: account.name },
+        { label: "Kind", value: account.kind },
+        { label: "Region", value: account.region },
+        { label: "Replication", value: account.replication },
+        { label: "Tier", value: account.tier },
+        { label: "Hierarchical namespace", value: account.hns ? "Enabled (ADLS Gen2)" : "Disabled" },
+        { label: "Endpoint", value: account.endpoint },
+      ],
+    });
+  }
+
   async function handleDeletePrefix(row: BlobRow) {
     if (!activeConnection || !activeContainer || !activeTab || !row.path || row.kind !== "dir") {
       return;
@@ -2656,6 +2892,159 @@ function App() {
           ? shellError
           : "Attach a storage account";
 
+  menuActionRef.current = (id: string) => {
+    switch (id) {
+      case "file.connect":
+        openConnectDialog();
+        break;
+      case "account.sign-in":
+        openConnectDialog("entra-browser");
+        break;
+      case "file.refresh":
+      case "view.refresh":
+        void handleRefresh();
+        break;
+      case "file.close-tab": {
+        const tabId = activeTabId ?? browserTabs[0]?.id ?? null;
+        if (!tabId) {
+          break;
+        }
+        setBrowserTabs((current) => {
+          const index = current.findIndex((tab) => tab.id === tabId);
+          if (index < 0) {
+            return current;
+          }
+          const next = current.filter((tab) => tab.id !== tabId);
+          if (activeTabId === tabId) {
+            const fallback = next[index] ?? next[index - 1] ?? null;
+            setActiveTabId(fallback?.id ?? null);
+            if (fallback) {
+              setActiveConnectionId(fallback.connectionId);
+            }
+          }
+          return next;
+        });
+        break;
+      }
+      case "account.manage": {
+        const signInId = manageSignInId ?? signIns[0]?.id ?? null;
+        if (signInId) {
+          openManageDialog(signInId);
+        }
+        break;
+      }
+      case "account.discover":
+        void refreshDiscoveryTree(signIns[0]?.id ?? null);
+        break;
+      case "account.sign-out":
+        if (activeConnectionId) {
+          void handleDisconnect();
+        }
+        break;
+      case "view.toggle-sidebar":
+        setShowSidebar((current) => !current);
+        break;
+      case "view.toggle-details":
+        setShowDetails((current) => !current);
+        break;
+      case "view.toggle-activities":
+        setShowActivities((current) => !current);
+        break;
+      case "edit.copy":
+        if (selectedRow) {
+          handleCopyRow(selectedRow);
+        }
+        break;
+      case "edit.paste":
+        if (
+          blobClipboard &&
+          blobClipboard.connectionId === activeConnection?.id &&
+          blobClipboard.containerName === activeContainer
+        ) {
+          void handlePasteClipboard();
+        }
+        break;
+      case "edit.delete":
+        if (selectedResourceRows.length > 1) {
+          void handleDeleteSelection();
+        } else if (selectedRow) {
+          if (selectedRow.kind === "dir") {
+            void handleDeletePrefix(selectedRow);
+          } else {
+            void handleDeleteBlob(selectedRow);
+          }
+        }
+        break;
+      case "edit.select-all":
+        handleToggleSelectAll();
+        break;
+      case "help.docs":
+        window.open("https://github.com", "_blank", "noopener,noreferrer");
+        break;
+      case "help.shortcuts":
+        setInfoModal({
+          title: "Keyboard shortcuts",
+          subtitle: "Arkived",
+          rows: [
+            { label: "Refresh", value: "Menu · View › Refresh" },
+            { label: "Toggle sidebar", value: "Menu · View › Toggle Sidebar" },
+            { label: "Toggle details", value: "Menu · View › Toggle Details" },
+            { label: "Toggle activities", value: "Menu · View › Toggle Activities" },
+            { label: "Copy / Paste blob", value: "Menu · Edit › Copy / Paste" },
+            { label: "Delete selection", value: "Menu · Edit › Delete" },
+            { label: "Select all", value: "Menu · Edit › Select All" },
+            { label: "Close tab", value: "Menu · File › Close Tab" },
+          ],
+        });
+        break;
+      case "help.about":
+        setInfoModal({
+          title: "Arkived",
+          subtitle: `Version ${APP_VERSION}`,
+          rows: [
+            { label: "App", value: "Arkived" },
+            { label: "Version", value: APP_VERSION },
+            { label: "Runtime", value: tauriAvailable.current ? "Tauri desktop shell" : "Browser (Vite dev)" },
+            { label: "Description", value: "Azure Blob Storage explorer" },
+          ],
+        });
+        break;
+      default:
+        break;
+    }
+  };
+
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+    void import("@tauri-apps/api/event")
+      .then(({ listen }) =>
+        listen<string>("menu-action", (event) => {
+          try {
+            menuActionRef.current(event.payload);
+          } catch {
+            // Never let a menu event throw if state isn't ready.
+          }
+        }),
+      )
+      .then((fn) => {
+        if (cancelled) {
+          fn();
+        } else {
+          unlisten = fn;
+        }
+      })
+      .catch(() => {
+        // Tauri event API unavailable (e.g. plain Vite dev); ignore.
+      });
+    return () => {
+      cancelled = true;
+      if (unlisten) {
+        unlisten();
+      }
+    };
+  }, []);
+
   return (
     <div style={styles.appRoot}>
       <TitleBar
@@ -2670,6 +3059,7 @@ function App() {
       />
 
       <div style={styles.shell}>
+        {showSidebar && (
         <aside style={{ ...styles.sidebar, width: sidebarWidth }}>
           <div style={styles.sidebarHeader}>
             <div>
@@ -2887,9 +3277,9 @@ function App() {
                                     menuSeparator(),
                                     {
                                       label: "Properties",
-                                      disabled: true,
-                                      hint: "soon",
-                                      action: () => undefined,
+                                      action: () => {
+                                        showAccountProperties(account);
+                                      },
                                     },
                                   ])
                                 }
@@ -2992,7 +3382,9 @@ function App() {
           />
           {renderSidebarDetailsPanel()}
         </aside>
+        )}
 
+        {showSidebar && (
         <div
           role="separator"
           aria-orientation="vertical"
@@ -3001,18 +3393,14 @@ function App() {
           style={styles.shellVerticalResizeHandle}
           onMouseDown={handleSidebarResizeStart}
         />
+        )}
 
         <main style={styles.main}>
           <div style={styles.toolbar}>
             <ToolbarButton
-              label="Sign in"
-              icon={<IconUser size={12} />}
-              onClick={() => openConnectDialog("entra-browser")}
-            />
-            <ToolbarButton
-              label="Attach"
+              label="Connect"
               icon={<IconPlus size={12} />}
-              onClick={() => openConnectDialog("connection-string")}
+              onClick={() => openConnectDialog("entra-browser")}
             />
             <ToolbarButton
               label="Refresh"
@@ -3319,7 +3707,9 @@ function App() {
                   ref={browserPaneRef}
                   style={{
                     ...styles.browserPane,
-                    gridTemplateColumns: `minmax(0, 1fr) ${PANE_RESIZE_HANDLE_WIDTH}px ${detailPaneWidth}px`,
+                    gridTemplateColumns: showDetails
+                      ? `minmax(0, 1fr) ${PANE_RESIZE_HANDLE_WIDTH}px ${detailPaneWidth}px`
+                      : "minmax(0, 1fr)",
                   }}
                 >
                   <div style={styles.tablePane}>
@@ -3439,6 +3829,7 @@ function App() {
                             {
                               label: "Clone…",
                               disabled: true,
+                              hint: "soon",
                               action: () => undefined,
                             },
                             menuSeparator(),
@@ -3457,9 +3848,10 @@ function App() {
                             },
                             {
                               label: "Undelete",
-                              disabled: true,
-                              hint: "›",
-                              action: () => undefined,
+                              disabled: contextRows.length !== 1 || row.kind === "dir",
+                              action: () => {
+                                void handleUndeleteBlob(row);
+                              },
                             },
                             menuSeparator(),
                             {
@@ -3489,40 +3881,52 @@ function App() {
                             menuSeparator(),
                             {
                               label: "Clone and Rehydrate…",
-                              disabled: true,
-                              action: () => undefined,
+                              disabled: contextRows.length !== 1 || row.kind === "dir",
+                              action: () => {
+                                void handleChangeTierOrRehydrate(row);
+                              },
                             },
                             {
                               label: "Change Access Tier…",
-                              disabled: true,
-                              action: () => undefined,
+                              disabled: contextRows.length !== 1 || row.kind === "dir",
+                              action: () => {
+                                void handleChangeTierOrRehydrate(row);
+                              },
                             },
                             menuSeparator(),
                             {
                               label: "Get Shared Access Signature…",
-                              disabled: true,
-                              action: () => undefined,
+                              disabled: contextRows.length !== 1 || row.kind === "dir",
+                              action: () => {
+                                void handleGenerateSas(row);
+                              },
                             },
                             {
                               label: "Acquire Lease",
-                              disabled: true,
-                              action: () => undefined,
+                              disabled: contextRows.length !== 1 || row.kind === "dir",
+                              action: () => {
+                                void handleAcquireLease(row);
+                              },
                             },
                             {
                               label: "Break Lease",
-                              disabled: true,
-                              action: () => undefined,
+                              disabled: contextRows.length !== 1 || row.kind === "dir",
+                              action: () => {
+                                void handleBreakLease(row);
+                              },
                             },
                             menuSeparator(),
                             {
                               label: "Create Snapshot",
-                              disabled: true,
-                              action: () => undefined,
+                              disabled: contextRows.length !== 1 || row.kind === "dir",
+                              action: () => {
+                                void handleCreateSnapshot(row);
+                              },
                             },
                             {
                               label: "Manage History",
                               disabled: true,
-                              hint: "›",
+                              hint: "no versioning API",
                               action: () => undefined,
                             },
                             {
@@ -3536,8 +3940,10 @@ function App() {
                             menuSeparator(),
                             {
                               label: "Edit Tags…",
-                              disabled: true,
-                              action: () => undefined,
+                              disabled: contextRows.length !== 1 || row.kind === "dir",
+                              action: () => {
+                                void handleEditTags(row);
+                              },
                             },
                             {
                               label: "Properties…",
@@ -3608,6 +4014,7 @@ function App() {
                     )}
                   </div>
 
+                  {showDetails && (
                   <div
                     role="separator"
                     aria-orientation="vertical"
@@ -3616,8 +4023,9 @@ function App() {
                     style={styles.previewResizeHandle}
                     onMouseDown={handleDetailPaneResizeStart}
                   />
+                  )}
 
-                  {previewDialog ? (
+                  {showDetails && (previewDialog ? (
                       <BlobPreviewPane
                         state={previewDialog}
                         onClose={() => setPreviewDialog(null)}
@@ -3660,11 +4068,12 @@ function App() {
                         </div>
                       )}
                     </aside>
-                  )}
+                  ))}
                 </div>
               )}
             </>
           )}
+          {showActivities && (
           <ActivityBar
             expanded={activityExpanded}
             onToggle={() => setActivityExpanded((current) => !current)}
@@ -3681,6 +4090,7 @@ function App() {
               void handleClearActivities("successful");
             }}
           />
+          )}
         </main>
       </div>
 
@@ -3809,6 +4219,60 @@ function App() {
               </button>
             ),
           )}
+        </div>
+      )}
+
+      {infoModal && (
+        <div style={styles.overlay} onClick={() => setInfoModal(null)}>
+          <div
+            style={{
+              width: "min(520px, 100%)",
+              borderRadius: 16,
+              overflow: "hidden",
+              border: "1px solid var(--border-1)",
+              background: "var(--bg-1)",
+              boxShadow: "0 28px 90px rgba(0,0,0,0.45)",
+              animation: "arkived-scale-in 160ms ease-out",
+            }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div style={styles.dialogHeader}>
+              <div>
+                {infoModal.subtitle && (
+                  <div style={styles.dialogEyebrow}>{infoModal.subtitle}</div>
+                )}
+                <h2 style={{ ...styles.dialogTitle, fontSize: 22 }}>{infoModal.title}</h2>
+              </div>
+              <button type="button" style={styles.closeButton} onClick={() => setInfoModal(null)}>
+                Close
+              </button>
+            </div>
+            <div style={{ padding: 24, display: "flex", flexDirection: "column", gap: 12 }}>
+              {infoModal.rows.map((entry) => (
+                <div
+                  key={entry.label}
+                  style={{ display: "flex", gap: 16, alignItems: "baseline" }}
+                >
+                  <div
+                    style={{
+                      width: 150,
+                      flexShrink: 0,
+                      fontFamily: "var(--mono)",
+                      fontSize: 11,
+                      textTransform: "uppercase",
+                      letterSpacing: "0.06em",
+                      color: "var(--fg-3)",
+                    }}
+                  >
+                    {entry.label}
+                  </div>
+                  <div style={{ color: "var(--fg-1)", fontSize: 13, wordBreak: "break-all" }}>
+                    {entry.value}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       )}
     </div>
@@ -4055,28 +4519,32 @@ function App() {
             menuSeparator(),
             {
               label: "Properties",
-              disabled: true,
-              hint: "soon",
-              action: () => undefined,
+              action: () => {
+                showContainerProperties(connectionId, container);
+              },
             },
             {
               label: "Manage Stored Access Policies…",
               disabled: true,
+              hint: "no API",
               action: () => undefined,
             },
             {
               label: "Get Shared Access Signature…",
               disabled: true,
+              hint: "soon",
               action: () => undefined,
             },
             {
               label: "Set Public Access Level…",
-              disabled: true,
-              action: () => undefined,
+              action: () => {
+                void handleSetContainerAccess(connectionId, container.name);
+              },
             },
             {
               label: "Pin to Quick Access",
               disabled: true,
+              hint: "soon",
               action: () => undefined,
             },
           ])
