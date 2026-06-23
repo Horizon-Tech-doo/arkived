@@ -10,10 +10,16 @@ use crate::auth::{
 };
 use crate::{AzureBlobBackend, Error};
 use secrecy::SecretString;
+use serde::{Deserialize, Serialize};
 
 /// The set of credential inputs a surface can supply. Resolution tries them in
 /// the documented priority order; the first populated one wins.
-#[derive(Debug, Clone, Default)]
+///
+/// `Serialize`/`Deserialize` exist so a surface can persist a saved account's
+/// parts losslessly into a secret store (the OS keychain) and reload them
+/// later. Because these parts contain secrets, only persist them in the
+/// keychain — never in plaintext on disk.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ConnectionParts {
     /// Full Azure Storage connection string.
     pub connection_string: Option<String>,
@@ -70,6 +76,30 @@ impl ConnectionParts {
         } else {
             "none".into()
         }
+    }
+
+    /// Best-effort `(account_name, blob_endpoint)` derived synchronously with
+    /// no network call, for display and saved-account metadata. Either element
+    /// may be `None` when it can't be determined from the inputs.
+    pub fn summary(&self) -> (Option<String>, Option<String>) {
+        if self.azurite {
+            return (
+                Some("devstoreaccount1".into()),
+                Some(AZURITE_BLOB_ENDPOINT.into()),
+            );
+        }
+        if let Some(cs) = &self.connection_string {
+            if let Ok(parts) = ConnectionStringParts::parse(cs) {
+                let endpoint = self.endpoint.clone().or_else(|| parts.blob_endpoint());
+                return (parts.account_name().map(str::to_string), endpoint);
+            }
+        }
+        let endpoint = self.endpoint.clone().or_else(|| {
+            self.account
+                .as_ref()
+                .map(|a| format!("https://{a}.blob.core.windows.net"))
+        });
+        (self.account.clone(), endpoint)
     }
 
     /// Resolve these parts into a connected [`AzureBlobBackend`].
@@ -204,6 +234,54 @@ mod tests {
             backend.endpoint().as_str(),
             "https://acme.blob.core.windows.net/"
         );
+    }
+
+    #[test]
+    fn summary_from_connection_string() {
+        let parts = ConnectionParts {
+            connection_string: Some(
+                "DefaultEndpointsProtocol=https;AccountName=acme;AccountKey=dGVzdA==;\
+                 EndpointSuffix=core.windows.net"
+                    .into(),
+            ),
+            ..Default::default()
+        };
+        let (name, endpoint) = parts.summary();
+        assert_eq!(name.as_deref(), Some("acme"));
+        assert_eq!(
+            endpoint.as_deref(),
+            Some("https://acme.blob.core.windows.net")
+        );
+    }
+
+    #[test]
+    fn summary_from_account_key_parts() {
+        let parts = ConnectionParts {
+            account: Some("contoso".into()),
+            account_key: Some("a2V5".into()),
+            ..Default::default()
+        };
+        let (name, endpoint) = parts.summary();
+        assert_eq!(name.as_deref(), Some("contoso"));
+        assert_eq!(
+            endpoint.as_deref(),
+            Some("https://contoso.blob.core.windows.net")
+        );
+    }
+
+    #[test]
+    fn parts_roundtrip_through_json() {
+        let parts = ConnectionParts {
+            account: Some("c".into()),
+            sas: Some("sig=abc".into()),
+            endpoint: Some("https://c.blob.core.windows.net".into()),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&parts).unwrap();
+        let back: ConnectionParts = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.account.as_deref(), Some("c"));
+        assert_eq!(back.sas.as_deref(), Some("sig=abc"));
+        assert!(!back.azurite);
     }
 
     #[test]

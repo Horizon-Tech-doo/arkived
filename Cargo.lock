@@ -116,6 +116,7 @@ dependencies = [
  "bytes",
  "clap",
  "futures",
+ "secrecy",
  "serde",
  "serde_json",
  "serde_yaml",

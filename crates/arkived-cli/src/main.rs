@@ -5,6 +5,7 @@ use arkived_core::config::{ArkivedConfig, ConfirmMode, OutputFormat};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
+mod account;
 mod auth;
 mod commands;
 mod output;
@@ -184,10 +185,22 @@ enum Command {
 
 #[derive(Subcommand, Debug)]
 enum AccountAction {
+    /// Save the current connection under a name (credentials go to the OS keychain)
+    Add {
+        /// Friendly name to save this account under
+        name: String,
+    },
     /// List saved storage accounts
     List,
     /// Set the active storage account by name
     Use {
+        /// Storage account name
+        name: String,
+    },
+    /// Show the active sign-in / subscription / account
+    Current,
+    /// Remove a saved account (secret + metadata)
+    Forget {
         /// Storage account name
         name: String,
     },
@@ -467,9 +480,42 @@ async fn dispatch(
             }
         }
         Command::Doctor => commands::doctor(auth).await,
-        Command::Login | Command::Account { .. } => bail!(
-            "saved sign-in / account management lands in the next CLI increment. \
-             For now, connect with --connection-string, --sas, --account-key, or --azurite."
+        Command::Account { action } => {
+            let store = account::open_store()?;
+            let secrets = account::keyring();
+            match action {
+                AccountAction::Add { name } => {
+                    let parts = auth.connection_parts();
+                    account::add(&store, &secrets, &name, &parts)?;
+                    println!("saved account '{name}' (credentials stored in the OS keychain)");
+                    Ok(())
+                }
+                AccountAction::List => output::print_accounts(&account::list(&store)?, format),
+                AccountAction::Use { name } => {
+                    account::use_account(&store, &name)?;
+                    println!("active account is now '{name}'");
+                    Ok(())
+                }
+                AccountAction::Current => {
+                    let ctx = account::current(&store)?;
+                    match ctx.account_name {
+                        Some(name) => println!("active account: {name}"),
+                        None => println!("no active account (use `arkived account use <name>`)"),
+                    }
+                    Ok(())
+                }
+                AccountAction::Forget { name } => {
+                    account::forget(&store, &secrets, &name)?;
+                    println!("forgot account '{name}'");
+                    Ok(())
+                }
+            }
+        }
+        Command::Login => bail!(
+            "interactive Entra (AAD) sign-in is the next increment. For now, save and switch \
+             accounts with `arkived account add <name>` (alongside credentials) and \
+             `arkived account use <name>`, or connect directly with --connection-string, \
+             --sas, --account-key, or --azurite."
         ),
         Command::Mcp => arkived_mcp::run().await,
         Command::ServeAcp => bail!("`arkived serve-acp` is a later milestone (v0.4)."),

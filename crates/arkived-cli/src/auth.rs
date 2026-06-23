@@ -49,29 +49,45 @@ impl AuthArgs {
         }
     }
 
-    /// Resolve these flags into a connected [`AzureBlobBackend`].
-    pub async fn resolve_backend(&self) -> Result<AzureBlobBackend> {
-        let parts = self.parts();
-        if parts.is_empty() {
-            anyhow::bail!(
-                "no credentials provided. Use one of: --azurite, --connection-string, \
-                 --sas (+ --account/--endpoint), or --account-key --account. \
-                 Env vars ARKIVED_CONNECTION_STRING / ARKIVED_SAS / ARKIVED_ACCOUNT_KEY also work."
-            );
-        }
-        parts.resolve().await.map_err(Into::into)
+    /// The connection parts as supplied by flags/env (no saved-account fallback).
+    /// Used by `account add` to persist exactly what the user passed.
+    pub fn connection_parts(&self) -> ConnectionParts {
+        self.parts()
     }
 
-    /// Resolve these flags into a connected [`AzureQueueBackend`].
-    pub async fn resolve_queue_backend(&self) -> Result<AzureQueueBackend> {
+    /// The effective connection parts: explicit flags/env if present, otherwise
+    /// the active saved account (`account use`). Bails if neither is available.
+    fn effective_parts(&self) -> Result<ConnectionParts> {
         let parts = self.parts();
-        if parts.is_empty() {
-            anyhow::bail!(
-                "no credentials provided. Use --azurite, --connection-string, \
-                 --sas (+ --account/--endpoint), or --account-key --account."
-            );
+        if !parts.is_empty() {
+            return Ok(parts);
         }
-        parts.resolve_queue().await.map_err(Into::into)
+        if let Some((name, saved)) = crate::account::active_parts(
+            &crate::account::open_store()?,
+            &crate::account::keyring(),
+        )? {
+            tracing::debug!(account = %name, "using saved account");
+            return Ok(saved);
+        }
+        anyhow::bail!(
+            "no credentials provided. Use one of: --azurite, --connection-string, \
+             --sas (+ --account/--endpoint), or --account-key --account; or select a saved \
+             account with `arkived account use <name>`. \
+             Env vars ARKIVED_CONNECTION_STRING / ARKIVED_SAS / ARKIVED_ACCOUNT_KEY also work."
+        )
+    }
+
+    /// Resolve into a connected [`AzureBlobBackend`].
+    pub async fn resolve_backend(&self) -> Result<AzureBlobBackend> {
+        self.effective_parts()?.resolve().await.map_err(Into::into)
+    }
+
+    /// Resolve into a connected [`AzureQueueBackend`].
+    pub async fn resolve_queue_backend(&self) -> Result<AzureQueueBackend> {
+        self.effective_parts()?
+            .resolve_queue()
+            .await
+            .map_err(Into::into)
     }
 
     /// A short human label for the active connection (for `doctor`).
