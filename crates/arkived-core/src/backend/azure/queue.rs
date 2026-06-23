@@ -60,7 +60,7 @@ impl AzureQueueBackend {
         Ok(Self {
             endpoint,
             credential: Arc::new(credential),
-            http: reqwest::Client::new(),
+            http: crate::backend::azure::http::build_client(),
         })
     }
 

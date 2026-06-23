@@ -51,6 +51,12 @@ pub enum Error {
     #[error("network transient: {0}")]
     NetworkTransient(String),
 
+    /// A connection could not be established (DNS failure, connection refused,
+    /// or connect timeout). Treated as non-retryable so an unreachable or
+    /// misconfigured endpoint fails fast instead of hanging through retries.
+    #[error("connection error: {0}")]
+    Connect(String),
+
     /// An I/O error.
     #[error(transparent)]
     Io(#[from] std::io::Error),
