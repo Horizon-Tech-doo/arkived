@@ -107,6 +107,22 @@ pub fn add(
     Ok(())
 }
 
+/// Persist only the secret connection parts for `name` into the keychain.
+///
+/// Unlike [`add`], this writes no metadata row — the caller (e.g. discovery)
+/// records richer `StorageAccount` metadata itself.
+pub fn save_credentials(
+    secrets: &dyn CredentialStore,
+    name: &str,
+    parts: &ConnectionParts,
+) -> Result<()> {
+    let json = serde_json::to_string(parts).context("serializing connection parts")?;
+    secrets
+        .put(&secret_key(name), &SecretString::new(json))
+        .context("writing account secret to keychain")?;
+    Ok(())
+}
+
 /// List all saved accounts.
 pub fn list(store: &Store) -> Result<Vec<StorageAccount>> {
     store.storage_account_list_all().map_err(Into::into)
