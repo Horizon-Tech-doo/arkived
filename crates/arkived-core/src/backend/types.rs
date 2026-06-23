@@ -292,6 +292,9 @@ pub struct SasOptions {
     pub ip: Option<String>,
 }
 
+/// Convenience alias for a byte-producing stream.
+pub type ByteStream = BoxStream<'static, crate::Result<Bytes>>;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -341,6 +344,3 @@ mod tests {
         );
     }
 }
-
-/// Convenience alias for a byte-producing stream.
-pub type ByteStream = BoxStream<'static, crate::Result<Bytes>>;
