@@ -1,7 +1,7 @@
 // Arkived — Title bar (window chrome) + Sidebar (explorer tree)
 import React, { CSSProperties, ReactNode } from "react";
 import {
-  IconLogo, IconAzure, IconCaretDown, IconSearch, IconCircleFilled, IconRefresh, IconSettings, IconSparkle,
+  IconLogo, IconAzure, IconCaretDown, IconSearch, IconCircleFilled, IconRefresh, IconSettings,
   IconDatabase, IconPlus, IconFilter, IconContainer, IconQueue, IconTable, IconShare, IconFolderOpen,
   IconKey, IconTerminal, IconLock, IconShieldCheck, IconChevronDown, IconChevronRight,
 } from "./icons";
@@ -54,7 +54,7 @@ export function TitleBar({
       <div style={titlebarStyles.center}>
         <button style={titlebarStyles.paletteBtn} onClick={onOpenPalette}>
           <IconSearch size={11} style={{ color: "var(--fg-2)" }} />
-          <span style={{ color: "var(--fg-2)" }}>Search or run a command…</span>
+          <span style={{ color: "var(--fg-2)" }}>Search resources</span>
           <span style={{ flex: 1 }} />
           <span className="kbd">Ctrl K</span>
         </button>
@@ -79,13 +79,12 @@ export function TitleBar({
             <button
               style={{
                 ...titlebarStyles.agentBtn,
-                background: agentOpen ? "var(--accent-ghost)" : "transparent",
-                color: agentOpen ? "var(--accent)" : "var(--fg-1)",
-                borderColor: agentOpen ? "var(--accent-dim)" : "var(--border-1)",
+                background: agentOpen ? "var(--bg-3)" : "transparent",
+                color: agentOpen ? "var(--fg-0)" : "var(--fg-3)",
+                borderColor: agentOpen ? "var(--border-2)" : "var(--border-1)",
               }}
               onClick={onToggleAgent}
             >
-              <IconSparkle size={12} />
               <span>Agent</span>
               <span className="kbd" style={{ marginLeft: 2 }}>Ctrl J</span>
             </button>
@@ -118,16 +117,16 @@ const titlebarStyles: Record<string, CSSProperties> = {
   sep: { width: 1, height: 18, background: "var(--border-0)" },
   connPill: {
     display: "flex", alignItems: "center", gap: 6,
-    padding: "4px 8px", borderRadius: "var(--radius)",
-    background: "var(--bg-2)", border: "1px solid var(--border-1)",
+    padding: "3px 8px", borderRadius: 3,
+    background: "var(--bg-1)", border: "1px solid var(--border-1)",
     fontSize: 11, fontFamily: "var(--mono)",
   },
   connSep: { color: "var(--fg-3)" },
   paletteBtn: {
     display: "flex", alignItems: "center", gap: 8,
     width: "100%", maxWidth: 460, height: 24,
-    padding: "0 8px 0 10px", borderRadius: "var(--radius)",
-    background: "var(--bg-1)", border: "1px solid var(--border-1)",
+    padding: "0 8px 0 10px", borderRadius: 3,
+    background: "transparent", border: "1px solid var(--border-0)",
     fontSize: 11, fontFamily: "var(--mono)",
   },
   statusGroup: {
@@ -141,7 +140,7 @@ const titlebarStyles: Record<string, CSSProperties> = {
   },
   agentBtn: {
     display: "flex", alignItems: "center", gap: 6,
-    padding: "3px 8px", borderRadius: "var(--radius)",
+    padding: "3px 8px", borderRadius: 3,
     border: "1px solid", fontSize: 11, fontWeight: 500,
     fontFamily: "var(--mono)",
   },

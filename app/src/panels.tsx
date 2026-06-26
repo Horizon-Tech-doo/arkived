@@ -2,7 +2,7 @@
 import React, { CSSProperties, useEffect, useRef, useState } from "react";
 import {
   IconZap, IconCircleFilled, IconArrowRight, IconShield, IconCheck, IconCopy,
-  IconSparkle, IconPlus, IconTerminal, IconX, IconShieldCheck,
+  IconPlus, IconTerminal, IconX, IconShieldCheck,
   IconSearch, IconUpload, IconDownload, IconContainer, IconQueue, IconTable,
   IconKey, IconLock, IconRefresh, IconLoader, IconTrash, IconChevronDown, IconChevronUp,
   IconAlert,
@@ -30,7 +30,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
 
   const all: PSection[] = [
     { section: "Suggested", items: [
-      { icon: <IconSparkle size={12} style={{ color: "var(--accent)" }} />, label: 'Ask agent: "summarize activity in the last hour"', kbd: "agent" },
+      { icon: <IconTerminal size={12} />, label: "Open command palette", kbd: "cmd" },
       { icon: <IconUpload size={12} />, label: "Upload files to device-twins-sync/…", kbd: "Ctrl U" },
       { icon: <IconDownload size={12} />, label: "Download selection", kbd: "Ctrl Shift D" },
     ]},
@@ -64,7 +64,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
       style={{
         position: "fixed", inset: 0, zIndex: 100,
         background: "rgba(0,0,0,0.5)",
-        backdropFilter: "blur(3px)",
+        backdropFilter: "none",
         display: "flex", alignItems: "flex-start", justifyContent: "center",
         paddingTop: 120,
         animation: "arkived-fade-in 120ms ease-out",
@@ -77,9 +77,8 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
           background: "var(--bg-1)",
           border: "1px solid var(--border-2)",
           borderRadius: 6,
-          boxShadow: "0 24px 60px rgba(0,0,0,0.6), 0 0 0 1px var(--border-2)",
+          boxShadow: "0 12px 36px rgba(0,0,0,0.45)",
           overflow: "hidden",
-          animation: "arkived-scale-in 140ms ease-out",
         }}
       >
         <div style={{
@@ -92,7 +91,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
             ref={inputRef}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search commands, resources, or ask the agent…"
+            placeholder="Search commands or resources"
             style={{
               flex: 1,
               fontSize: 14,
@@ -138,7 +137,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
           ))}
           {filtered.length === 0 && (
             <div style={{ padding: "30px 14px", textAlign: "center", color: "var(--fg-3)", fontSize: 12 }}>
-              No matches. Press <span className="kbd">⏎</span> to ask the agent.
+              No matches.
             </div>
           )}
         </div>
@@ -152,7 +151,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
         }}>
           <span><span className="kbd">↑↓</span> navigate</span>
           <span><span className="kbd">⏎</span> open</span>
-          <span><span className="kbd">Ctrl Enter</span> ask agent</span>
+          <span><span className="kbd">Ctrl Enter</span> run command</span>
           <span style={{ flex: 1 }} />
           <span>18 MCP tools loaded</span>
         </div>
@@ -236,7 +235,7 @@ export function ActivityBar({
             height: 6,
             flexShrink: 0,
             cursor: "row-resize",
-            background: "linear-gradient(180deg, transparent, rgba(63, 157, 246, 0.14), transparent)",
+            background: "var(--border-0)",
           }}
         />
       )}
@@ -452,7 +451,7 @@ export function ConfirmModal({ open, onClose, onConfirm }: ConfirmModalProps) {
       style={{
         position: "fixed", inset: 0, zIndex: 90,
         background: "rgba(0,0,0,0.55)",
-        backdropFilter: "blur(3px)",
+        backdropFilter: "none",
         display: "flex", alignItems: "center", justifyContent: "center",
         animation: "arkived-fade-in 120ms ease-out",
       }}
@@ -464,9 +463,8 @@ export function ConfirmModal({ open, onClose, onConfirm }: ConfirmModalProps) {
           background: "var(--bg-1)",
           border: "1px solid var(--red)",
           borderRadius: 6,
-          boxShadow: "0 24px 60px rgba(0,0,0,0.6)",
+          boxShadow: "0 12px 36px rgba(0,0,0,0.45)",
           overflow: "hidden",
-          animation: "arkived-scale-in 140ms ease-out",
           fontFamily: "var(--mono)",
         }}
       >
