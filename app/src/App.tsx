@@ -18,7 +18,6 @@ import {
   IconDownload,
   IconEye,
   IconExternal,
-  IconFolderOpen,
   IconInfo,
   IconKey,
   IconLoader,
@@ -3280,7 +3279,7 @@ function App() {
             {signIns.length === 0 && !signInsBusy && (
               <EmptySidebarState
                 title="No Azure account signed in"
-                detail="Use Azure sign-in to discover subscriptions and storage accounts the way Storage Explorer does."
+                detail="Sign in or attach a storage account to load resources."
                 actionLabel="Sign in with Azure"
                 onAction={() => openConnectDialog("entra-browser")}
               />
@@ -3622,7 +3621,7 @@ function App() {
               title="Sign in to Azure"
               body={
                 tauriAvailable.current
-                  ? "Use browser-based Azure sign-in to discover subscriptions and storage accounts, or attach directly with a connection string, shared key, SAS, or Azurite."
+                  ? "Sign in to discover subscriptions, or attach a storage account directly."
                   : "The frontend is running outside Tauri, so the live Azure IPC layer is unavailable in this window."
               }
               primaryLabel="Open sign-in"
@@ -4345,10 +4344,10 @@ function App() {
             top: Math.min(contextMenu.y, window.innerHeight - 240),
             minWidth: 220,
             padding: 6,
-            borderRadius: 10,
-            background: "rgba(10, 12, 18, 0.98)",
+            borderRadius: 4,
+            background: "var(--bg-1)",
             border: "1px solid var(--border-1)",
-            boxShadow: "0 18px 40px rgba(0, 0, 0, 0.45)",
+            boxShadow: "0 8px 24px rgba(0, 0, 0, 0.34)",
             zIndex: 60,
           }}
           onClick={(event) => event.stopPropagation()}
@@ -4375,7 +4374,7 @@ function App() {
                   justifyContent: "space-between",
                   gap: 12,
                   padding: "8px 10px",
-                  borderRadius: 8,
+                  borderRadius: 3,
                   color: item.disabled ? "var(--fg-4)" : item.danger ? "var(--red)" : "var(--fg-1)",
                   fontFamily: "var(--sans)",
                   fontSize: 12,
@@ -4404,12 +4403,11 @@ function App() {
           <div
             style={{
               width: "min(520px, 100%)",
-              borderRadius: 16,
+              borderRadius: 6,
               overflow: "hidden",
               border: "1px solid var(--border-1)",
               background: "var(--bg-1)",
-              boxShadow: "0 28px 90px rgba(0,0,0,0.45)",
-              animation: "arkived-scale-in 160ms ease-out",
+              boxShadow: "0 12px 36px rgba(0,0,0,0.4)",
             }}
             onClick={(event) => event.stopPropagation()}
           >
@@ -5025,7 +5023,7 @@ function ConnectDialog({
                     <div style={styles.infoCard}>
                       <div style={styles.infoTitle}>
                         <IconAzure size={14} />
-                        <span>{method === "entra-browser" ? "Storage Explorer-style sign-in" : "Device-code fallback"}</span>
+                        <span>{method === "entra-browser" ? "Azure sign-in" : "Device-code sign-in"}</span>
                       </div>
                       <div style={styles.infoText}>
                         {method === "entra-browser"
@@ -5070,7 +5068,7 @@ function ConnectDialog({
                               onClick={() => onFormChange("tenantMode", "organizations")}
                             >
                               <span style={styles.tenantModeLabel}>Organizations</span>
-                              <span style={styles.tenantModeText}>Match Azure Storage Explorer’s work and school tenant sign-in path.</span>
+                              <span style={styles.tenantModeText}>Use Azure work and school account discovery.</span>
                             </button>
                             <button
                               type="button"
@@ -5577,9 +5575,6 @@ function MainEmptyState({ title, body, primaryLabel, onPrimary, secondaryLabel }
   return (
     <div style={styles.mainEmptyWrap}>
       <div style={styles.mainEmptyCard}>
-        <div style={styles.mainEmptyIcon}>
-          <IconFolderOpen size={18} />
-        </div>
         <h2 style={styles.mainEmptyTitle}>{title}</h2>
         <p style={styles.mainEmptyBody}>{body}</p>
         {primaryLabel && onPrimary && (
@@ -7011,15 +7006,14 @@ const styles: Record<string, CSSProperties> = {
     display: "flex",
     flexDirection: "column",
     height: "100vh",
-    background: "linear-gradient(180deg, #08090c 0%, #050507 100%)",
+    background: "var(--bg-0)",
   },
   shell: {
     flex: 1,
     minHeight: 0,
     display: "flex",
-    padding: 8,
-    background:
-      "radial-gradient(circle at 82% 4%, rgba(63,157,246,0.10), transparent 34%), linear-gradient(180deg, rgba(12,13,17,0.98) 0%, rgba(6,7,10,1) 100%)",
+    padding: 0,
+    background: "var(--bg-0)",
   },
   sidebar: {
     minWidth: 0,
@@ -7027,31 +7021,27 @@ const styles: Record<string, CSSProperties> = {
     display: "flex",
     flexDirection: "column",
     border: "1px solid var(--border-1)",
-    borderRadius: 14,
+    borderRadius: 0,
     overflow: "hidden",
-    background:
-      "linear-gradient(180deg, rgba(17,18,23,0.98) 0%, rgba(10,11,15,0.98) 100%)",
-    boxShadow: "0 18px 48px rgba(0,0,0,0.28)",
+    background: "var(--bg-1)",
   },
   shellVerticalResizeHandle: {
     width: PANE_RESIZE_HANDLE_WIDTH,
     flexShrink: 0,
     cursor: "col-resize",
-    background:
-      "linear-gradient(90deg, transparent 0, transparent 2px, rgba(63,157,246,0.18) 3px, transparent 5px)",
+    background: "var(--border-0)",
   },
   horizontalPaneResizeHandle: {
     height: PANE_RESIZE_HANDLE_WIDTH,
     flexShrink: 0,
     cursor: "row-resize",
-    background:
-      "linear-gradient(180deg, transparent 0, transparent 2px, rgba(63,157,246,0.16) 3px, transparent 5px)",
+    background: "var(--border-0)",
   },
   sidebarHeader: {
     display: "flex",
     alignItems: "flex-start",
     justifyContent: "space-between",
-    padding: "14px 14px 10px",
+    padding: "10px 12px 8px",
     borderBottom: "1px solid var(--border-0)",
   },
   sidebarEyebrow: {
@@ -7062,7 +7052,7 @@ const styles: Record<string, CSSProperties> = {
     color: "var(--fg-3)",
   },
   sidebarTitle: {
-    fontSize: 18,
+    fontSize: 14,
     fontWeight: 600,
     color: "var(--fg-0)",
     marginTop: 2,
@@ -7097,7 +7087,7 @@ const styles: Record<string, CSSProperties> = {
   },
   sidebarDetailsPanel: {
     borderTop: "1px solid var(--border-0)",
-    background: "rgba(12, 12, 15, 0.94)",
+    background: "var(--bg-1)",
     display: "flex",
     flexDirection: "column",
     flexShrink: 0,
@@ -7166,10 +7156,10 @@ const styles: Record<string, CSSProperties> = {
   },
   sidebarEmptyCard: {
     margin: "8px 12px 0",
-    padding: 12,
-    borderRadius: 10,
+    padding: 10,
+    borderRadius: 4,
     border: "1px solid var(--border-1)",
-    background: "rgba(63, 157, 246, 0.05)",
+    background: "var(--bg-2)",
     display: "flex",
     flexDirection: "column",
     gap: 8,
@@ -7185,10 +7175,10 @@ const styles: Record<string, CSSProperties> = {
   },
   sidebarEmptyAction: {
     alignSelf: "flex-start",
-    padding: "6px 10px",
-    borderRadius: 6,
-    background: "var(--accent)",
-    color: "#08111c",
+    padding: "5px 9px",
+    borderRadius: 3,
+    background: "var(--bg-3)",
+    color: "var(--fg-1)",
     fontWeight: 600,
   },
   discoveryGroup: {
@@ -7204,7 +7194,7 @@ const styles: Record<string, CSSProperties> = {
   inlineEmptyBlock: {
     margin: "8px 12px 0",
     padding: 10,
-    borderRadius: 8,
+    borderRadius: 3,
     background: "var(--bg-2)",
     border: "1px solid var(--border-0)",
     fontSize: 11,
@@ -7218,11 +7208,9 @@ const styles: Record<string, CSSProperties> = {
     display: "flex",
     flexDirection: "column",
     border: "1px solid var(--border-1)",
-    borderRadius: 14,
+    borderRadius: 0,
     overflow: "hidden",
-    background:
-      "radial-gradient(circle at top right, rgba(63, 157, 246, 0.08), transparent 30%), linear-gradient(180deg, rgba(15,16,21,0.98), rgba(10,11,15,0.98))",
-    boxShadow: "0 18px 48px rgba(0,0,0,0.28)",
+    background: "var(--bg-1)",
   },
   toolbar: {
     height: 46,
@@ -7260,7 +7248,7 @@ const styles: Record<string, CSSProperties> = {
     gap: 6,
     padding: "0 10px",
     height: 28,
-    borderRadius: 999,
+    borderRadius: 3,
     background: "var(--bg-2)",
     border: "1px solid var(--border-1)",
     fontSize: 11,
@@ -7299,7 +7287,7 @@ const styles: Record<string, CSSProperties> = {
   pathButtonActive: {
     padding: "4px 8px",
     borderRadius: 4,
-    background: "var(--accent-ghost)",
+    background: "var(--bg-3)",
     color: "var(--fg-0)",
     whiteSpace: "nowrap",
   },
@@ -7352,8 +7340,8 @@ const styles: Record<string, CSSProperties> = {
   },
   pathToggleButtonActive: {
     borderColor: "var(--accent-dim)",
-    background: "var(--accent-ghost)",
-    color: "var(--accent)",
+    background: "var(--bg-3)",
+    color: "var(--fg-0)",
   },
   pathStatus: {
     display: "inline-flex",
@@ -7372,10 +7360,8 @@ const styles: Record<string, CSSProperties> = {
     flexShrink: 0,
     margin: "0 10px 8px",
     border: "1px solid var(--border-1)",
-    borderRadius: 12,
-    background:
-      "linear-gradient(180deg, rgba(20,22,28,0.96), rgba(13,14,18,0.98))",
-    boxShadow: "0 14px 36px rgba(0,0,0,0.24)",
+    borderRadius: 4,
+    background: "var(--bg-1)",
     overflow: "hidden",
   },
   filterPanelHeader: {
@@ -7448,10 +7434,10 @@ const styles: Record<string, CSSProperties> = {
     display: "inline-flex",
     alignItems: "center",
     padding: "0 8px",
-    borderRadius: 999,
-    border: "1px solid var(--accent-dim)",
-    background: "var(--accent-ghost)",
-    color: "var(--accent)",
+    borderRadius: 3,
+    border: "1px solid var(--border-1)",
+    background: "var(--bg-3)",
+    color: "var(--fg-1)",
     fontFamily: "var(--mono)",
     fontSize: 10,
   },
@@ -7545,45 +7531,37 @@ const styles: Record<string, CSSProperties> = {
   mainEmptyWrap: {
     flex: 1,
     display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    padding: 24,
+    alignItems: "flex-start",
+    justifyContent: "flex-start",
+    padding: 16,
   },
   mainEmptyCard: {
     width: "100%",
-    maxWidth: 560,
-    borderRadius: 18,
+    maxWidth: 520,
+    borderRadius: 4,
     border: "1px solid var(--border-1)",
-    background: "linear-gradient(180deg, rgba(28,28,34,0.94) 0%, rgba(16,16,19,0.98) 100%)",
-    padding: "28px 28px 26px",
+    background: "var(--bg-1)",
+    padding: "14px 16px",
     display: "flex",
     flexDirection: "column",
     alignItems: "flex-start",
-    gap: 12,
-    boxShadow: "0 18px 60px rgba(0,0,0,0.28)",
-    animation: "arkived-scale-in 160ms ease-out",
+    gap: 8,
   },
   mainEmptyIcon: {
-    width: 42,
-    height: 42,
-    borderRadius: 12,
-    background: "var(--accent-ghost)",
-    color: "var(--accent)",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
+    display: "none",
   },
   mainEmptyTitle: {
     margin: 0,
-    fontSize: 24,
-    lineHeight: 1.1,
-    fontWeight: 700,
+    fontSize: 13,
+    lineHeight: 1.25,
+    fontWeight: 600,
     color: "var(--fg-0)",
   },
   mainEmptyBody: {
     margin: 0,
     color: "var(--fg-2)",
-    lineHeight: 1.7,
+    fontSize: 12,
+    lineHeight: 1.5,
     maxWidth: 480,
   },
   mainEmptySecondary: {
@@ -7656,7 +7634,7 @@ const styles: Record<string, CSSProperties> = {
     flexDirection: "column",
     gap: 10,
     padding: "14px 16px",
-    borderRadius: 12,
+    borderRadius: 4,
     border: "1px solid var(--border-1)",
     background: "var(--bg-1)",
     textAlign: "left",
@@ -7673,9 +7651,9 @@ const styles: Record<string, CSSProperties> = {
     width: 30,
     height: 30,
     flexShrink: 0,
-    borderRadius: 9,
-    background: "var(--accent-ghost)",
-    color: "var(--accent)",
+    borderRadius: 4,
+    background: "var(--bg-3)",
+    color: "var(--fg-1)",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
@@ -7714,8 +7692,7 @@ const styles: Record<string, CSSProperties> = {
   overlay: {
     position: "fixed",
     inset: 0,
-    background: "rgba(6,6,8,0.76)",
-    backdropFilter: "blur(10px)",
+    background: "rgba(0,0,0,0.55)",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
@@ -7727,16 +7704,15 @@ const styles: Record<string, CSSProperties> = {
     minHeight: 620,
     display: "grid",
     gridTemplateColumns: "320px minmax(0, 1fr)",
-    borderRadius: 20,
+    borderRadius: 6,
     overflow: "hidden",
     border: "1px solid var(--border-1)",
-    boxShadow: "0 28px 90px rgba(0,0,0,0.45)",
+    boxShadow: "0 12px 36px rgba(0,0,0,0.4)",
     background: "var(--bg-1)",
-    animation: "arkived-scale-in 160ms ease-out",
   },
   dialogSidebar: {
     borderRight: "1px solid var(--border-0)",
-    background: "linear-gradient(180deg, rgba(15,15,19,1) 0%, rgba(10,10,12,1) 100%)",
+    background: "var(--bg-1)",
     padding: 18,
     display: "flex",
     flexDirection: "column",
@@ -7774,7 +7750,7 @@ const styles: Record<string, CSSProperties> = {
     minWidth: 0,
     display: "flex",
     flexDirection: "column",
-    background: "radial-gradient(circle at top right, rgba(63,157,246,0.08), transparent 25%), var(--bg-1)",
+    background: "var(--bg-1)",
   },
   dialogHeader: {
     display: "flex",
@@ -7832,7 +7808,7 @@ const styles: Record<string, CSSProperties> = {
   },
   methodButton: {
     width: "100%",
-    borderRadius: 12,
+    borderRadius: 4,
     border: "1px solid var(--border-1)",
     background: "var(--bg-2)",
     padding: "12px 12px 12px 14px",
@@ -7843,7 +7819,7 @@ const styles: Record<string, CSSProperties> = {
   },
   methodButtonActive: {
     borderColor: "var(--accent-dim)",
-    background: "rgba(63, 157, 246, 0.1)",
+    background: "var(--bg-3)",
   },
   methodButtonLocked: {
     opacity: 0.85,
@@ -7868,9 +7844,9 @@ const styles: Record<string, CSSProperties> = {
     lineHeight: 1.5,
   },
   tenantCard: {
-    borderRadius: 16,
+    borderRadius: 4,
     border: "1px solid var(--border-1)",
-    background: "rgba(18,18,22,0.9)",
+    background: "var(--bg-1)",
     padding: 16,
     display: "flex",
     flexDirection: "column",
@@ -7905,7 +7881,7 @@ const styles: Record<string, CSSProperties> = {
     whiteSpace: "nowrap",
   },
   tenantCardError: {
-    borderRadius: 10,
+    borderRadius: 4,
     border: "1px solid rgba(224, 113, 110, 0.24)",
     background: "rgba(224, 113, 110, 0.12)",
     color: "var(--red)",
@@ -7948,7 +7924,7 @@ const styles: Record<string, CSSProperties> = {
     gap: 10,
   },
   tenantModeButton: {
-    borderRadius: 12,
+    borderRadius: 4,
     border: "1px solid var(--border-1)",
     background: "var(--bg-2)",
     padding: 12,
@@ -7961,7 +7937,7 @@ const styles: Record<string, CSSProperties> = {
   },
   tenantModeButtonActive: {
     borderColor: "var(--accent-dim)",
-    background: "rgba(63, 157, 246, 0.1)",
+    background: "var(--bg-3)",
   },
   tenantModeLabel: {
     color: "var(--fg-0)",
@@ -7988,7 +7964,7 @@ const styles: Record<string, CSSProperties> = {
     width: "100%",
     minHeight: 40,
     padding: "10px 12px",
-    borderRadius: 10,
+    borderRadius: 4,
     border: "1px solid var(--border-1)",
     background: "var(--bg-2)",
     color: "var(--fg-0)",
@@ -7999,9 +7975,9 @@ const styles: Record<string, CSSProperties> = {
     minHeight: 108,
   },
   infoCard: {
-    borderRadius: 14,
+    borderRadius: 4,
     border: "1px solid var(--border-1)",
-    background: "rgba(63, 157, 246, 0.06)",
+    background: "var(--bg-1)",
     padding: 16,
     display: "flex",
     flexDirection: "column",
@@ -8019,9 +7995,9 @@ const styles: Record<string, CSSProperties> = {
     lineHeight: 1.6,
   },
   promptCard: {
-    borderRadius: 16,
+    borderRadius: 4,
     border: "1px solid var(--border-1)",
-    background: "linear-gradient(180deg, rgba(22, 32, 44, 0.85), rgba(16, 16, 19, 0.95))",
+    background: "var(--bg-1)",
     padding: 20,
     display: "flex",
     flexDirection: "column",
@@ -8043,9 +8019,9 @@ const styles: Record<string, CSSProperties> = {
   },
   promptCode: {
     padding: "12px 16px",
-    borderRadius: 12,
-    background: "rgba(63, 157, 246, 0.12)",
-    border: "1px solid rgba(63, 157, 246, 0.28)",
+    borderRadius: 4,
+    background: "var(--bg-2)",
+    border: "1px solid var(--border-1)",
     color: "var(--fg-0)",
     fontSize: 24,
     fontWeight: 700,
@@ -8058,7 +8034,7 @@ const styles: Record<string, CSSProperties> = {
     gap: 12,
   },
   promptField: {
-    borderRadius: 12,
+    borderRadius: 4,
     border: "1px solid var(--border-1)",
     background: "rgba(0, 0, 0, 0.18)",
     padding: 12,
@@ -8080,7 +8056,7 @@ const styles: Record<string, CSSProperties> = {
     wordBreak: "break-word",
   },
   promptMessage: {
-    borderRadius: 12,
+    borderRadius: 4,
     border: "1px dashed var(--border-2)",
     padding: 14,
     color: "var(--fg-2)",
@@ -8093,9 +8069,9 @@ const styles: Record<string, CSSProperties> = {
     flexWrap: "wrap",
   },
   azuriteCard: {
-    borderRadius: 16,
+    borderRadius: 4,
     border: "1px solid var(--border-1)",
-    background: "linear-gradient(180deg, rgba(18, 25, 32, 0.85), rgba(16, 16, 19, 0.96))",
+    background: "var(--bg-1)",
     padding: 18,
     display: "flex",
     flexDirection: "column",
@@ -8466,9 +8442,9 @@ const styles: Record<string, CSSProperties> = {
   primaryButton: {
     height: 36,
     padding: "0 14px",
-    borderRadius: 10,
-    border: "1px solid rgba(63, 157, 246, 0.45)",
-    background: "linear-gradient(180deg, rgba(85, 170, 247, 1) 0%, rgba(63, 157, 246, 1) 100%)",
+    borderRadius: 4,
+    border: "1px solid var(--accent-dim)",
+    background: "var(--accent)",
     color: "#07111d",
     fontWeight: 700,
     display: "inline-flex",
@@ -8478,7 +8454,7 @@ const styles: Record<string, CSSProperties> = {
   secondaryButton: {
     height: 34,
     padding: "0 12px",
-    borderRadius: 9,
+    borderRadius: 4,
     border: "1px solid var(--border-1)",
     background: "var(--bg-2)",
     color: "var(--fg-1)",
