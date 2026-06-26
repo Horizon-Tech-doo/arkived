@@ -1211,11 +1211,18 @@ function App() {
   }
 
   async function handleSelectDiscoveredAccount(account: BrowserStorageAccount) {
+    const key = discoveredRowKey(account);
+    setActivatingAccounts((current) => ({ ...current, [key]: true }));
+    // Switch the main pane to this account's container overview.
+    setActiveTabId(null);
     try {
       const connection = await ensureDiscoveredAccountConnection(account);
       setActiveConnectionId(connection.id);
+      await ensureContainersLoaded(connection.id);
     } catch (error) {
       setShellError(getErrorMessage(error));
+    } finally {
+      setActivatingAccounts((current) => ({ ...current, [key]: false }));
     }
   }
 
@@ -1383,7 +1390,11 @@ function App() {
   }
 
   function handleSelectConnection(connectionId: string) {
+    // Show the account's container overview in the main pane: clear the active
+    // tab (open tabs stay in the bar) so the overview, not a blob listing, renders.
+    setActiveTabId(null);
     setActiveConnectionId(connectionId);
+    void ensureContainersLoaded(connectionId);
   }
 
   function handleSelectContainer(connectionId: string, containerName: string) {
@@ -2544,7 +2555,7 @@ function App() {
   }
 
   function openContextMenu(
-    event: React.MouseEvent<HTMLDivElement>,
+    event: React.MouseEvent<HTMLElement>,
     items: ContextMenuItem[],
   ) {
     event.preventDefault();
@@ -2657,10 +2668,13 @@ function App() {
       setActiveTabId(browserTabs[0]?.id ?? null);
       return;
     }
-    if (!activeTabId && browserTabs.length > 0) {
+    // Auto-select a tab only when nothing else is in focus. When an account is
+    // selected (activeConnectionId set, no active tab) we intentionally keep the
+    // tab cleared so the container overview renders.
+    if (!activeTabId && !activeConnectionId && browserTabs.length > 0) {
       setActiveTabId(browserTabs[0].id);
     }
-  }, [activeTabId, browserTabs]);
+  }, [activeTabId, activeConnectionId, browserTabs]);
 
   useEffect(() => {
     if (!activeTabId) {
@@ -3542,7 +3556,7 @@ function App() {
                 icon: <IconContainer size={11} />,
                 dirty: tab.busy,
               }))}
-              active={activeTabId ?? browserTabs[0].id}
+              active={activeTabId ?? ""}
               onSelect={(tabId) => {
                 setActiveTabId(tabId);
               }}
@@ -3584,12 +3598,8 @@ function App() {
             />
           )}
 
-          {activeConnection && !activeContainer && !anyContainersBusy && !containerStatesByConnection[activeConnectionId ?? ""]?.error && (
-            <MainEmptyState
-              title="No container selected"
-              body="Choose a container from the left explorer tree. Each container opens as its own tab, so you can keep multiple storage accounts expanded and switch between live listings without losing your place."
-            />
-          )}
+          {activeConnection && !activeContainer && !anyContainersBusy && !containerStatesByConnection[activeConnectionId ?? ""]?.error &&
+            renderContainerOverview()}
 
           {activeConnection && activeContainer && activeTab && (
             <>
@@ -4543,87 +4553,187 @@ function App() {
         }
         onClick={() => handleSelectContainer(connectionId, container.name)}
         onContextMenu={(event) =>
-          openContextMenu(event, [
-            {
-              label: "Open",
-              action: () => {
-                handleSelectContainer(connectionId, container.name);
-              },
-            },
-            {
-              label: "Open in new tab",
-              hint: "tab",
-              action: () => {
-                handleSelectContainer(connectionId, container.name);
-              },
-            },
-            {
-              label: "New folder…",
-              action: () => {
-                handleSelectContainer(connectionId, container.name);
-                void handleCreateFolder(connectionId, container.name, "");
-              },
-            },
-            menuSeparator(),
-            {
-              label: "Refresh account containers",
-              action: () => {
-                void ensureContainersLoaded(connectionId, true);
-              },
-            },
-            menuSeparator(),
-            {
-              label: "Copy container name",
-              action: () => {
-                void copyText(container.name);
-              },
-            },
-            {
-              label: "Copy container URL",
-              action: () => {
-                const connection = connectionsRef.current.find(
-                  (candidate) => candidate.id === connectionId,
-                );
-                if (connection) {
-                  void copyText(new URL(`${container.name}/`, connection.endpoint).toString());
-                }
-              },
-            },
-            menuSeparator(),
-            {
-              label: "Properties",
-              action: () => {
-                showContainerProperties(connectionId, container);
-              },
-            },
-            {
-              label: "Manage Stored Access Policies…",
-              disabled: true,
-              hint: "no API",
-              action: () => undefined,
-            },
-            {
-              label: "Get Shared Access Signature…",
-              disabled: true,
-              hint: "soon",
-              action: () => undefined,
-            },
-            {
-              label: "Set Public Access Level…",
-              action: () => {
-                void handleSetContainerAccess(connectionId, container.name, container.public_access);
-              },
-            },
-            {
-              label: "Pin to Quick Access",
-              disabled: true,
-              hint: "soon",
-              action: () => undefined,
-            },
-          ])
+          openContextMenu(event, containerMenuItems(connectionId, container))
         }
       />
     ));
+  }
+
+  function containerMenuItems(
+    connectionId: string,
+    container: BrowserContainer,
+  ): ContextMenuItem[] {
+    return [
+      {
+        label: "Open",
+        action: () => {
+          handleSelectContainer(connectionId, container.name);
+        },
+      },
+      {
+        label: "Open in new tab",
+        hint: "tab",
+        action: () => {
+          handleSelectContainer(connectionId, container.name);
+        },
+      },
+      {
+        label: "New folder…",
+        action: () => {
+          handleSelectContainer(connectionId, container.name);
+          void handleCreateFolder(connectionId, container.name, "");
+        },
+      },
+      menuSeparator(),
+      {
+        label: "Refresh account containers",
+        action: () => {
+          void ensureContainersLoaded(connectionId, true);
+        },
+      },
+      menuSeparator(),
+      {
+        label: "Copy container name",
+        action: () => {
+          void copyText(container.name);
+        },
+      },
+      {
+        label: "Copy container URL",
+        action: () => {
+          const connection = connectionsRef.current.find(
+            (candidate) => candidate.id === connectionId,
+          );
+          if (connection) {
+            void copyText(new URL(`${container.name}/`, connection.endpoint).toString());
+          }
+        },
+      },
+      menuSeparator(),
+      {
+        label: "Properties",
+        action: () => {
+          showContainerProperties(connectionId, container);
+        },
+      },
+      {
+        label: "Manage Stored Access Policies…",
+        disabled: true,
+        hint: "no API",
+        action: () => undefined,
+      },
+      {
+        label: "Get Shared Access Signature…",
+        disabled: true,
+        hint: "soon",
+        action: () => undefined,
+      },
+      {
+        label: "Set Public Access Level…",
+        action: () => {
+          void handleSetContainerAccess(connectionId, container.name, container.public_access);
+        },
+      },
+      {
+        label: "Pin to Quick Access",
+        disabled: true,
+        hint: "soon",
+        action: () => undefined,
+      },
+    ];
+  }
+
+  function renderContainerOverview() {
+    if (!activeConnection || !activeConnectionId) {
+      return null;
+    }
+    const connectionId = activeConnectionId;
+    const connection = activeConnection;
+    const containers = containerStatesByConnection[connectionId]?.items ?? [];
+    const host = (() => {
+      try {
+        return new URL(connection.endpoint).host;
+      } catch {
+        return connection.endpoint;
+      }
+    })();
+
+    return (
+      <div style={styles.overviewWrap}>
+        <div style={styles.overviewHeader}>
+          <div style={{ minWidth: 0 }}>
+            <div style={styles.overviewEyebrow}>Storage account</div>
+            <h2 style={styles.overviewTitle}>{connection.display_name}</h2>
+            <div style={styles.overviewSub}>{host}</div>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={styles.overviewCount}>
+              {containers.length} container{containers.length === 1 ? "" : "s"}
+            </span>
+            <button
+              type="button"
+              style={styles.secondaryButton}
+              onClick={() => void ensureContainersLoaded(connectionId, true)}
+            >
+              <IconRefresh size={12} />
+              <span>Refresh</span>
+            </button>
+          </div>
+        </div>
+
+        {containers.length === 0 ? (
+          <div style={styles.overviewEmpty}>
+            <IconContainer size={18} />
+            <div style={{ fontWeight: 600, color: "var(--fg-1)" }}>No containers</div>
+            <div style={{ color: "var(--fg-3)", fontSize: 12 }}>
+              This storage account has no blob containers yet.
+            </div>
+          </div>
+        ) : (
+          <div style={styles.overviewGrid}>
+            {containers.map((container) => (
+              <button
+                key={container.id}
+                type="button"
+                style={styles.containerCard}
+                onClick={() => handleSelectContainer(connectionId, container.name)}
+                onContextMenu={(event) =>
+                  openContextMenu(event, containerMenuItems(connectionId, container))
+                }
+                onMouseEnter={(event) => {
+                  event.currentTarget.style.borderColor = "var(--accent-dim)";
+                  event.currentTarget.style.background = "var(--bg-2)";
+                }}
+                onMouseLeave={(event) => {
+                  event.currentTarget.style.borderColor = "var(--border-1)";
+                  event.currentTarget.style.background = "var(--bg-1)";
+                }}
+              >
+                <div style={styles.containerCardTop}>
+                  <span style={styles.containerCardIcon}>
+                    <IconContainer size={15} />
+                  </span>
+                  <span style={styles.containerCardName}>{container.name}</span>
+                </div>
+                <div style={styles.containerCardMeta}>
+                  <span style={styles.containerBadge}>
+                    {container.public_access ? `public: ${container.public_access}` : "private"}
+                  </span>
+                  {container.lease && container.lease !== "available" && (
+                    <span style={styles.containerBadge}>lease: {container.lease}</span>
+                  )}
+                  {container.blob_count != null && (
+                    <span style={styles.containerCardCount}>
+                      {container.blob_count} blob{container.blob_count === 1 ? "" : "s"}
+                    </span>
+                  )}
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    );
   }
 }
 
@@ -7360,6 +7470,126 @@ const styles: Record<string, CSSProperties> = {
     color: "var(--fg-3)",
     fontSize: 11,
     fontFamily: "var(--mono)",
+  },
+  overviewWrap: {
+    flex: 1,
+    minHeight: 0,
+    overflow: "auto",
+    padding: 24,
+    display: "flex",
+    flexDirection: "column",
+    gap: 18,
+  },
+  overviewHeader: {
+    display: "flex",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 16,
+    flexWrap: "wrap",
+  },
+  overviewEyebrow: {
+    fontSize: 10,
+    fontFamily: "var(--mono)",
+    textTransform: "uppercase",
+    letterSpacing: "0.08em",
+    color: "var(--fg-3)",
+    marginBottom: 4,
+  },
+  overviewTitle: {
+    margin: 0,
+    fontSize: 22,
+    lineHeight: 1.1,
+    fontWeight: 700,
+    color: "var(--fg-0)",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+  },
+  overviewSub: {
+    marginTop: 4,
+    fontSize: 12,
+    fontFamily: "var(--mono)",
+    color: "var(--fg-3)",
+  },
+  overviewCount: {
+    fontSize: 11,
+    fontFamily: "var(--mono)",
+    color: "var(--fg-2)",
+  },
+  overviewEmpty: {
+    flex: 1,
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    color: "var(--fg-2)",
+    padding: 48,
+  },
+  overviewGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))",
+    gap: 12,
+    alignContent: "start",
+  },
+  containerCard: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 10,
+    padding: "14px 16px",
+    borderRadius: 12,
+    border: "1px solid var(--border-1)",
+    background: "var(--bg-1)",
+    textAlign: "left",
+    cursor: "pointer",
+    transition: "border-color 120ms ease, background 120ms ease",
+  },
+  containerCardTop: {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    minWidth: 0,
+  },
+  containerCardIcon: {
+    width: 30,
+    height: 30,
+    flexShrink: 0,
+    borderRadius: 9,
+    background: "var(--accent-ghost)",
+    color: "var(--accent)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  containerCardName: {
+    fontSize: 13,
+    fontWeight: 600,
+    color: "var(--fg-0)",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  },
+  containerCardMeta: {
+    display: "flex",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 6,
+  },
+  containerBadge: {
+    fontSize: 9,
+    fontWeight: 600,
+    fontFamily: "var(--mono)",
+    letterSpacing: "0.04em",
+    padding: "2px 6px",
+    borderRadius: 5,
+    background: "var(--bg-3)",
+    color: "var(--fg-3)",
+    border: "1px solid var(--border-1)",
+  },
+  containerCardCount: {
+    marginLeft: "auto",
+    fontSize: 10,
+    fontFamily: "var(--mono)",
+    color: "var(--fg-3)",
   },
   overlay: {
     position: "fixed",
