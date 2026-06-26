@@ -183,6 +183,43 @@ interface InfoModalState {
   rows: { label: string; value: string }[];
 }
 
+type PublicAccessLevel = "private" | "blob" | "container";
+
+interface AccessModalState {
+  connectionId: string;
+  containerName: string;
+  current: PublicAccessLevel;
+  selected: PublicAccessLevel;
+  busy: boolean;
+}
+
+const PUBLIC_ACCESS_OPTIONS: {
+  value: PublicAccessLevel;
+  label: string;
+  detail: string;
+}[] = [
+  {
+    value: "private",
+    label: "Private",
+    detail: "No anonymous access. Only requests with account credentials or a SAS token can read this container.",
+  },
+  {
+    value: "blob",
+    label: "Blob",
+    detail: "Anonymous clients can read blob data within this container, but cannot enumerate the container's contents.",
+  },
+  {
+    value: "container",
+    label: "Container",
+    detail: "Anonymous clients can read blob data and enumerate the list of blobs within this container.",
+  },
+];
+
+function normalizePublicAccess(value: string | null | undefined): PublicAccessLevel {
+  const normalized = (value ?? "private").toLowerCase();
+  return normalized === "blob" || normalized === "container" ? normalized : "private";
+}
+
 interface BlobClipboardState {
   connectionId: string;
   containerName: string;
@@ -368,6 +405,7 @@ function App() {
   const [showDetails, setShowDetails] = useState(true);
   const [showActivities, setShowActivities] = useState(true);
   const [infoModal, setInfoModal] = useState<InfoModalState | null>(null);
+  const [accessModal, setAccessModal] = useState<AccessModalState | null>(null);
 
   const containerRequestIds = useRef<Record<string, number>>({});
   const blobRequestIds = useRef<Record<string, number>>({});
@@ -1994,27 +2032,37 @@ function App() {
     }
   }
 
-  async function handleSetContainerAccess(connectionId: string, containerName: string) {
-    const access = window.prompt(
-      `Public access level for container "${containerName}" (private, blob, or container)`,
-      "private",
-    );
-    if (access === null) {
+  function handleSetContainerAccess(
+    connectionId: string,
+    containerName: string,
+    current?: string | null,
+  ) {
+    const level = normalizePublicAccess(current);
+    setAccessModal({
+      connectionId,
+      containerName,
+      current: level,
+      selected: level,
+      busy: false,
+    });
+  }
+
+  async function applyContainerAccess() {
+    if (!accessModal || accessModal.busy) {
       return;
     }
-    const trimmed = access.trim().toLowerCase();
-    if (!["private", "blob", "container"].includes(trimmed)) {
-      setShellError("Public access level must be private, blob, or container.");
-      return;
-    }
+    const { connectionId, containerName, selected } = accessModal;
+    setAccessModal({ ...accessModal, busy: true });
     setShellError(null);
     try {
-      await setContainerPublicAccess(connectionId, containerName, trimmed);
-      setShellError(`Set public access for "${containerName}" to ${trimmed}.`);
+      await setContainerPublicAccess(connectionId, containerName, selected);
+      setShellError(`Set public access for "${containerName}" to ${selected}.`);
       await ensureContainersLoaded(connectionId, true);
       await refreshActivities();
+      setAccessModal(null);
     } catch (error) {
       setShellError(getErrorMessage(error));
+      setAccessModal((prev) => (prev ? { ...prev, busy: false } : prev));
     }
   }
 
@@ -4275,6 +4323,156 @@ function App() {
           </div>
         </div>
       )}
+
+      {accessModal && (
+        <div
+          style={styles.overlay}
+          onClick={() => {
+            if (!accessModal.busy) setAccessModal(null);
+          }}
+        >
+          <div
+            style={{
+              width: "min(560px, 100%)",
+              borderRadius: 16,
+              overflow: "hidden",
+              border: "1px solid var(--border-1)",
+              background: "var(--bg-1)",
+              boxShadow: "0 28px 90px rgba(0,0,0,0.45)",
+              animation: "arkived-scale-in 160ms ease-out",
+            }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div style={styles.dialogHeader}>
+              <div>
+                <div style={styles.dialogEyebrow}>Container · {accessModal.containerName}</div>
+                <h2 style={{ ...styles.dialogTitle, fontSize: 22 }}>Set Public Access Level</h2>
+              </div>
+              <button
+                type="button"
+                style={styles.closeButton}
+                onClick={() => {
+                  if (!accessModal.busy) setAccessModal(null);
+                }}
+                disabled={accessModal.busy}
+              >
+                Close
+              </button>
+            </div>
+            <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 10 }}>
+              {PUBLIC_ACCESS_OPTIONS.map((option) => {
+                const active = accessModal.selected === option.value;
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    onClick={() =>
+                      setAccessModal((prev) =>
+                        prev ? { ...prev, selected: option.value } : prev,
+                      )
+                    }
+                    disabled={accessModal.busy}
+                    style={{
+                      display: "flex",
+                      alignItems: "flex-start",
+                      gap: 12,
+                      textAlign: "left",
+                      padding: "12px 14px",
+                      borderRadius: 12,
+                      border: active
+                        ? "1px solid var(--accent-dim)"
+                        : "1px solid var(--border-1)",
+                      background: active ? "var(--accent-ghost)" : "var(--bg-2)",
+                      cursor: accessModal.busy ? "default" : "pointer",
+                    }}
+                  >
+                    <span
+                      style={{
+                        marginTop: 2,
+                        width: 16,
+                        height: 16,
+                        flexShrink: 0,
+                        borderRadius: "50%",
+                        border: active
+                          ? "5px solid var(--accent)"
+                          : "2px solid var(--border-2, var(--fg-3))",
+                        background: active ? "var(--bg-1)" : "transparent",
+                        boxSizing: "border-box",
+                      }}
+                    />
+                    <span style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                      <span
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 8,
+                          fontSize: 13,
+                          fontWeight: 600,
+                          color: active ? "var(--fg-0)" : "var(--fg-1)",
+                        }}
+                      >
+                        {option.label}
+                        {accessModal.current === option.value && (
+                          <span
+                            style={{
+                              fontSize: 9,
+                              fontWeight: 600,
+                              fontFamily: "var(--mono)",
+                              textTransform: "uppercase",
+                              letterSpacing: "0.06em",
+                              padding: "1px 5px",
+                              borderRadius: 4,
+                              background: "var(--bg-3)",
+                              color: "var(--fg-3)",
+                              border: "1px solid var(--border-1)",
+                            }}
+                          >
+                            Current
+                          </span>
+                        )}
+                      </span>
+                      <span style={{ fontSize: 11, lineHeight: 1.5, color: "var(--fg-2)" }}>
+                        {option.detail}
+                      </span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "flex-end",
+                gap: 10,
+                padding: "0 20px 20px",
+              }}
+            >
+              <button
+                type="button"
+                style={styles.secondaryButton}
+                onClick={() => setAccessModal(null)}
+                disabled={accessModal.busy}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                style={{
+                  ...styles.primaryButton,
+                  opacity:
+                    accessModal.busy || accessModal.selected === accessModal.current ? 0.6 : 1,
+                }}
+                onClick={() => {
+                  void applyContainerAccess();
+                }}
+                disabled={accessModal.busy || accessModal.selected === accessModal.current}
+              >
+                {accessModal.busy ? "Applying…" : "Apply"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 
@@ -4538,7 +4736,7 @@ function App() {
             {
               label: "Set Public Access Level…",
               action: () => {
-                void handleSetContainerAccess(connectionId, container.name);
+                handleSetContainerAccess(connectionId, container.name, container.public_access);
               },
             },
             {
