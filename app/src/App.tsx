@@ -5,6 +5,7 @@ import { ActionBar, BlobPropertiesPane, BlobTable, Inspector, TabsBar } from "./
 import type { BlobSortKey, IndexedBlobRow, SortDirection } from "./content";
 import type { BlobPropertiesPaneState } from "./content";
 import { ActivityBar } from "./panels";
+import { useDialogs } from "./dialogs";
 import type { Activity, BlobRow } from "./data";
 import {
   IconAlert,
@@ -184,14 +185,6 @@ interface InfoModalState {
 }
 
 type PublicAccessLevel = "private" | "blob" | "container";
-
-interface AccessModalState {
-  connectionId: string;
-  containerName: string;
-  current: PublicAccessLevel;
-  selected: PublicAccessLevel;
-  busy: boolean;
-}
 
 const PUBLIC_ACCESS_OPTIONS: {
   value: PublicAccessLevel;
@@ -405,7 +398,7 @@ function App() {
   const [showDetails, setShowDetails] = useState(true);
   const [showActivities, setShowActivities] = useState(true);
   const [infoModal, setInfoModal] = useState<InfoModalState | null>(null);
-  const [accessModal, setAccessModal] = useState<AccessModalState | null>(null);
+  const dialogs = useDialogs();
 
   const containerRequestIds = useRef<Record<string, number>>({});
   const blobRequestIds = useRef<Record<string, number>>({});
@@ -1039,7 +1032,12 @@ function App() {
   }
 
   async function handleRemoveSignIn(signIn: BrowserSignIn) {
-    const confirmed = window.confirm(`Remove Azure account "${signIn.display_name}" from Arkived?`);
+    const confirmed = await dialogs.confirm({
+      title: "Remove account",
+      message: `Remove Azure account "${signIn.display_name}" from Arkived? Cached tokens for this sign-in are deleted; your Azure account itself is unaffected.`,
+      confirmLabel: "Remove",
+      danger: true,
+    });
     if (!confirmed) {
       return;
     }
@@ -1771,7 +1769,12 @@ function App() {
       return;
     }
 
-    const confirmed = window.confirm(`Delete blob "${row.path}" from "${activeContainer}"?`);
+    const confirmed = await dialogs.confirm({
+      title: "Delete blob",
+      message: `Delete blob "${row.path}" from "${activeContainer}"? This cannot be undone unless soft-delete is enabled on the account.`,
+      confirmLabel: "Delete",
+      danger: true,
+    });
     if (!confirmed) {
       return;
     }
@@ -1794,20 +1797,11 @@ function App() {
     if (!activeConnection || !activeContainer || !row.path || row.kind === "dir") {
       return;
     }
-    const permissions = window.prompt(
-      `SAS permissions for "${row.path}" (r=read, w=write, d=delete, l=list, a=add, c=create)`,
-      "r",
-    );
-    if (permissions === null) {
-      return;
-    }
-    const hoursText = window.prompt("Hours until the SAS expires", "1");
-    if (hoursText === null) {
-      return;
-    }
-    const hours = Number.parseInt(hoursText, 10);
-    if (!Number.isFinite(hours) || hours <= 0) {
-      setShellError("SAS expiry must be a positive number of hours.");
+    const sas = await dialogs.generateSas({
+      title: "Generate SAS",
+      subtitle: `Blob · ${row.path}`,
+    });
+    if (!sas) {
       return;
     }
     setShellError(null);
@@ -1816,11 +1810,11 @@ function App() {
         activeConnection.id,
         activeContainer,
         row.path,
-        permissions.trim() || "r",
-        hours,
+        sas.permissions,
+        sas.hours,
       );
       await copyText(url);
-      setShellError(`SAS URL for "${row.path}" copied to clipboard (expires in ${hours}h).`);
+      setShellError(`SAS URL for "${row.path}" copied to clipboard (expires in ${sas.hours}h).`);
       await refreshActivities();
     } catch (error) {
       setShellError(getErrorMessage(error));
@@ -1831,16 +1825,24 @@ function App() {
     if (!activeConnection || !activeContainer || !activeTab || !row.path || row.kind === "dir") {
       return;
     }
-    const tier = window.prompt(
-      `Set access tier for "${row.path}" (hot, cool, cold, or archive)`,
-      (row.tier ?? "hot").toLowerCase(),
-    );
-    if (tier === null) {
+    const current = (row.tier ?? "hot").toLowerCase();
+    const choice = await dialogs.choose({
+      title: "Set access tier",
+      subtitle: `Blob · ${row.path}`,
+      current,
+      options: [
+        { value: "hot", label: "Hot", detail: "Frequent access. Highest storage cost, lowest access cost." },
+        { value: "cool", label: "Cool", detail: "Infrequent access, stored at least 30 days." },
+        { value: "cold", label: "Cold", detail: "Rarely accessed, stored at least 90 days." },
+        { value: "archive", label: "Archive", detail: "Offline tier. Lowest cost; must be rehydrated before reading." },
+      ],
+    });
+    if (!choice) {
       return;
     }
     setShellError(null);
     try {
-      await setBlobTier(activeConnection.id, activeContainer, row.path, tier.trim());
+      await setBlobTier(activeConnection.id, activeContainer, row.path, choice.value);
       updateTab(activeTab.id, (tab) => ({ ...tab, loaded: false }));
       await refreshActivities();
     } catch (error) {
@@ -1887,27 +1889,13 @@ function App() {
     setShellError(null);
     try {
       const current = await getBlobTags(connectionId, container, path);
-      const initial = Object.entries(current)
-        .map(([key, value]) => `${key}=${value}`)
-        .join("\n");
-      const edited = window.prompt(
-        `Edit tags for "${path}" (one key=value per line)`,
-        initial,
-      );
-      if (edited === null) {
+      const tags = await dialogs.editTags({
+        title: "Edit blob tags",
+        subtitle: `Blob · ${path}`,
+        initial: current,
+      });
+      if (tags === null) {
         return;
-      }
-      const tags: Record<string, string> = {};
-      for (const line of edited.split("\n")) {
-        const trimmed = line.trim();
-        if (!trimmed) {
-          continue;
-        }
-        const eq = trimmed.indexOf("=");
-        if (eq <= 0) {
-          continue;
-        }
-        tags[trimmed.slice(0, eq).trim()] = trimmed.slice(eq + 1).trim();
       }
       await setBlobTags(connectionId, container, path, tags);
       setShellError(
@@ -1937,7 +1925,11 @@ function App() {
     if (!activeConnection || !activeContainer || !activeTab || !row.path || row.kind === "dir") {
       return;
     }
-    const confirmed = window.confirm(`Undelete blob "${row.path}" in "${activeContainer}"?`);
+    const confirmed = await dialogs.confirm({
+      title: "Undelete blob",
+      message: `Restore soft-deleted blob "${row.path}" in "${activeContainer}"?`,
+      confirmLabel: "Undelete",
+    });
     if (!confirmed) {
       return;
     }
@@ -1956,18 +1948,21 @@ function App() {
     if (!activeConnection || !activeContainer || !row.path || row.kind === "dir") {
       return;
     }
-    const durationText = window.prompt(
-      `Lease duration in seconds for "${row.path}" (15-60, or -1 for infinite)`,
-      "-1",
-    );
-    if (durationText === null) {
+    const choice = await dialogs.choose({
+      title: "Acquire lease",
+      subtitle: `Blob · ${row.path}`,
+      confirmLabel: "Acquire",
+      options: [
+        { value: "-1", label: "Infinite", detail: "Lease never expires until explicitly released or broken." },
+        { value: "60", label: "60 seconds", detail: "Fixed-duration lease (max allowed)." },
+        { value: "30", label: "30 seconds", detail: "Fixed-duration lease." },
+        { value: "15", label: "15 seconds", detail: "Fixed-duration lease (min allowed)." },
+      ],
+    });
+    if (!choice) {
       return;
     }
-    const duration = Number.parseInt(durationText, 10);
-    if (!Number.isFinite(duration)) {
-      setShellError("Lease duration must be a number.");
-      return;
-    }
+    const duration = Number.parseInt(choice.value, 10);
     setShellError(null);
     try {
       const result = await acquireBlobLease(activeConnection.id, activeContainer, row.path, duration);
@@ -1983,7 +1978,12 @@ function App() {
     if (!activeConnection || !activeContainer || !row.path || row.kind === "dir") {
       return;
     }
-    const confirmed = window.confirm(`Break the lease on "${row.path}"?`);
+    const confirmed = await dialogs.confirm({
+      title: "Break lease",
+      message: `Break the lease on "${row.path}"? Any holder of the current lease ID loses it immediately.`,
+      confirmLabel: "Break lease",
+      danger: true,
+    });
     if (!confirmed) {
       return;
     }
@@ -2006,25 +2006,30 @@ function App() {
       await handleSetTier(row);
       return;
     }
-    const target = window.prompt(
-      `Rehydrate archived blob "${row.path}" to which tier? (hot, cool, or cold)`,
-      "hot",
-    );
-    if (target === null) {
+    const choice = await dialogs.choose({
+      title: "Rehydrate archived blob",
+      subtitle: `Blob · ${row.path}`,
+      confirmLabel: "Rehydrate",
+      options: [
+        { value: "hot", label: "Hot", detail: "Rehydrate to the Hot tier for frequent access." },
+        { value: "cool", label: "Cool", detail: "Rehydrate to the Cool tier." },
+        { value: "cold", label: "Cold", detail: "Rehydrate to the Cold tier." },
+      ],
+      toggle: {
+        label: "High priority (faster, costs more — standard can take hours)",
+        default: false,
+      },
+    });
+    if (!choice) {
       return;
     }
-    const trimmed = target.trim().toLowerCase();
-    if (!["hot", "cool", "cold"].includes(trimmed)) {
-      setShellError("Rehydrate target tier must be hot, cool, or cold.");
-      return;
-    }
-    const highPriority = window.confirm("Use high-priority rehydration? (OK = high priority, Cancel = standard)");
+    const highPriority = choice.toggle;
     setShellError(null);
     try {
-      await rehydrateBlob(activeConnection.id, activeContainer, row.path, trimmed, highPriority);
+      await rehydrateBlob(activeConnection.id, activeContainer, row.path, choice.value, highPriority);
       updateTab(activeTab.id, (tab) => ({ ...tab, loaded: false }));
       setShellError(
-        `Started ${highPriority ? "high-priority " : ""}rehydration of "${row.path}" to ${trimmed}.`,
+        `Started ${highPriority ? "high-priority " : ""}rehydration of "${row.path}" to ${choice.value}.`,
       );
       await refreshActivities();
     } catch (error) {
@@ -2032,37 +2037,29 @@ function App() {
     }
   }
 
-  function handleSetContainerAccess(
+  async function handleSetContainerAccess(
     connectionId: string,
     containerName: string,
     current?: string | null,
   ) {
     const level = normalizePublicAccess(current);
-    setAccessModal({
-      connectionId,
-      containerName,
+    const choice = await dialogs.choose({
+      title: "Set Public Access Level",
+      subtitle: `Container · ${containerName}`,
+      options: PUBLIC_ACCESS_OPTIONS,
       current: level,
-      selected: level,
-      busy: false,
     });
-  }
-
-  async function applyContainerAccess() {
-    if (!accessModal || accessModal.busy) {
+    if (!choice) {
       return;
     }
-    const { connectionId, containerName, selected } = accessModal;
-    setAccessModal({ ...accessModal, busy: true });
     setShellError(null);
     try {
-      await setContainerPublicAccess(connectionId, containerName, selected);
-      setShellError(`Set public access for "${containerName}" to ${selected}.`);
+      await setContainerPublicAccess(connectionId, containerName, choice.value);
+      setShellError(`Set public access for "${containerName}" to ${choice.value}.`);
       await ensureContainersLoaded(connectionId, true);
       await refreshActivities();
-      setAccessModal(null);
     } catch (error) {
       setShellError(getErrorMessage(error));
-      setAccessModal((prev) => (prev ? { ...prev, busy: false } : prev));
     }
   }
 
@@ -2108,7 +2105,12 @@ function App() {
       return;
     }
 
-    const confirmed = window.confirm(`Delete all blobs under "${row.path}" from "${activeContainer}"?`);
+    const confirmed = await dialogs.confirm({
+      title: "Delete folder",
+      message: `Delete all blobs under "${row.path}" from "${activeContainer}"? Every blob with this prefix is removed. This cannot be undone unless soft-delete is enabled.`,
+      confirmLabel: "Delete all",
+      danger: true,
+    });
     if (!confirmed) {
       return;
     }
@@ -2151,7 +2153,12 @@ function App() {
       selectedResourceRows.length === 1
         ? `"${selectedResourceRows[0].path ?? selectedResourceRows[0].name}"`
         : `${selectedResourceRows.length} items`;
-    const confirmed = window.confirm(`Delete ${label} from "${activeContainer}"?`);
+    const confirmed = await dialogs.confirm({
+      title: selectedResourceRows.length === 1 ? "Delete item" : "Delete items",
+      message: `Delete ${label} from "${activeContainer}"? This cannot be undone unless soft-delete is enabled.`,
+      confirmLabel: "Delete",
+      danger: true,
+    });
     if (!confirmed) {
       return;
     }
@@ -2288,7 +2295,15 @@ function App() {
       return;
     }
 
-    const folderName = window.prompt(`New folder name in ${containerName}${parent ? `/${parent}` : ""}`);
+    const folderName = await dialogs.prompt({
+      title: "New folder",
+      subtitle: `${containerName}${parent ? `/${parent}` : ""}`,
+      label: "Folder name",
+      placeholder: "my-folder",
+      confirmLabel: "Create",
+      validate: (value) =>
+        /[\\/]/.test(value) ? "No slashes — create nested folders one level at a time." : null,
+    });
     if (!folderName) {
       return;
     }
@@ -2323,7 +2338,15 @@ function App() {
       return;
     }
 
-    const nextName = window.prompt(`Rename ${row.kind === "dir" ? "folder" : "blob"}`, row.name);
+    const nextName = await dialogs.prompt({
+      title: `Rename ${row.kind === "dir" ? "folder" : "blob"}`,
+      subtitle: row.path,
+      label: "New name",
+      defaultValue: row.name,
+      confirmLabel: "Rename",
+      validate: (value) =>
+        /[\\/]/.test(value) ? "Rename only changes the item name — slashes are not allowed." : null,
+    });
     if (!nextName) {
       return;
     }
@@ -4324,155 +4347,7 @@ function App() {
         </div>
       )}
 
-      {accessModal && (
-        <div
-          style={styles.overlay}
-          onClick={() => {
-            if (!accessModal.busy) setAccessModal(null);
-          }}
-        >
-          <div
-            style={{
-              width: "min(560px, 100%)",
-              borderRadius: 16,
-              overflow: "hidden",
-              border: "1px solid var(--border-1)",
-              background: "var(--bg-1)",
-              boxShadow: "0 28px 90px rgba(0,0,0,0.45)",
-              animation: "arkived-scale-in 160ms ease-out",
-            }}
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div style={styles.dialogHeader}>
-              <div>
-                <div style={styles.dialogEyebrow}>Container · {accessModal.containerName}</div>
-                <h2 style={{ ...styles.dialogTitle, fontSize: 22 }}>Set Public Access Level</h2>
-              </div>
-              <button
-                type="button"
-                style={styles.closeButton}
-                onClick={() => {
-                  if (!accessModal.busy) setAccessModal(null);
-                }}
-                disabled={accessModal.busy}
-              >
-                Close
-              </button>
-            </div>
-            <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 10 }}>
-              {PUBLIC_ACCESS_OPTIONS.map((option) => {
-                const active = accessModal.selected === option.value;
-                return (
-                  <button
-                    key={option.value}
-                    type="button"
-                    onClick={() =>
-                      setAccessModal((prev) =>
-                        prev ? { ...prev, selected: option.value } : prev,
-                      )
-                    }
-                    disabled={accessModal.busy}
-                    style={{
-                      display: "flex",
-                      alignItems: "flex-start",
-                      gap: 12,
-                      textAlign: "left",
-                      padding: "12px 14px",
-                      borderRadius: 12,
-                      border: active
-                        ? "1px solid var(--accent-dim)"
-                        : "1px solid var(--border-1)",
-                      background: active ? "var(--accent-ghost)" : "var(--bg-2)",
-                      cursor: accessModal.busy ? "default" : "pointer",
-                    }}
-                  >
-                    <span
-                      style={{
-                        marginTop: 2,
-                        width: 16,
-                        height: 16,
-                        flexShrink: 0,
-                        borderRadius: "50%",
-                        border: active
-                          ? "5px solid var(--accent)"
-                          : "2px solid var(--border-2, var(--fg-3))",
-                        background: active ? "var(--bg-1)" : "transparent",
-                        boxSizing: "border-box",
-                      }}
-                    />
-                    <span style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                      <span
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 8,
-                          fontSize: 13,
-                          fontWeight: 600,
-                          color: active ? "var(--fg-0)" : "var(--fg-1)",
-                        }}
-                      >
-                        {option.label}
-                        {accessModal.current === option.value && (
-                          <span
-                            style={{
-                              fontSize: 9,
-                              fontWeight: 600,
-                              fontFamily: "var(--mono)",
-                              textTransform: "uppercase",
-                              letterSpacing: "0.06em",
-                              padding: "1px 5px",
-                              borderRadius: 4,
-                              background: "var(--bg-3)",
-                              color: "var(--fg-3)",
-                              border: "1px solid var(--border-1)",
-                            }}
-                          >
-                            Current
-                          </span>
-                        )}
-                      </span>
-                      <span style={{ fontSize: 11, lineHeight: 1.5, color: "var(--fg-2)" }}>
-                        {option.detail}
-                      </span>
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "flex-end",
-                gap: 10,
-                padding: "0 20px 20px",
-              }}
-            >
-              <button
-                type="button"
-                style={styles.secondaryButton}
-                onClick={() => setAccessModal(null)}
-                disabled={accessModal.busy}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                style={{
-                  ...styles.primaryButton,
-                  opacity:
-                    accessModal.busy || accessModal.selected === accessModal.current ? 0.6 : 1,
-                }}
-                onClick={() => {
-                  void applyContainerAccess();
-                }}
-                disabled={accessModal.busy || accessModal.selected === accessModal.current}
-              >
-                {accessModal.busy ? "Applying…" : "Apply"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {dialogs.element}
     </div>
   );
 
@@ -4736,7 +4611,7 @@ function App() {
             {
               label: "Set Public Access Level…",
               action: () => {
-                handleSetContainerAccess(connectionId, container.name, container.public_access);
+                void handleSetContainerAccess(connectionId, container.name, container.public_access);
               },
             },
             {
