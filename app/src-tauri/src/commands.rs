@@ -2953,6 +2953,90 @@ pub async fn set_container_public_access(
     Ok(())
 }
 
+/// Create a new blob container, optionally with a public-access level.
+#[tauri::command]
+pub async fn create_container(
+    state: State<'_, AppState>,
+    connection_id: String,
+    container: String,
+    access: Option<String>,
+) -> Result<(), String> {
+    let activity_started = Utc::now();
+    let activity_timer = Instant::now();
+    let connection = get_connection(&state, &connection_id)?;
+    let container = resolved_container_name(&connection, &container)?;
+    let access = access.unwrap_or_else(|| "private".to_string());
+    let parsed = PublicAccess::parse(&access).ok_or_else(|| {
+        format!("invalid public access `{access}` (use private, blob, or container)")
+    })?;
+    let backend = build_backend(&connection).await?;
+    let ctx = app_operation_ctx();
+    backend
+        .create_container(&ctx, &container, parsed)
+        .await
+        .map_err(|error| {
+            compact_live_browse_error(
+                &connection,
+                "Create container",
+                Some(container.as_str()),
+                &error_to_string(error),
+            )
+        })?;
+
+    record_activity(
+        &state,
+        "container",
+        "done",
+        format!("Created container `{container}`"),
+        String::new(),
+        activity_started,
+        activity_timer.elapsed(),
+        Some(format!(
+            "access {}",
+            parsed.header_value().unwrap_or("private")
+        )),
+    );
+    Ok(())
+}
+
+/// Delete a container and all of its blobs.
+#[tauri::command]
+pub async fn delete_container(
+    state: State<'_, AppState>,
+    connection_id: String,
+    container: String,
+) -> Result<(), String> {
+    let activity_started = Utc::now();
+    let activity_timer = Instant::now();
+    let connection = get_connection(&state, &connection_id)?;
+    let container = resolved_container_name(&connection, &container)?;
+    let backend = build_backend(&connection).await?;
+    let ctx = app_operation_ctx();
+    backend
+        .delete_container(&ctx, &container)
+        .await
+        .map_err(|error| {
+            compact_live_browse_error(
+                &connection,
+                "Delete container",
+                Some(container.as_str()),
+                &error_to_string(error),
+            )
+        })?;
+
+    record_activity(
+        &state,
+        "container",
+        "done",
+        format!("Deleted container `{container}`"),
+        String::new(),
+        activity_started,
+        activity_timer.elapsed(),
+        None,
+    );
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn delete_blob_prefix(
     state: State<'_, AppState>,

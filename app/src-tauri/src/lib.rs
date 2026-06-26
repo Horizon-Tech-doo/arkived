@@ -150,6 +150,8 @@ pub fn run() {
             commands::break_blob_lease,
             commands::rehydrate_blob,
             commands::set_container_public_access,
+            commands::create_container,
+            commands::delete_container,
             commands::create_blob_folder,
             commands::rename_blob_item,
             commands::copy_blob_item,

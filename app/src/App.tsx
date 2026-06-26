@@ -59,8 +59,10 @@ import {
   connectWithSas,
   copyBlobItem,
   createBlobFolder,
+  createContainer,
   deleteBlob,
   deleteBlobPrefix,
+  deleteContainer,
   disconnectConnection,
   downloadBlob,
   downloadBlobPrefix,
@@ -211,6 +213,28 @@ const PUBLIC_ACCESS_OPTIONS: {
 function normalizePublicAccess(value: string | null | undefined): PublicAccessLevel {
   const normalized = (value ?? "private").toLowerCase();
   return normalized === "blob" || normalized === "container" ? normalized : "private";
+}
+
+// Azure container naming rules, surfaced inline so the user sees the problem
+// before the round-trip rather than as a raw 400 from the service.
+function validateContainerName(value: string): string | null {
+  const name = value.trim();
+  if (!name) {
+    return null;
+  }
+  if (name.length < 3 || name.length > 63) {
+    return "Must be 3–63 characters.";
+  }
+  if (!/^[a-z0-9-]+$/.test(name)) {
+    return "Use lowercase letters, numbers, and hyphens only.";
+  }
+  if (!/^[a-z0-9]/.test(name) || !/[a-z0-9]$/.test(name)) {
+    return "Must start and end with a letter or number.";
+  }
+  if (name.includes("--")) {
+    return "No consecutive hyphens.";
+  }
+  return null;
 }
 
 interface BlobClipboardState {
@@ -2042,6 +2066,78 @@ function App() {
       setShellError(
         `Started ${highPriority ? "high-priority " : ""}rehydration of "${row.path}" to ${choice.value}.`,
       );
+      await refreshActivities();
+    } catch (error) {
+      setShellError(getErrorMessage(error));
+    }
+  }
+
+  async function handleCreateContainer(connectionId: string) {
+    const name = await dialogs.prompt({
+      title: "New container",
+      label: "Container name",
+      placeholder: "my-container",
+      confirmLabel: "Create",
+      validate: validateContainerName,
+    });
+    if (!name) {
+      return;
+    }
+    const trimmed = name.trim();
+    if (!trimmed || validateContainerName(trimmed)) {
+      return;
+    }
+    setShellError(null);
+    try {
+      await createContainer(connectionId, trimmed);
+      setShellError(`Created container "${trimmed}".`);
+      await ensureContainersLoaded(connectionId, true);
+      await refreshActivities();
+    } catch (error) {
+      setShellError(getErrorMessage(error));
+    }
+  }
+
+  async function handleDeleteContainer(connectionId: string, containerName: string) {
+    const confirmed = await dialogs.confirm({
+      title: "Delete container",
+      message: `Delete container "${containerName}" and every blob inside it? This cannot be undone.`,
+      confirmLabel: "Delete container",
+      danger: true,
+    });
+    if (!confirmed) {
+      return;
+    }
+    setShellError(null);
+    try {
+      await deleteContainer(connectionId, containerName);
+      // Close any open tab for this container.
+      setBrowserTabs((current) =>
+        current.filter(
+          (tab) => !(tab.connectionId === connectionId && tab.containerName === containerName),
+        ),
+      );
+      setShellError(`Deleted container "${containerName}".`);
+      await ensureContainersLoaded(connectionId, true);
+      await refreshActivities();
+    } catch (error) {
+      setShellError(getErrorMessage(error));
+    }
+  }
+
+  async function handleGenerateContainerSas(connectionId: string, containerName: string) {
+    const sas = await dialogs.generateSas({
+      title: "Generate SAS",
+      subtitle: `Container · ${containerName}`,
+    });
+    if (!sas) {
+      return;
+    }
+    setShellError(null);
+    try {
+      const url = await generateBlobSas(connectionId, containerName, null, sas.permissions, sas.hours);
+      await copyText(url);
+      setShellError(`Container SAS URL for "${containerName}" copied to clipboard (expires in ${sas.hours}h).`);
       await refreshActivities();
     } catch (error) {
       setShellError(getErrorMessage(error));
@@ -4624,9 +4720,9 @@ function App() {
       },
       {
         label: "Get Shared Access Signature…",
-        disabled: true,
-        hint: "soon",
-        action: () => undefined,
+        action: () => {
+          void handleGenerateContainerSas(connectionId, container.name);
+        },
       },
       {
         label: "Set Public Access Level…",
@@ -4639,6 +4735,14 @@ function App() {
         disabled: true,
         hint: "soon",
         action: () => undefined,
+      },
+      menuSeparator(),
+      {
+        label: "Delete container…",
+        danger: true,
+        action: () => {
+          void handleDeleteContainer(connectionId, container.name);
+        },
       },
     ];
   }
@@ -4678,6 +4782,14 @@ function App() {
               <IconRefresh size={12} />
               <span>Refresh</span>
             </button>
+            <button
+              type="button"
+              style={styles.primaryButton}
+              onClick={() => void handleCreateContainer(connectionId)}
+            >
+              <IconPlus size={12} />
+              <span>New container</span>
+            </button>
           </div>
         </div>
 
@@ -4688,6 +4800,14 @@ function App() {
             <div style={{ color: "var(--fg-3)", fontSize: 12 }}>
               This storage account has no blob containers yet.
             </div>
+            <button
+              type="button"
+              style={{ ...styles.primaryButton, marginTop: 6 }}
+              onClick={() => void handleCreateContainer(connectionId)}
+            >
+              <IconPlus size={12} />
+              <span>New container</span>
+            </button>
           </div>
         ) : (
           <div style={styles.overviewGrid}>

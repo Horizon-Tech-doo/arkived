@@ -710,3 +710,25 @@ export async function setContainerPublicAccess(
     access,
   });
 }
+
+export async function createContainer(
+  connectionId: string,
+  container: string,
+  access: string | null = null,
+): Promise<void> {
+  return callTauri<void>("create_container", {
+    connectionId,
+    container,
+    access,
+  });
+}
+
+export async function deleteContainer(
+  connectionId: string,
+  container: string,
+): Promise<void> {
+  return callTauri<void>("delete_container", {
+    connectionId,
+    container,
+  });
+}
