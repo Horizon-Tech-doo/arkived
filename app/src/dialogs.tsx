@@ -6,7 +6,7 @@
 // like the old `window.prompt` flow — `const v = await dialogs.prompt(...)` —
 // while presenting a real, themed modal instead of a browser dialog.
 
-import React, { CSSProperties, useCallback, useRef, useState } from "react";
+import React, { CSSProperties, useCallback, useEffect, useRef, useState } from "react";
 
 export interface ChoiceOption {
   value: string;
@@ -85,11 +85,16 @@ export interface DialogsApi {
   choose: (config: Omit<ChooseConfig, "kind">) => Promise<ChooseResult | null>;
   editTags: (config: Omit<TagsConfig, "kind">) => Promise<Record<string, string> | null>;
   generateSas: (config: Omit<SasConfig, "kind">) => Promise<SasResult | null>;
+  isOpen: boolean;
   element: React.ReactNode;
 }
 
 export function useDialogs(): DialogsApi {
   const [config, setConfig] = useState<DialogConfig | null>(null);
+  // Stable per-dialog remount key, set once when the dialog opens. Must NOT be
+  // recomputed on every render or the DialogHost remounts and wipes input/focus.
+  const [instanceKey, setInstanceKey] = useState("");
+  const seqRef = useRef(0);
   const resolverRef = useRef<((value: unknown) => void) | null>(null);
 
   const open = useCallback(<T,>(next: DialogConfig): Promise<T> => {
@@ -97,6 +102,8 @@ export function useDialogs(): DialogsApi {
     resolverRef.current?.(null);
     return new Promise<T>((resolve) => {
       resolverRef.current = resolve as (value: unknown) => void;
+      seqRef.current += 1;
+      setInstanceKey(`${next.kind}-${seqRef.current}`);
       setConfig(next);
     });
   }, []);
@@ -107,7 +114,7 @@ export function useDialogs(): DialogsApi {
     setConfig(null);
   }, []);
 
-  const api: Omit<DialogsApi, "element"> = {
+  const api: Omit<DialogsApi, "element" | "isOpen"> = {
     confirm: (c) => open<boolean>({ ...c, kind: "confirm" }).then((v) => v === true),
     prompt: (c) => open<string | null>({ ...c, kind: "prompt" }),
     choose: (c) => open<ChooseResult | null>({ ...c, kind: "choose" }),
@@ -117,21 +124,14 @@ export function useDialogs(): DialogsApi {
 
   const element = config ? (
     <DialogHost
-      // Remount per-dialog so local input state resets cleanly.
-      key={dialogKey(config)}
+      key={instanceKey}
       config={config}
       onCancel={() => settle(config.kind === "confirm" ? false : null)}
       onResolve={settle}
     />
   ) : null;
 
-  return { ...api, element };
-}
-
-let dialogSeq = 0;
-function dialogKey(config: DialogConfig): string {
-  dialogSeq += 1;
-  return `${config.kind}-${dialogSeq}`;
+  return { ...api, isOpen: config != null, element };
 }
 
 function DialogHost({
@@ -143,13 +143,23 @@ function DialogHost({
   onCancel: () => void;
   onResolve: (value: unknown) => void;
 }) {
+  // Escape closes the dialog regardless of where focus sits (confirm/choose/sas
+  // have no autofocused element, so overlay key bubbling alone would miss them).
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onCancel();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onCancel]);
+
   return (
     <div
       style={styles.overlay}
       onClick={onCancel}
-      onKeyDown={(event) => {
-        if (event.key === "Escape") onCancel();
-      }}
     >
       <div style={styles.card} onClick={(event) => event.stopPropagation()}>
         <div style={styles.header}>

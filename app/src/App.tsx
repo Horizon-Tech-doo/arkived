@@ -1548,7 +1548,7 @@ function App() {
         selectedIndices: [],
       });
 
-      if (persistedTab.id === snapshot.activeTabId || !restoredActiveTabId) {
+      if (persistedTab.id === snapshot.activeTabId) {
         restoredActiveTabId = id;
       }
       restoredActiveConnectionId = restoredActiveConnectionId ?? connection.id;
@@ -1556,7 +1556,11 @@ function App() {
 
     if (restoredTabs.length > 0) {
       setBrowserTabs(restoredTabs);
-      setActiveTabId(restoredActiveTabId ?? restoredTabs[0].id);
+      // Only re-activate a tab if the snapshot had one; a null activeTabId means
+      // the user was on the account-overview view, which we preserve.
+      if (snapshot.activeTabId != null) {
+        setActiveTabId(restoredActiveTabId ?? restoredTabs[0].id);
+      }
     }
 
     if (restoredActiveConnectionId) {
@@ -2531,32 +2535,51 @@ function App() {
 
   async function handleDropUpload(target: DropTarget, paths: string[]) {
     setShellError(null);
+    let items: Awaited<ReturnType<typeof classifyPaths>>;
     try {
-      const items = await classifyPaths(paths);
-      if (items.length === 0) {
-        setShellError("Nothing to upload — the dropped paths could not be read.");
-        return;
-      }
-      let files = 0;
-      let folders = 0;
-      let folderFiles = 0;
+      items = await classifyPaths(paths);
+    } catch (error) {
+      setShellError(getErrorMessage(error));
+      return;
+    }
+    if (items.length === 0) {
+      setShellError("Nothing to upload — the dropped paths could not be read.");
+      return;
+    }
+
+    let files = 0;
+    let folders = 0;
+    let folderFiles = 0;
+    let failed = 0;
+    let firstError: string | null = null;
+    // Upload each item independently so a single failure (e.g. a name clash with
+    // overwrite=false) doesn't hide the items that already succeeded.
+    try {
       for (const item of items) {
-        if (item.is_dir) {
-          const result = await uploadFolder(
-            target.connectionId,
-            target.container,
-            item.path,
-            target.prefix || null,
-            false,
-          );
-          folders += 1;
-          folderFiles += result.item_count;
-        } else {
-          await uploadBlob(target.connectionId, target.container, item.path, target.prefix || null, false);
-          files += 1;
+        try {
+          if (item.is_dir) {
+            const result = await uploadFolder(
+              target.connectionId,
+              target.container,
+              item.path,
+              target.prefix || null,
+              false,
+            );
+            folders += 1;
+            folderFiles += result.item_count;
+          } else {
+            await uploadBlob(target.connectionId, target.container, item.path, target.prefix || null, false);
+            files += 1;
+          }
+        } catch (error) {
+          failed += 1;
+          if (!firstError) {
+            firstError = getErrorMessage(error);
+          }
         }
       }
-      // Reload the affected container tab if it is open.
+    } finally {
+      // Always refresh the affected tab so any blobs that did upload become visible.
       setBrowserTabs((current) =>
         current.map((tab) =>
           tab.connectionId === target.connectionId && tab.containerName === target.container
@@ -2564,17 +2587,24 @@ function App() {
             : tab,
         ),
       );
-      const parts: string[] = [];
-      if (files) parts.push(`${files} file${files === 1 ? "" : "s"}`);
-      if (folders) {
-        parts.push(
-          `${folders} folder${folders === 1 ? "" : "s"} (${folderFiles} file${folderFiles === 1 ? "" : "s"})`,
-        );
-      }
+      void refreshActivities();
+    }
+
+    const parts: string[] = [];
+    if (files) parts.push(`${files} file${files === 1 ? "" : "s"}`);
+    if (folders) {
+      parts.push(
+        `${folders} folder${folders === 1 ? "" : "s"} (${folderFiles} file${folderFiles === 1 ? "" : "s"})`,
+      );
+    }
+    if (failed === 0) {
       setShellError(`Uploaded ${parts.join(" + ")} to ${target.label}.`);
-      await refreshActivities();
-    } catch (error) {
-      setShellError(getErrorMessage(error));
+    } else if (parts.length === 0) {
+      setShellError(`Upload failed for ${failed} item${failed === 1 ? "" : "s"}${firstError ? `: ${firstError}` : ""}.`);
+    } else {
+      setShellError(
+        `Uploaded ${parts.join(" + ")} to ${target.label}; ${failed} item${failed === 1 ? "" : "s"} failed${firstError ? `: ${firstError}` : ""}.`,
+      );
     }
   }
 
@@ -3009,6 +3039,11 @@ function App() {
   // Keyboard shortcuts. Kept on a ref so the once-registered listener always
   // calls the latest handlers/state without re-binding.
   keymapRef.current = (event) => {
+    // A modal dialog owns the keyboard while open (it has its own Escape handler);
+    // never let global shortcuts steal focus or mutate the background behind it.
+    if (dialogs.isOpen) {
+      return;
+    }
     const target = event.target as HTMLElement | null;
     const typing =
       target?.tagName === "INPUT" ||
