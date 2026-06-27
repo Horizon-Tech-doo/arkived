@@ -227,6 +227,13 @@ function normalizePublicAccess(value: string | null | undefined): PublicAccessLe
   return normalized === "blob" || normalized === "container" ? normalized : "private";
 }
 
+const TIER_OPTIONS = [
+  { value: "hot", label: "Hot", detail: "Frequent access. Highest storage cost, lowest access cost." },
+  { value: "cool", label: "Cool", detail: "Infrequent access, stored at least 30 days." },
+  { value: "cold", label: "Cold", detail: "Rarely accessed, stored at least 90 days." },
+  { value: "archive", label: "Archive", detail: "Offline tier. Lowest cost; must be rehydrated before reading." },
+];
+
 // Azure container naming rules, surfaced inline so the user sees the problem
 // before the round-trip rather than as a raw 400 from the service.
 function validateContainerName(value: string): string | null {
@@ -1923,12 +1930,7 @@ function App() {
       title: "Set access tier",
       subtitle: `Blob · ${row.path}`,
       current,
-      options: [
-        { value: "hot", label: "Hot", detail: "Frequent access. Highest storage cost, lowest access cost." },
-        { value: "cool", label: "Cool", detail: "Infrequent access, stored at least 30 days." },
-        { value: "cold", label: "Cold", detail: "Rarely accessed, stored at least 90 days." },
-        { value: "archive", label: "Archive", detail: "Offline tier. Lowest cost; must be rehydrated before reading." },
-      ],
+      options: TIER_OPTIONS,
     });
     if (!choice) {
       return;
@@ -1940,6 +1942,49 @@ function App() {
       await refreshActivities();
     } catch (error) {
       setShellError(getErrorMessage(error));
+    }
+  }
+
+  async function handleSetTierSelection(rows: BlobRow[]) {
+    if (!activeConnection || !activeContainer || !activeTab) {
+      return;
+    }
+    const blobs = rows.filter((item) => item.kind !== "dir" && item.path);
+    if (blobs.length === 0) {
+      return;
+    }
+    const choice = await dialogs.choose({
+      title: "Set access tier",
+      subtitle: `${blobs.length} blobs`,
+      confirmLabel: "Apply",
+      options: TIER_OPTIONS,
+    });
+    if (!choice) {
+      return;
+    }
+    setShellError(null);
+    let ok = 0;
+    let failed = 0;
+    let firstError: string | null = null;
+    for (const blob of blobs) {
+      try {
+        await setBlobTier(activeConnection.id, activeContainer, blob.path as string, choice.value);
+        ok += 1;
+      } catch (error) {
+        failed += 1;
+        if (!firstError) {
+          firstError = getErrorMessage(error);
+        }
+      }
+    }
+    updateTab(activeTab.id, (tab) => ({ ...tab, loaded: false, selectedIndices: [] }));
+    await refreshActivities();
+    if (failed === 0) {
+      setShellError(`Set tier to ${choice.value} on ${ok} blob${ok === 1 ? "" : "s"}.`);
+    } else {
+      setShellError(
+        `Set tier on ${ok}/${blobs.length} blobs; ${failed} failed${firstError ? `: ${firstError}` : ""}.`,
+      );
     }
   }
 
@@ -4168,10 +4213,17 @@ function App() {
                               },
                             },
                             {
-                              label: "Set access tier…",
-                              disabled: contextRows.length !== 1 || row.kind === "dir",
+                              label:
+                                contextBlobRows.length > 1
+                                  ? `Set access tier (${contextBlobRows.length})…`
+                                  : "Set access tier…",
+                              disabled: contextBlobRows.length === 0,
                               action: () => {
-                                void handleSetTier(row);
+                                if (contextBlobRows.length > 1) {
+                                  void handleSetTierSelection(contextBlobRows);
+                                } else {
+                                  void handleSetTier(contextBlobRows[0] ?? row);
+                                }
                               },
                             },
                             menuSeparator(),
