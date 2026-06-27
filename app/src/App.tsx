@@ -28,6 +28,7 @@ import {
   IconSettings,
   IconSparkle,
   IconTerminal,
+  IconUpload,
   IconUser,
   IconX,
 } from "./icons";
@@ -56,6 +57,7 @@ import {
   connectWithAccountKey,
   connectWithConnectionString,
   connectWithSas,
+  classifyPaths,
   copyBlobItem,
   createBlobFolder,
   createContainer,
@@ -183,6 +185,13 @@ interface InfoModalState {
   title: string;
   subtitle?: string;
   rows: { label: string; value: string }[];
+}
+
+interface DropTarget {
+  connectionId: string;
+  container: string;
+  prefix: string;
+  label: string;
 }
 
 type PublicAccessLevel = "private" | "blob" | "container";
@@ -421,6 +430,10 @@ function App() {
   const [showDetails, setShowDetails] = useState(true);
   const [showActivities, setShowActivities] = useState(true);
   const [infoModal, setInfoModal] = useState<InfoModalState | null>(null);
+  const [dropTarget, setDropTarget] = useState<DropTarget | null>(null);
+  const [dropActive, setDropActive] = useState(false);
+  const dropResolveRef = useRef<(x: number, y: number) => DropTarget | null>(() => null);
+  const dropUploadRef = useRef<(target: DropTarget, paths: string[]) => void>(() => undefined);
   const dialogs = useDialogs();
 
   const containerRequestIds = useRef<Record<string, number>>({});
@@ -2392,6 +2405,86 @@ function App() {
     }
   }
 
+  // Resolve where a drag-drop should land. Container cards/listings are tagged
+  // with data-drop-* attributes; we hit-test the drop position against them and
+  // fall back to the active container tab.
+  function resolveDropTarget(physicalX: number, physicalY: number): DropTarget | null {
+    const dpr = window.devicePixelRatio || 1;
+    const element = document.elementFromPoint(physicalX / dpr, physicalY / dpr) as HTMLElement | null;
+    const zone = element?.closest("[data-drop-container]") as HTMLElement | null;
+    if (zone) {
+      const connectionId = zone.getAttribute("data-drop-connection") ?? "";
+      const container = zone.getAttribute("data-drop-container") ?? "";
+      const dropPrefix = zone.getAttribute("data-drop-prefix") ?? "";
+      if (connectionId && container) {
+        return {
+          connectionId,
+          container,
+          prefix: dropPrefix,
+          label: `${container}${dropPrefix ? `/${dropPrefix}` : ""}`,
+        };
+      }
+    }
+    if (activeConnection && activeContainer && activeTab) {
+      return {
+        connectionId: activeConnection.id,
+        container: activeContainer,
+        prefix,
+        label: `${activeContainer}${prefix ? `/${prefix}` : ""}`,
+      };
+    }
+    return null;
+  }
+
+  async function handleDropUpload(target: DropTarget, paths: string[]) {
+    setShellError(null);
+    try {
+      const items = await classifyPaths(paths);
+      if (items.length === 0) {
+        setShellError("Nothing to upload — the dropped paths could not be read.");
+        return;
+      }
+      let files = 0;
+      let folders = 0;
+      let folderFiles = 0;
+      for (const item of items) {
+        if (item.is_dir) {
+          const result = await uploadFolder(
+            target.connectionId,
+            target.container,
+            item.path,
+            target.prefix || null,
+            false,
+          );
+          folders += 1;
+          folderFiles += result.item_count;
+        } else {
+          await uploadBlob(target.connectionId, target.container, item.path, target.prefix || null, false);
+          files += 1;
+        }
+      }
+      // Reload the affected container tab if it is open.
+      setBrowserTabs((current) =>
+        current.map((tab) =>
+          tab.connectionId === target.connectionId && tab.containerName === target.container
+            ? { ...tab, loaded: false, selectedIndices: [] }
+            : tab,
+        ),
+      );
+      const parts: string[] = [];
+      if (files) parts.push(`${files} file${files === 1 ? "" : "s"}`);
+      if (folders) {
+        parts.push(
+          `${folders} folder${folders === 1 ? "" : "s"} (${folderFiles} file${folderFiles === 1 ? "" : "s"})`,
+        );
+      }
+      setShellError(`Uploaded ${parts.join(" + ")} to ${target.label}.`);
+      await refreshActivities();
+    } catch (error) {
+      setShellError(getErrorMessage(error));
+    }
+  }
+
   async function handleCreateFolder(
     connectionId = activeConnection?.id,
     containerName = activeContainer,
@@ -2770,6 +2863,55 @@ function App() {
       setActiveTabId(browserTabs[0].id);
     }
   }, [activeTabId, activeConnectionId, browserTabs]);
+
+  // Keep the drag-drop resolver/uploader pointing at the latest render's state,
+  // so the once-registered Tauri listener never sees stale closures.
+  dropResolveRef.current = resolveDropTarget;
+  dropUploadRef.current = (target, paths) => void handleDropUpload(target, paths);
+
+  // Native OS drag-and-drop upload. Tauri intercepts file drops and delivers
+  // absolute paths via tauri://drag-drop, so we use the webview event (HTML5
+  // drop events never see the paths).
+  useEffect(() => {
+    if (!tauriAvailable.current) {
+      return;
+    }
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { getCurrentWebview } = await import("@tauri-apps/api/webview");
+        const fn = await getCurrentWebview().onDragDropEvent((event) => {
+          const payload = event.payload;
+          if (payload.type === "enter" || payload.type === "over") {
+            setDropActive(true);
+            setDropTarget(dropResolveRef.current(payload.position.x, payload.position.y));
+          } else if (payload.type === "drop") {
+            const target = dropResolveRef.current(payload.position.x, payload.position.y);
+            setDropActive(false);
+            setDropTarget(null);
+            if (target) {
+              dropUploadRef.current(target, payload.paths);
+            }
+          } else {
+            setDropActive(false);
+            setDropTarget(null);
+          }
+        });
+        if (cancelled) {
+          fn();
+        } else {
+          unlisten = fn;
+        }
+      } catch {
+        // Drag-drop unavailable (e.g. running outside Tauri) — ignore.
+      }
+    })();
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
 
   useEffect(() => {
     if (!activeTabId) {
@@ -4451,6 +4593,17 @@ function App() {
         </div>
       )}
 
+      {dropActive && dropTarget && (
+        <div style={styles.dropOverlay}>
+          <div style={styles.dropBanner}>
+            <IconUpload size={14} />
+            <span>
+              Drop to upload to <strong style={{ color: "var(--fg-0)" }}>{dropTarget.label}</strong>
+            </span>
+          </div>
+        </div>
+      )}
+
       {dialogs.element}
     </div>
   );
@@ -4809,20 +4962,35 @@ function App() {
           </div>
         ) : (
           <div style={styles.overviewGrid}>
-            {containers.map((container) => (
+            {containers.map((container) => {
+              const isDropTarget =
+                dropActive &&
+                dropTarget?.connectionId === connectionId &&
+                dropTarget?.container === container.name;
+              return (
               <button
                 key={container.id}
                 type="button"
-                style={styles.containerCard}
+                data-drop-container={container.name}
+                data-drop-connection={connectionId}
+                data-drop-prefix=""
+                style={{
+                  ...styles.containerCard,
+                  ...(isDropTarget
+                    ? { borderColor: "var(--accent)", background: "var(--accent-ghost)" }
+                    : {}),
+                }}
                 onClick={() => handleSelectContainer(connectionId, container.name)}
                 onContextMenu={(event) =>
                   openContextMenu(event, containerMenuItems(connectionId, container))
                 }
                 onMouseEnter={(event) => {
+                  if (isDropTarget) return;
                   event.currentTarget.style.borderColor = "var(--accent-dim)";
                   event.currentTarget.style.background = "var(--bg-2)";
                 }}
                 onMouseLeave={(event) => {
+                  if (isDropTarget) return;
                   event.currentTarget.style.borderColor = "var(--border-1)";
                   event.currentTarget.style.background = "var(--bg-1)";
                 }}
@@ -4847,7 +5015,8 @@ function App() {
                   )}
                 </div>
               </button>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
@@ -7577,6 +7746,30 @@ const styles: Record<string, CSSProperties> = {
     display: "flex",
     flexDirection: "column",
     gap: 18,
+  },
+  dropOverlay: {
+    position: "fixed",
+    inset: 0,
+    zIndex: 30,
+    pointerEvents: "none",
+    display: "flex",
+    alignItems: "flex-start",
+    justifyContent: "center",
+    paddingTop: 80,
+    border: "2px dashed var(--accent-dim)",
+    background: "var(--accent-ghost)",
+  },
+  dropBanner: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 8,
+    padding: "10px 16px",
+    borderRadius: 6,
+    border: "1px solid var(--accent-dim)",
+    background: "var(--bg-1)",
+    color: "var(--fg-2)",
+    fontSize: 13,
+    boxShadow: "0 12px 36px rgba(0,0,0,0.4)",
   },
   overviewHeader: {
     display: "flex",

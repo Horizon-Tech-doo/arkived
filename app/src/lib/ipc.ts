@@ -341,6 +341,16 @@ export async function fetchBlobs(
   });
 }
 
+export interface ClassifiedPath {
+  path: string;
+  name: string;
+  is_dir: boolean;
+}
+
+export async function classifyPaths(paths: string[]): Promise<ClassifiedPath[]> {
+  return callTauri<ClassifiedPath[]>("classify_paths", { paths });
+}
+
 export async function uploadBlob(
   connectionId: string,
   container: string,

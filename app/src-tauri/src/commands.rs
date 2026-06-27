@@ -1756,6 +1756,38 @@ pub async fn list_blobs(
     })
 }
 
+/// A dropped OS path, classified as file or directory so the UI can route it
+/// to the right uploader. Non-existent paths are dropped from the result.
+#[derive(Debug, Clone, Serialize)]
+pub struct ClassifiedPath {
+    pub path: String,
+    pub name: String,
+    pub is_dir: bool,
+}
+
+/// Classify a set of absolute filesystem paths (e.g. from a drag-and-drop drop)
+/// into files vs directories. Paths that do not exist are omitted.
+#[tauri::command]
+pub fn classify_paths(paths: Vec<String>) -> Vec<ClassifiedPath> {
+    paths
+        .into_iter()
+        .filter_map(|path| {
+            let buf = PathBuf::from(&path);
+            let metadata = std::fs::metadata(&buf).ok()?;
+            let name = buf
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or_default()
+                .to_string();
+            Some(ClassifiedPath {
+                path,
+                name,
+                is_dir: metadata.is_dir(),
+            })
+        })
+        .collect()
+}
+
 #[tauri::command]
 pub async fn upload_blob(
     state: State<'_, AppState>,

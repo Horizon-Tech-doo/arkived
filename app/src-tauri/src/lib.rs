@@ -129,6 +129,7 @@ pub fn run() {
             commands::connect_discovered_storage_account,
             commands::list_containers,
             commands::list_blobs,
+            commands::classify_paths,
             commands::upload_blob,
             commands::upload_folder,
             commands::download_blob,
