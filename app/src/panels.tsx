@@ -1,476 +1,81 @@
-// Arkived — Agent panel, Command palette, Activity bar, Confirmation modal, Status bar
+// Arkived — Command palette, Activity bar, Confirmation modal, Status bar
 import React, { CSSProperties, useEffect, useRef, useState } from "react";
 import {
   IconZap, IconCircleFilled, IconArrowRight, IconShield, IconCheck, IconCopy,
-  IconSparkle, IconPlus, IconTerminal, IconX, IconShieldCheck,
+  IconPlus, IconTerminal, IconX, IconShieldCheck,
   IconSearch, IconUpload, IconDownload, IconContainer, IconQueue, IconTable,
   IconKey, IconLock, IconRefresh, IconLoader, IconTrash, IconChevronDown, IconChevronUp,
   IconAlert,
 } from "./icons";
-import { AGENT_TRANSCRIPT, ImpactRow, TranscriptMessage, AssistantMessage, ToolPart, ConfirmPart } from "./data";
 import type { Activity } from "./data";
 import { Checkbox } from "./content";
 
-// ─────────────────────────────────────────────────────────────
-// AGENT PANEL
-// ─────────────────────────────────────────────────────────────
-interface ToolCardProps {
-  name: string;
-  status: "ok" | "run" | "err";
-  args: Record<string, unknown>;
-  result?: string;
-  duration: string;
+export interface CommandItem {
+  id: string;
+  label: string;
+  section?: string;
+  hint?: string;
+  keywords?: string;
+  icon?: React.ReactNode;
+  run: () => void;
 }
-export function ToolCard({ name, status, args, result, duration }: ToolCardProps) {
-  const statusColor = status === "ok" ? "var(--green)" : status === "run" ? "var(--yellow)" : "var(--red)";
-  return (
-    <div style={{
-      border: "1px solid var(--border-1)",
-      borderRadius: 4,
-      background: "var(--bg-2)",
-      fontFamily: "var(--mono)", fontSize: 10,
-      overflow: "hidden",
-      margin: "6px 0",
-    }}>
-      <div style={{
-        display: "flex", alignItems: "center", gap: 6,
-        padding: "5px 8px",
-        background: "var(--bg-3)",
-        borderBottom: "1px solid var(--border-1)",
-      }}>
-        <IconZap size={10} style={{ color: "var(--accent)" }} />
-        <span style={{ color: "var(--fg-0)", fontWeight: 600 }}>{name}</span>
-        <span style={{ flex: 1 }} />
-        <span style={{ color: statusColor, display: "inline-flex", alignItems: "center", gap: 3 }}>
-          <IconCircleFilled size={6} color={statusColor} />
-          {status === "ok" ? "completed" : status}
-        </span>
-        <span style={{ color: "var(--fg-3)" }}>· {duration}</span>
-      </div>
-      <div style={{ padding: "6px 8px", color: "var(--fg-2)" }}>
-        {Object.entries(args).map(([k, v]) => (
-          <div key={k} style={{ display: "flex", gap: 6, lineHeight: "16px" }}>
-            <span style={{ color: "var(--purple)" }}>{k}:</span>
-            <span style={{ color: "var(--fg-1)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              {typeof v === "string" ? `"${v}"` : String(v)}
-            </span>
-          </div>
-        ))}
-      </div>
-      {result && (
-        <div style={{
-          padding: "6px 8px",
-          background: "var(--bg-1)",
-          borderTop: "1px solid var(--border-1)",
-          color: "var(--green)",
-          display: "flex", gap: 6, alignItems: "flex-start",
-        }}>
-          <IconArrowRight size={10} style={{ color: "var(--fg-3)", marginTop: 2 }} />
-          <span style={{ color: "var(--fg-0)" }}>{result}</span>
-        </div>
-      )}
-    </div>
-  );
-}
-
-interface ConfirmCardProps {
-  confirm: ConfirmPart;
-  onApprove: () => void;
-  onReject: () => void;
-}
-export function ConfirmCard({ confirm, onApprove, onReject }: ConfirmCardProps) {
-  const impactColor: Record<ImpactRow["kind"], string> = {
-    info: "var(--fg-2)", neutral: "var(--fg-2)", warn: "var(--yellow)", danger: "var(--red)",
-  };
-  return (
-    <div style={{
-      border: "1px solid var(--accent-dim)",
-      borderRadius: 4,
-      background: "var(--bg-2)",
-      fontFamily: "var(--mono)", fontSize: 10,
-      margin: "6px 0",
-      overflow: "hidden",
-    }}>
-      <div style={{
-        display: "flex", alignItems: "center", gap: 6,
-        padding: "6px 10px",
-        background: "var(--accent-ghost)",
-        borderBottom: "1px solid var(--accent-dim)",
-        color: "var(--accent)",
-        fontWeight: 600, fontSize: 10,
-        textTransform: "uppercase", letterSpacing: "0.06em",
-      }}>
-        <IconShield size={11} />
-        <span>Confirmation required</span>
-        <span style={{ flex: 1 }} />
-        <span style={{ color: "var(--fg-3)", fontWeight: 400, textTransform: "none", letterSpacing: 0 }}>policy: scoped-rw</span>
-      </div>
-
-      <div style={{ padding: "10px" }}>
-        <div style={{ fontFamily: "var(--sans)", fontSize: 13, fontWeight: 600, color: "var(--fg-0)", marginBottom: 2 }}>
-          {confirm.title}
-        </div>
-        <div style={{ fontFamily: "var(--sans)", fontSize: 12, color: "var(--fg-2)", marginBottom: 10 }}>
-          {confirm.summary}
-        </div>
-
-        <div style={{
-          background: "var(--bg-0)",
-          border: "1px solid var(--border-1)",
-          borderRadius: 3,
-          padding: "8px 10px",
-          fontFamily: "var(--mono)", fontSize: 10,
-          color: "var(--fg-1)",
-          marginBottom: 10,
-          whiteSpace: "pre-wrap",
-          wordBreak: "break-all",
-          position: "relative",
-        }}>
-          <div style={{
-            position: "absolute", top: 6, right: 6,
-            display: "flex", gap: 4,
-          }}>
-            <button style={{
-              padding: "2px 5px", fontSize: 9, color: "var(--fg-3)",
-              border: "1px solid var(--border-1)", borderRadius: 2,
-              background: "var(--bg-2)", display: "flex", alignItems: "center", gap: 3,
-            }}>
-              <IconCopy size={9} /> copy
-            </button>
-          </div>
-          <span style={{ color: "var(--accent)" }}>$ </span>
-          {confirm.cmd.split("\n").map((line, i) => (
-            <div key={i} style={{ paddingLeft: i > 0 ? 12 : 0 }}>
-              {line.split(/(--[a-z-]+)/).map((tok, j) =>
-                tok.startsWith("--")
-                  ? <span key={j} style={{ color: "var(--blue)" }}>{tok}</span>
-                  : <span key={j}>{tok}</span>
-              )}
-            </div>
-          ))}
-        </div>
-
-        <div style={{
-          border: "1px solid var(--border-1)", borderRadius: 3,
-          overflow: "hidden",
-          marginBottom: 10,
-        }}>
-          {confirm.impact.map((row, i) => (
-            <div key={i} style={{
-              display: "flex", fontSize: 10,
-              borderTop: i === 0 ? 0 : "1px solid var(--border-0)",
-            }}>
-              <div style={{
-                width: 120, padding: "4px 8px",
-                color: "var(--fg-3)",
-                background: "var(--bg-1)",
-                textTransform: "uppercase", letterSpacing: "0.04em", fontWeight: 600, fontSize: 9,
-                borderRight: "1px solid var(--border-0)",
-              }}>
-                {row.label}
-              </div>
-              <div style={{
-                padding: "4px 8px",
-                color: impactColor[row.kind] || "var(--fg-1)",
-                flex: 1,
-              }}>
-                {row.value}
-              </div>
-            </div>
-          ))}
-        </div>
-
-        <div style={{ display: "flex", gap: 6 }}>
-          <button onClick={onApprove} style={{
-            flex: 1, height: 28, borderRadius: 3,
-            background: "var(--accent)",
-            color: "#0a0a0c", fontWeight: 600, fontFamily: "var(--mono)", fontSize: 11,
-            display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
-          }}>
-            <IconCheck size={12} style={{ strokeWidth: 2.5 }} /> Approve & run
-            <span className="kbd" style={{ marginLeft: 6, background: "rgba(0,0,0,0.15)", color: "#0a0a0c", borderColor: "rgba(0,0,0,0.2)" }}>⏎</span>
-          </button>
-          <button onClick={onReject} style={{
-            height: 28, padding: "0 14px", borderRadius: 3,
-            background: "var(--bg-3)", border: "1px solid var(--border-2)",
-            color: "var(--fg-1)", fontFamily: "var(--mono)", fontSize: 11,
-          }}>Cancel</button>
-          <button style={{
-            height: 28, padding: "0 10px", borderRadius: 3,
-            background: "transparent", border: "1px solid var(--border-1)",
-            color: "var(--fg-2)", fontFamily: "var(--mono)", fontSize: 10,
-          }}>Edit plan</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-interface AgentMessageProps {
-  msg: TranscriptMessage;
-}
-function AgentMessage({ msg }: AgentMessageProps) {
-  if (msg.role === "user") {
-    return (
-      <div style={{ display: "flex", gap: 8, padding: "10px 12px", borderBottom: "1px solid var(--border-0)" }}>
-        <div style={{
-          width: 20, height: 20, borderRadius: 3,
-          background: "var(--bg-3)",
-          display: "flex", alignItems: "center", justifyContent: "center",
-          color: "var(--fg-1)", fontSize: 10, fontWeight: 600, fontFamily: "var(--mono)",
-          flexShrink: 0,
-        }}>H</div>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
-            <span style={{ fontSize: 11, fontWeight: 600, color: "var(--fg-0)" }}>hamza</span>
-            <span style={{ fontSize: 10, color: "var(--fg-3)", fontFamily: "var(--mono)" }}>{msg.at}</span>
-          </div>
-          <div style={{ fontSize: 12, color: "var(--fg-1)", lineHeight: 1.5 }}>{msg.text}</div>
-        </div>
-      </div>
-    );
-  }
-
-  const a = msg as AssistantMessage;
-  return (
-    <div style={{ display: "flex", gap: 8, padding: "10px 12px", borderBottom: "1px solid var(--border-0)" }}>
-      <div style={{
-        width: 20, height: 20, borderRadius: 3,
-        background: "var(--accent-ghost)",
-        border: "1px solid var(--accent-dim)",
-        display: "flex", alignItems: "center", justifyContent: "center",
-        color: "var(--accent)",
-        flexShrink: 0,
-      }}>
-        <IconSparkle size={11} />
-      </div>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
-          <span style={{ fontSize: 11, fontWeight: 600, color: "var(--fg-0)" }}>arkived</span>
-          <span style={{
-            fontSize: 9, fontFamily: "var(--mono)",
-            padding: "1px 5px", borderRadius: 2,
-            background: "var(--bg-3)", color: "var(--fg-2)",
-            border: "1px solid var(--border-1)",
-          }}>mcp · claude-sonnet</span>
-          <span style={{ fontSize: 10, color: "var(--fg-3)", fontFamily: "var(--mono)" }}>{a.at}</span>
-        </div>
-        {a.parts.map((part, i) => {
-          if (part.kind === "text") {
-            return (
-              <div
-                key={i}
-                style={{ fontSize: 12, color: "var(--fg-1)", lineHeight: 1.5, marginBottom: 6 }}
-                dangerouslySetInnerHTML={{
-                  __html: part.text
-                    .replace(/\*\*(.*?)\*\*/g, '<strong style="color:var(--fg-0);font-weight:600">$1</strong>')
-                    .replace(/`(.*?)`/g, '<code style="font-family:var(--mono);font-size:11px;background:var(--bg-3);padding:1px 4px;border-radius:2px;color:var(--fg-0)">$1</code>'),
-                }}
-              />
-            );
-          }
-          if (part.kind === "tool") {
-            const t = part as ToolPart;
-            return <ToolCard key={i} name={t.name} status={t.status} args={t.args} result={t.result} duration={t.duration} />;
-          }
-          if (part.kind === "confirm") {
-            return <ConfirmCard key={i} confirm={part as ConfirmPart} onApprove={() => {}} onReject={() => {}} />;
-          }
-          return null;
-        })}
-      </div>
-    </div>
-  );
-}
-
-interface AgentPanelProps {
-  width?: number;
-  onClose: () => void;
-}
-export function AgentPanel({ width = 420, onClose }: AgentPanelProps) {
-  const [input, setInput] = useState("");
-
-  return (
-    <div style={{
-      width,
-      flexShrink: 0,
-      background: "var(--bg-1)",
-      borderLeft: "1px solid var(--border-0)",
-      display: "flex", flexDirection: "column",
-      overflow: "hidden",
-      animation: "arkived-slide-in-right 180ms ease-out",
-    }}>
-      <div style={{
-        display: "flex", alignItems: "center", gap: 8,
-        height: 32, padding: "0 10px",
-        borderBottom: "1px solid var(--border-0)",
-        background: "var(--bg-0)",
-      }}>
-        <IconSparkle size={12} style={{ color: "var(--accent)" }} />
-        <span style={{ fontFamily: "var(--mono)", fontSize: 11, fontWeight: 600, color: "var(--fg-0)", letterSpacing: "0.02em" }}>AGENT</span>
-        <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--fg-3)" }}>· session mc4f2b</span>
-        <span style={{ flex: 1 }} />
-        <button style={{ color: "var(--fg-2)", width: 22, height: 22, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 3 }} title="New session">
-          <IconPlus size={12} />
-        </button>
-        <button style={{ color: "var(--fg-2)", width: 22, height: 22, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 3 }} title="History">
-          <IconTerminal size={12} />
-        </button>
-        <button onClick={onClose} style={{ color: "var(--fg-2)", width: 22, height: 22, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 3 }} title="Close">
-          <IconX size={12} />
-        </button>
-      </div>
-
-      <div style={{
-        display: "flex", alignItems: "center", gap: 8,
-        padding: "6px 10px",
-        background: "var(--bg-2)",
-        borderBottom: "1px solid var(--border-0)",
-        fontSize: 10, fontFamily: "var(--mono)",
-      }}>
-        <IconShieldCheck size={11} style={{ color: "var(--green)" }} />
-        <span style={{ color: "var(--fg-2)" }}>scope:</span>
-        <span style={{ color: "var(--fg-1)" }}>stdlnphoenixproddlp</span>
-        <span style={{ color: "var(--fg-4)" }}>·</span>
-        <span style={{ color: "var(--fg-2)" }}>writes require confirm</span>
-        <span style={{ flex: 1 }} />
-        <button style={{ color: "var(--accent)", fontWeight: 500 }}>edit</button>
-      </div>
-
-      <div style={{ flex: 1, overflow: "auto" }}>
-        {AGENT_TRANSCRIPT.map((msg, i) => <AgentMessage key={i} msg={msg} />)}
-
-        <div style={{ display: "flex", gap: 8, padding: "10px 12px", opacity: 0.7 }}>
-          <div style={{
-            width: 20, height: 20, borderRadius: 3,
-            background: "var(--accent-ghost)",
-            border: "1px solid var(--accent-dim)",
-            display: "flex", alignItems: "center", justifyContent: "center",
-            color: "var(--accent)",
-          }}>
-            <IconSparkle size={11} style={{ animation: "arkived-pulse 1.4s ease-in-out infinite" }} />
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 6, color: "var(--fg-3)", fontSize: 11, fontFamily: "var(--mono)" }}>
-            <span>waiting for approval</span>
-            <span style={{ display: "inline-flex", gap: 2 }}>
-              <span style={{ animation: "arkived-pulse 1.4s infinite", animationDelay: "0s" }}>·</span>
-              <span style={{ animation: "arkived-pulse 1.4s infinite", animationDelay: "0.2s" }}>·</span>
-              <span style={{ animation: "arkived-pulse 1.4s infinite", animationDelay: "0.4s" }}>·</span>
-            </span>
-          </div>
-        </div>
-      </div>
-
-      <div style={{
-        borderTop: "1px solid var(--border-0)",
-        background: "var(--bg-0)",
-        padding: 8,
-      }}>
-        <div style={{
-          background: "var(--bg-2)",
-          border: "1px solid var(--border-1)",
-          borderRadius: 4,
-          padding: 8,
-        }}>
-          <textarea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder="Ask the agent to explore, move, or audit storage…"
-            rows={2}
-            style={{
-              width: "100%", resize: "none",
-              fontSize: 12, color: "var(--fg-0)",
-              fontFamily: "var(--sans)",
-              lineHeight: 1.4,
-            }}
-          />
-          <div style={{
-            display: "flex", alignItems: "center", gap: 4,
-            marginTop: 6, paddingTop: 6,
-            borderTop: "1px solid var(--border-0)",
-          }}>
-            <button title="Attach selection" style={pillBtn()}>
-              <IconPlus size={11} /> selection
-            </button>
-            <button title="Tool scope" style={pillBtn()}>
-              <IconZap size={11} /> 18 tools
-            </button>
-            <span style={{ flex: 1 }} />
-            <span style={{ fontSize: 10, color: "var(--fg-3)", fontFamily: "var(--mono)" }}>Ctrl Enter to send</span>
-            <button style={{
-              padding: "3px 10px", borderRadius: 3,
-              background: input ? "var(--accent)" : "var(--bg-3)",
-              color: input ? "#0a0a0c" : "var(--fg-3)",
-              fontFamily: "var(--mono)", fontSize: 11, fontWeight: 600,
-              border: "1px solid " + (input ? "var(--accent)" : "var(--border-1)"),
-            }}>send</button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function pillBtn(): CSSProperties {
-  return {
-    display: "flex", alignItems: "center", gap: 4,
-    padding: "2px 6px", borderRadius: 3,
-    background: "var(--bg-3)", color: "var(--fg-2)",
-    border: "1px solid var(--border-1)",
-    fontSize: 10, fontFamily: "var(--mono)",
-  };
-}
-
-// ─────────────────────────────────────────────────────────────
-// COMMAND PALETTE
-// ─────────────────────────────────────────────────────────────
 interface CommandPaletteProps {
   open: boolean;
   onClose: () => void;
+  commands: CommandItem[];
 }
-export function CommandPalette({ open, onClose }: CommandPaletteProps) {
+export function CommandPalette({ open, onClose, commands }: CommandPaletteProps) {
   const [query, setQuery] = useState("");
+  const [selected, setSelected] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (open && inputRef.current) {
-      setTimeout(() => inputRef.current?.focus(), 10);
+    if (open) {
       setQuery("");
+      setSelected(0);
+      const handle = setTimeout(() => inputRef.current?.focus(), 10);
+      return () => clearTimeout(handle);
     }
   }, [open]);
 
-  interface PItem { icon: React.ReactNode; label: string; kbd?: string; }
-  interface PSection { section: string; items: PItem[]; }
+  const needle = query.trim().toLowerCase();
+  const filtered = needle
+    ? commands.filter((c) => `${c.label} ${c.section ?? ""} ${c.keywords ?? ""}`.toLowerCase().includes(needle))
+    : commands;
 
-  const all: PSection[] = [
-    { section: "Suggested", items: [
-      { icon: <IconSparkle size={12} style={{ color: "var(--accent)" }} />, label: 'Ask agent: "summarize activity in the last hour"', kbd: "agent" },
-      { icon: <IconUpload size={12} />, label: "Upload files to device-twins-sync/…", kbd: "Ctrl U" },
-      { icon: <IconDownload size={12} />, label: "Download selection", kbd: "Ctrl Shift D" },
-    ]},
-    { section: "Navigate", items: [
-      { icon: <IconContainer size={12} />, label: "Go to container › raw-device-telemetry" },
-      { icon: <IconContainer size={12} />, label: "Go to container › pipeline-output" },
-      { icon: <IconQueue size={12} />, label: "Go to queue › ingress-q" },
-      { icon: <IconTable size={12} />, label: "Go to table › DeviceRegistry" },
-    ]},
-    { section: "Storage Actions", items: [
-      { icon: <IconKey size={12} />, label: "Generate SAS token…", kbd: "sas" },
-      { icon: <IconShield size={12} />, label: "Manage ACLs (ADLS Gen2)…", kbd: "acl" },
-      { icon: <IconTerminal size={12} />, label: "Copy AzCopy command for selection" },
-      { icon: <IconRefresh size={12} />, label: "Sync metadata cache" },
-    ]},
-    { section: "Sessions", items: [
-      { icon: <IconKey size={12} />, label: "Switch subscription › Horizon Tech — Prod" },
-      { icon: <IconLock size={12} />, label: "Re-authenticate with Azure AD" },
-    ]},
-  ];
-
-  const filtered = query
-    ? all.map((s) => ({ ...s, items: s.items.filter((i) => i.label.toLowerCase().includes(query.toLowerCase())) })).filter((s) => s.items.length)
-    : all;
+  // Keep the selection in range as the filtered list changes.
+  useEffect(() => {
+    setSelected((current) => (current >= filtered.length ? 0 : current));
+  }, [filtered.length]);
 
   if (!open) return null;
+
+  const runAt = (index: number) => {
+    const item = filtered[index];
+    if (item) {
+      onClose();
+      item.run();
+    }
+  };
+
+  const onKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setSelected((current) => (filtered.length ? (current + 1) % filtered.length : 0));
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setSelected((current) => (filtered.length ? (current - 1 + filtered.length) % filtered.length : 0));
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      runAt(selected);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      onClose();
+    }
+  };
+
+  // Render flat, inserting a section header whenever the section changes.
+  let lastSection: string | undefined;
 
   return (
     <div
@@ -478,10 +83,9 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
       style={{
         position: "fixed", inset: 0, zIndex: 100,
         background: "rgba(0,0,0,0.5)",
-        backdropFilter: "blur(3px)",
+        backdropFilter: "none",
         display: "flex", alignItems: "flex-start", justifyContent: "center",
         paddingTop: 120,
-        animation: "arkived-fade-in 120ms ease-out",
       }}
     >
       <div
@@ -491,9 +95,8 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
           background: "var(--bg-1)",
           border: "1px solid var(--border-2)",
           borderRadius: 6,
-          boxShadow: "0 24px 60px rgba(0,0,0,0.6), 0 0 0 1px var(--border-2)",
+          boxShadow: "0 12px 36px rgba(0,0,0,0.45)",
           overflow: "hidden",
-          animation: "arkived-scale-in 140ms ease-out",
         }}
       >
         <div style={{
@@ -506,7 +109,8 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
             ref={inputRef}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search commands, resources, or ask the agent…"
+            onKeyDown={onKeyDown}
+            placeholder="Search commands or resources"
             style={{
               flex: 1,
               fontSize: 14,
@@ -518,41 +122,42 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
         </div>
 
         <div style={{ maxHeight: 420, overflow: "auto", padding: "4px 0" }}>
-          {filtered.map((s, si) => (
-            <div key={si}>
-              <div style={{
-                padding: "8px 14px 4px",
-                fontSize: 9, fontWeight: 700, color: "var(--fg-3)",
-                fontFamily: "var(--mono)", textTransform: "uppercase", letterSpacing: "0.08em",
-              }}>{s.section}</div>
-              {s.items.map((it, ii) => {
-                const isFirst = si === 0 && ii === 0;
-                return (
-                  <div
-                    key={ii}
-                    style={{
-                      display: "flex", alignItems: "center", gap: 10,
-                      padding: "6px 14px",
-                      cursor: "pointer",
-                      background: isFirst ? "var(--accent-ghost)" : "transparent",
-                      borderLeft: isFirst ? "2px solid var(--accent)" : "2px solid transparent",
-                    }}
-                    onMouseEnter={(e) => { if (!isFirst) (e.currentTarget as HTMLDivElement).style.background = "var(--bg-2)"; }}
-                    onMouseLeave={(e) => { if (!isFirst) (e.currentTarget as HTMLDivElement).style.background = "transparent"; }}
-                  >
-                    <span style={{ color: isFirst ? "var(--accent)" : "var(--fg-2)", display: "flex" }}>
-                      {it.icon}
-                    </span>
-                    <span style={{ flex: 1, fontSize: 12, color: "var(--fg-0)" }}>{it.label}</span>
-                    {it.kbd && <span className="kbd">{it.kbd}</span>}
-                  </div>
-                );
-              })}
-            </div>
-          ))}
+          {filtered.map((item, index) => {
+            const header = item.section && item.section !== lastSection ? item.section : null;
+            lastSection = item.section;
+            const isActive = index === selected;
+            return (
+              <React.Fragment key={item.id}>
+                {header && (
+                  <div style={{
+                    padding: "8px 14px 4px",
+                    fontSize: 9, fontWeight: 700, color: "var(--fg-3)",
+                    fontFamily: "var(--mono)", textTransform: "uppercase", letterSpacing: "0.08em",
+                  }}>{header}</div>
+                )}
+                <div
+                  onClick={() => runAt(index)}
+                  onMouseMove={() => setSelected(index)}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 10,
+                    padding: "6px 14px",
+                    cursor: "pointer",
+                    background: isActive ? "var(--accent-ghost)" : "transparent",
+                    borderLeft: isActive ? "2px solid var(--accent)" : "2px solid transparent",
+                  }}
+                >
+                  <span style={{ color: isActive ? "var(--accent)" : "var(--fg-2)", display: "flex" }}>
+                    {item.icon ?? <IconTerminal size={12} />}
+                  </span>
+                  <span style={{ flex: 1, fontSize: 12, color: "var(--fg-0)" }}>{item.label}</span>
+                  {item.hint && <span className="kbd">{item.hint}</span>}
+                </div>
+              </React.Fragment>
+            );
+          })}
           {filtered.length === 0 && (
             <div style={{ padding: "30px 14px", textAlign: "center", color: "var(--fg-3)", fontSize: 12 }}>
-              No matches. Press <span className="kbd">⏎</span> to ask the agent.
+              No matches.
             </div>
           )}
         </div>
@@ -565,10 +170,10 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
           fontSize: 10, fontFamily: "var(--mono)", color: "var(--fg-3)",
         }}>
           <span><span className="kbd">↑↓</span> navigate</span>
-          <span><span className="kbd">⏎</span> open</span>
-          <span><span className="kbd">Ctrl Enter</span> ask agent</span>
+          <span><span className="kbd">⏎</span> run</span>
+          <span><span className="kbd">esc</span> close</span>
           <span style={{ flex: 1 }} />
-          <span>18 MCP tools loaded</span>
+          <span>{filtered.length} command{filtered.length === 1 ? "" : "s"}</span>
         </div>
       </div>
     </div>
@@ -650,7 +255,7 @@ export function ActivityBar({
             height: 6,
             flexShrink: 0,
             cursor: "row-resize",
-            background: "linear-gradient(180deg, transparent, rgba(63, 157, 246, 0.14), transparent)",
+            background: "var(--border-0)",
           }}
         />
       )}
@@ -866,7 +471,7 @@ export function ConfirmModal({ open, onClose, onConfirm }: ConfirmModalProps) {
       style={{
         position: "fixed", inset: 0, zIndex: 90,
         background: "rgba(0,0,0,0.55)",
-        backdropFilter: "blur(3px)",
+        backdropFilter: "none",
         display: "flex", alignItems: "center", justifyContent: "center",
         animation: "arkived-fade-in 120ms ease-out",
       }}
@@ -878,9 +483,8 @@ export function ConfirmModal({ open, onClose, onConfirm }: ConfirmModalProps) {
           background: "var(--bg-1)",
           border: "1px solid var(--red)",
           borderRadius: 6,
-          boxShadow: "0 24px 60px rgba(0,0,0,0.6)",
+          boxShadow: "0 12px 36px rgba(0,0,0,0.45)",
           overflow: "hidden",
-          animation: "arkived-scale-in 140ms ease-out",
           fontFamily: "var(--mono)",
         }}
       >

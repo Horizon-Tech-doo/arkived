@@ -4,10 +4,14 @@ import { GroupHeader, TitleBar, TreeRow } from "./chrome";
 import { ActionBar, BlobPropertiesPane, BlobTable, Inspector, TabsBar } from "./content";
 import type { BlobSortKey, IndexedBlobRow, SortDirection } from "./content";
 import type { BlobPropertiesPaneState } from "./content";
-import { ActivityBar } from "./panels";
+import { ActivityBar, CommandPalette } from "./panels";
+import type { CommandItem } from "./panels";
+import { useDialogs } from "./dialogs";
 import type { Activity, BlobRow } from "./data";
 import {
   IconAlert,
+  IconArrowLeft,
+  IconArrowRight,
   IconArrowUp,
   IconAzure,
   IconChevronDown,
@@ -17,7 +21,6 @@ import {
   IconDownload,
   IconEye,
   IconExternal,
-  IconFolderOpen,
   IconInfo,
   IconKey,
   IconLoader,
@@ -28,10 +31,19 @@ import {
   IconSettings,
   IconSparkle,
   IconTerminal,
+  IconUpload,
   IconUser,
   IconX,
 } from "./icons";
 import {
+  acquireBlobLease,
+  breakBlobLease,
+  createBlobSnapshot,
+  getBlobTags,
+  rehydrateBlob,
+  setBlobTags,
+  setContainerPublicAccess,
+  undeleteBlob,
   BrowserConnection,
   BrowserContainer,
   BrowserLoginPrompt,
@@ -48,10 +60,13 @@ import {
   connectWithAccountKey,
   connectWithConnectionString,
   connectWithSas,
+  classifyPaths,
   copyBlobItem,
   createBlobFolder,
+  createContainer,
   deleteBlob,
   deleteBlobPrefix,
+  deleteContainer,
   disconnectConnection,
   downloadBlob,
   downloadBlobPrefix,
@@ -134,6 +149,8 @@ interface BrowserTabState {
   connectionId: string;
   containerName: string;
   prefix: string;
+  history: string[];
+  historyIndex: number;
   filter: string;
   search: string;
   advancedFilters: BlobAdvancedFilters;
@@ -167,6 +184,77 @@ interface ContextMenuState {
   x: number;
   y: number;
   items: ContextMenuItem[];
+}
+
+interface InfoModalState {
+  title: string;
+  subtitle?: string;
+  rows: { label: string; value: string }[];
+}
+
+interface DropTarget {
+  connectionId: string;
+  container: string;
+  prefix: string;
+  label: string;
+}
+
+type PublicAccessLevel = "private" | "blob" | "container";
+
+const PUBLIC_ACCESS_OPTIONS: {
+  value: PublicAccessLevel;
+  label: string;
+  detail: string;
+}[] = [
+  {
+    value: "private",
+    label: "Private",
+    detail: "No anonymous access. Only requests with account credentials or a SAS token can read this container.",
+  },
+  {
+    value: "blob",
+    label: "Blob",
+    detail: "Anonymous clients can read blob data within this container, but cannot enumerate the container's contents.",
+  },
+  {
+    value: "container",
+    label: "Container",
+    detail: "Anonymous clients can read blob data and enumerate the list of blobs within this container.",
+  },
+];
+
+function normalizePublicAccess(value: string | null | undefined): PublicAccessLevel {
+  const normalized = (value ?? "private").toLowerCase();
+  return normalized === "blob" || normalized === "container" ? normalized : "private";
+}
+
+const TIER_OPTIONS = [
+  { value: "hot", label: "Hot", detail: "Frequent access. Highest storage cost, lowest access cost." },
+  { value: "cool", label: "Cool", detail: "Infrequent access, stored at least 30 days." },
+  { value: "cold", label: "Cold", detail: "Rarely accessed, stored at least 90 days." },
+  { value: "archive", label: "Archive", detail: "Offline tier. Lowest cost; must be rehydrated before reading." },
+];
+
+// Azure container naming rules, surfaced inline so the user sees the problem
+// before the round-trip rather than as a raw 400 from the service.
+function validateContainerName(value: string): string | null {
+  const name = value.trim();
+  if (!name) {
+    return null;
+  }
+  if (name.length < 3 || name.length > 63) {
+    return "Must be 3–63 characters.";
+  }
+  if (!/^[a-z0-9-]+$/.test(name)) {
+    return "Use lowercase letters, numbers, and hyphens only.";
+  }
+  if (!/^[a-z0-9]/.test(name) || !/[a-z0-9]$/.test(name)) {
+    return "Must start and end with a letter or number.";
+  }
+  if (name.includes("--")) {
+    return "No consecutive hyphens.";
+  }
+  return null;
 }
 
 interface BlobClipboardState {
@@ -219,6 +307,7 @@ interface PersistedShellSnapshot {
 }
 
 const SHELL_STATE_STORAGE_KEY = "arkived.shell.v1";
+const APP_VERSION = "0.0.1";
 const SIDEBAR_DEFAULT_WIDTH = 340;
 const SIDEBAR_MIN_WIDTH = 260;
 const SIDEBAR_MAX_WIDTH = 640;
@@ -349,6 +438,18 @@ function App() {
   const [shellInitialized, setShellInitialized] = useState(false);
   const [shellPersistenceReady, setShellPersistenceReady] = useState(false);
   const [sidebarPanelTab, setSidebarPanelTab] = useState<"actions" | "properties">("actions");
+  const [showSidebar, setShowSidebar] = useState(true);
+  const [showDetails, setShowDetails] = useState(true);
+  const [showActivities, setShowActivities] = useState(true);
+  const [infoModal, setInfoModal] = useState<InfoModalState | null>(null);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [dropTarget, setDropTarget] = useState<DropTarget | null>(null);
+  const [dropActive, setDropActive] = useState(false);
+  const dropResolveRef = useRef<(x: number, y: number) => DropTarget | null>(() => null);
+  const dropUploadRef = useRef<(target: DropTarget, paths: string[]) => void>(() => undefined);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const keymapRef = useRef<(event: KeyboardEvent) => void>(() => undefined);
+  const dialogs = useDialogs();
 
   const containerRequestIds = useRef<Record<string, number>>({});
   const blobRequestIds = useRef<Record<string, number>>({});
@@ -361,6 +462,7 @@ function App() {
   const browserPaneRef = useRef<HTMLDivElement | null>(null);
   const previewRequestId = useRef(0);
   const blobSelectionAnchors = useRef<Record<string, number>>({});
+  const menuActionRef = useRef<(id: string) => void>(() => undefined);
 
   browserTabsRef.current = browserTabs;
   connectionsRef.current = connections;
@@ -370,6 +472,8 @@ function App() {
   const browsingConnectionId = activeTab?.connectionId ?? activeConnectionId;
   const activeConnection = connections.find((connection) => connection.id === browsingConnectionId) ?? null;
   const activeContainer = activeTab?.containerName ?? null;
+  const canGoBack = !!activeTab && activeTab.historyIndex > 0;
+  const canGoForward = !!activeTab && activeTab.historyIndex < activeTab.history.length - 1;
   const activeRows = activeTab?.rows ?? [];
   const deferredSearch = useDeferredValue(activeTab?.search ?? "");
   const deferredAdvancedFilters = useDeferredValue(activeTab?.advancedFilters ?? EMPTY_BLOB_FILTERS);
@@ -981,7 +1085,12 @@ function App() {
   }
 
   async function handleRemoveSignIn(signIn: BrowserSignIn) {
-    const confirmed = window.confirm(`Remove Azure account "${signIn.display_name}" from Arkived?`);
+    const confirmed = await dialogs.confirm({
+      title: "Remove account",
+      message: `Remove Azure account "${signIn.display_name}" from Arkived? Cached tokens for this sign-in are deleted; your Azure account itself is unaffected.`,
+      confirmLabel: "Remove",
+      danger: true,
+    });
     if (!confirmed) {
       return;
     }
@@ -1108,6 +1217,8 @@ function App() {
           connectionId,
           containerName,
           prefix: "",
+          history: [""],
+          historyIndex: 0,
           filter: "",
           search: "",
           advancedFilters: emptyBlobFilters(),
@@ -1155,11 +1266,18 @@ function App() {
   }
 
   async function handleSelectDiscoveredAccount(account: BrowserStorageAccount) {
+    const key = discoveredRowKey(account);
+    setActivatingAccounts((current) => ({ ...current, [key]: true }));
+    // Switch the main pane to this account's container overview.
+    setActiveTabId(null);
     try {
       const connection = await ensureDiscoveredAccountConnection(account);
       setActiveConnectionId(connection.id);
+      await ensureContainersLoaded(connection.id);
     } catch (error) {
       setShellError(getErrorMessage(error));
+    } finally {
+      setActivatingAccounts((current) => ({ ...current, [key]: false }));
     }
   }
 
@@ -1327,7 +1445,11 @@ function App() {
   }
 
   function handleSelectConnection(connectionId: string) {
+    // Show the account's container overview in the main pane: clear the active
+    // tab (open tabs stay in the bar) so the overview, not a blob listing, renders.
+    setActiveTabId(null);
     setActiveConnectionId(connectionId);
+    void ensureContainersLoaded(connectionId);
   }
 
   function handleSelectContainer(connectionId: string, containerName: string) {
@@ -1412,6 +1534,8 @@ function App() {
         connectionId: connection.id,
         containerName: persistedTab.containerName,
         prefix: persistedTab.prefix ?? "",
+        history: [persistedTab.prefix ?? ""],
+        historyIndex: 0,
         filter: persistedTab.filter ?? "",
         search: persistedTab.search ?? "",
         advancedFilters: sanitizeBlobFilters(persistedTab.advancedFilters),
@@ -1426,7 +1550,7 @@ function App() {
         selectedIndices: [],
       });
 
-      if (persistedTab.id === snapshot.activeTabId || !restoredActiveTabId) {
+      if (persistedTab.id === snapshot.activeTabId) {
         restoredActiveTabId = id;
       }
       restoredActiveConnectionId = restoredActiveConnectionId ?? connection.id;
@@ -1434,7 +1558,11 @@ function App() {
 
     if (restoredTabs.length > 0) {
       setBrowserTabs(restoredTabs);
-      setActiveTabId(restoredActiveTabId ?? restoredTabs[0].id);
+      // Only re-activate a tab if the snapshot had one; a null activeTabId means
+      // the user was on the account-overview view, which we preserve.
+      if (snapshot.activeTabId != null) {
+        setActiveTabId(restoredActiveTabId ?? restoredTabs[0].id);
+      }
     }
 
     if (restoredActiveConnectionId) {
@@ -1450,6 +1578,49 @@ function App() {
     setExpandedSubscriptions((current) => ({ ...current, [subscriptionId]: !current[subscriptionId] }));
   }
 
+  // Navigate a tab to a folder prefix, recording it in the tab's back/forward
+  // history. No-ops if the prefix is unchanged.
+  function navigateTab(tabId: string, nextPrefix: string) {
+    updateTab(tabId, (tab) => {
+      if (tab.prefix === nextPrefix) {
+        return tab;
+      }
+      const history = tab.history.slice(0, tab.historyIndex + 1);
+      history.push(nextPrefix);
+      return {
+        ...tab,
+        prefix: nextPrefix,
+        history,
+        historyIndex: history.length - 1,
+        filter: "",
+        loaded: false,
+        error: null,
+        continuation: null,
+        selectedIndices: [],
+      };
+    });
+  }
+
+  // Move within an existing history entry (back/forward) without rewriting it.
+  function travelHistory(tabId: string, delta: number) {
+    updateTab(tabId, (tab) => {
+      const index = tab.historyIndex + delta;
+      if (index < 0 || index >= tab.history.length) {
+        return tab;
+      }
+      return {
+        ...tab,
+        prefix: tab.history[index],
+        historyIndex: index,
+        filter: "",
+        loaded: false,
+        error: null,
+        continuation: null,
+        selectedIndices: [],
+      };
+    });
+  }
+
   function handleActivateRow(index: number) {
     if (!activeTab) {
       return;
@@ -1459,33 +1630,26 @@ function App() {
     if (!row || row.kind !== "dir" || !row.path) {
       return;
     }
-    const nextPrefix = ensureTrailingSlash(row.path);
-
-    updateTab(activeTab.id, (tab) => ({
-      ...tab,
-      prefix: nextPrefix,
-      filter: "",
-      loaded: false,
-      error: null,
-      continuation: null,
-      selectedIndices: [],
-    }));
+    navigateTab(activeTab.id, ensureTrailingSlash(row.path));
   }
 
   function handleGoUp() {
     if (!activeTab || !prefix) {
       return;
     }
+    navigateTab(activeTab.id, parentPrefix(activeTab.prefix));
+  }
 
-    updateTab(activeTab.id, (tab) => ({
-      ...tab,
-      prefix: parentPrefix(tab.prefix),
-      filter: "",
-      loaded: false,
-      error: null,
-      continuation: null,
-      selectedIndices: [],
-    }));
+  function handleGoBack() {
+    if (activeTab) {
+      travelHistory(activeTab.id, -1);
+    }
+  }
+
+  function handleGoForward() {
+    if (activeTab) {
+      travelHistory(activeTab.id, 1);
+    }
   }
 
   function handleToggleSelection(index: number) {
@@ -1713,7 +1877,12 @@ function App() {
       return;
     }
 
-    const confirmed = window.confirm(`Delete blob "${row.path}" from "${activeContainer}"?`);
+    const confirmed = await dialogs.confirm({
+      title: "Delete blob",
+      message: `Delete blob "${row.path}" from "${activeContainer}"? This cannot be undone unless soft-delete is enabled on the account.`,
+      confirmLabel: "Delete",
+      danger: true,
+    });
     if (!confirmed) {
       return;
     }
@@ -1736,20 +1905,11 @@ function App() {
     if (!activeConnection || !activeContainer || !row.path || row.kind === "dir") {
       return;
     }
-    const permissions = window.prompt(
-      `SAS permissions for "${row.path}" (r=read, w=write, d=delete, l=list, a=add, c=create)`,
-      "r",
-    );
-    if (permissions === null) {
-      return;
-    }
-    const hoursText = window.prompt("Hours until the SAS expires", "1");
-    if (hoursText === null) {
-      return;
-    }
-    const hours = Number.parseInt(hoursText, 10);
-    if (!Number.isFinite(hours) || hours <= 0) {
-      setShellError("SAS expiry must be a positive number of hours.");
+    const sas = await dialogs.generateSas({
+      title: "Generate SAS",
+      subtitle: `Blob · ${row.path}`,
+    });
+    if (!sas) {
       return;
     }
     setShellError(null);
@@ -1758,11 +1918,11 @@ function App() {
         activeConnection.id,
         activeContainer,
         row.path,
-        permissions.trim() || "r",
-        hours,
+        sas.permissions,
+        sas.hours,
       );
       await copyText(url);
-      setShellError(`SAS URL for "${row.path}" copied to clipboard (expires in ${hours}h).`);
+      setShellError(`SAS URL for "${row.path}" copied to clipboard (expires in ${sas.hours}h).`);
       await refreshActivities();
     } catch (error) {
       setShellError(getErrorMessage(error));
@@ -1773,20 +1933,66 @@ function App() {
     if (!activeConnection || !activeContainer || !activeTab || !row.path || row.kind === "dir") {
       return;
     }
-    const tier = window.prompt(
-      `Set access tier for "${row.path}" (hot, cool, cold, or archive)`,
-      (row.tier ?? "hot").toLowerCase(),
-    );
-    if (tier === null) {
+    const current = (row.tier ?? "hot").toLowerCase();
+    const choice = await dialogs.choose({
+      title: "Set access tier",
+      subtitle: `Blob · ${row.path}`,
+      current,
+      options: TIER_OPTIONS,
+    });
+    if (!choice) {
       return;
     }
     setShellError(null);
     try {
-      await setBlobTier(activeConnection.id, activeContainer, row.path, tier.trim());
+      await setBlobTier(activeConnection.id, activeContainer, row.path, choice.value);
       updateTab(activeTab.id, (tab) => ({ ...tab, loaded: false }));
       await refreshActivities();
     } catch (error) {
       setShellError(getErrorMessage(error));
+    }
+  }
+
+  async function handleSetTierSelection(rows: BlobRow[]) {
+    if (!activeConnection || !activeContainer || !activeTab) {
+      return;
+    }
+    const blobs = rows.filter((item) => item.kind !== "dir" && item.path);
+    if (blobs.length === 0) {
+      return;
+    }
+    const choice = await dialogs.choose({
+      title: "Set access tier",
+      subtitle: `${blobs.length} blobs`,
+      confirmLabel: "Apply",
+      options: TIER_OPTIONS,
+    });
+    if (!choice) {
+      return;
+    }
+    setShellError(null);
+    let ok = 0;
+    let failed = 0;
+    let firstError: string | null = null;
+    for (const blob of blobs) {
+      try {
+        await setBlobTier(activeConnection.id, activeContainer, blob.path as string, choice.value);
+        ok += 1;
+      } catch (error) {
+        failed += 1;
+        if (!firstError) {
+          firstError = getErrorMessage(error);
+        }
+      }
+    }
+    updateTab(activeTab.id, (tab) => ({ ...tab, loaded: false, selectedIndices: [] }));
+    await refreshActivities();
+    if (failed === 0) {
+      setShellError(`Set tier to ${choice.value} on ${ok} blob${ok === 1 ? "" : "s"}.`);
+    } else {
+      setShellError(
+        `Set tier on ${ok}/${blobs.length} blobs; ${failed} failed${firstError ? `: ${firstError}` : ""}.`,
+      );
     }
   }
 
@@ -1819,12 +2025,310 @@ function App() {
     }
   }
 
+  async function handleEditTags(row: BlobRow) {
+    if (!activeConnection || !activeContainer || !row.path || row.kind === "dir") {
+      return;
+    }
+    const connectionId = activeConnection.id;
+    const container = activeContainer;
+    const path = row.path;
+    setShellError(null);
+    try {
+      const current = await getBlobTags(connectionId, container, path);
+      const tags = await dialogs.editTags({
+        title: "Edit blob tags",
+        subtitle: `Blob · ${path}`,
+        initial: current,
+      });
+      if (tags === null) {
+        return;
+      }
+      await setBlobTags(connectionId, container, path, tags);
+      setShellError(
+        `Saved ${Object.keys(tags).length} tag${Object.keys(tags).length === 1 ? "" : "s"} on "${path}".`,
+      );
+      await refreshActivities();
+    } catch (error) {
+      setShellError(getErrorMessage(error));
+    }
+  }
+
+  async function handleCreateSnapshot(row: BlobRow) {
+    if (!activeConnection || !activeContainer || !row.path || row.kind === "dir") {
+      return;
+    }
+    setShellError(null);
+    try {
+      const result = await createBlobSnapshot(activeConnection.id, activeContainer, row.path);
+      setShellError(`Created snapshot of "${result.path}" at ${result.snapshot}.`);
+      await refreshActivities();
+    } catch (error) {
+      setShellError(getErrorMessage(error));
+    }
+  }
+
+  async function handleUndeleteBlob(row: BlobRow) {
+    if (!activeConnection || !activeContainer || !activeTab || !row.path || row.kind === "dir") {
+      return;
+    }
+    const confirmed = await dialogs.confirm({
+      title: "Undelete blob",
+      message: `Restore soft-deleted blob "${row.path}" in "${activeContainer}"?`,
+      confirmLabel: "Undelete",
+    });
+    if (!confirmed) {
+      return;
+    }
+    setShellError(null);
+    try {
+      await undeleteBlob(activeConnection.id, activeContainer, row.path);
+      updateTab(activeTab.id, (tab) => ({ ...tab, loaded: false, selectedIndices: [] }));
+      setShellError(`Undeleted "${row.path}".`);
+      await refreshActivities();
+    } catch (error) {
+      setShellError(getErrorMessage(error));
+    }
+  }
+
+  async function handleAcquireLease(row: BlobRow) {
+    if (!activeConnection || !activeContainer || !row.path || row.kind === "dir") {
+      return;
+    }
+    const choice = await dialogs.choose({
+      title: "Acquire lease",
+      subtitle: `Blob · ${row.path}`,
+      confirmLabel: "Acquire",
+      options: [
+        { value: "-1", label: "Infinite", detail: "Lease never expires until explicitly released or broken." },
+        { value: "60", label: "60 seconds", detail: "Fixed-duration lease (max allowed)." },
+        { value: "30", label: "30 seconds", detail: "Fixed-duration lease." },
+        { value: "15", label: "15 seconds", detail: "Fixed-duration lease (min allowed)." },
+      ],
+    });
+    if (!choice) {
+      return;
+    }
+    const duration = Number.parseInt(choice.value, 10);
+    setShellError(null);
+    try {
+      const result = await acquireBlobLease(activeConnection.id, activeContainer, row.path, duration);
+      await copyText(result.lease_id);
+      setShellError(`Acquired lease on "${result.path}" (id copied to clipboard).`);
+      await refreshActivities();
+    } catch (error) {
+      setShellError(getErrorMessage(error));
+    }
+  }
+
+  async function handleBreakLease(row: BlobRow) {
+    if (!activeConnection || !activeContainer || !row.path || row.kind === "dir") {
+      return;
+    }
+    const confirmed = await dialogs.confirm({
+      title: "Break lease",
+      message: `Break the lease on "${row.path}"? Any holder of the current lease ID loses it immediately.`,
+      confirmLabel: "Break lease",
+      danger: true,
+    });
+    if (!confirmed) {
+      return;
+    }
+    setShellError(null);
+    try {
+      await breakBlobLease(activeConnection.id, activeContainer, row.path);
+      setShellError(`Broke lease on "${row.path}".`);
+      await refreshActivities();
+    } catch (error) {
+      setShellError(getErrorMessage(error));
+    }
+  }
+
+  async function handleChangeTierOrRehydrate(row: BlobRow) {
+    if (!activeConnection || !activeContainer || !activeTab || !row.path || row.kind === "dir") {
+      return;
+    }
+    const isArchived = (row.tier ?? "").toLowerCase() === "archive";
+    if (!isArchived) {
+      await handleSetTier(row);
+      return;
+    }
+    const choice = await dialogs.choose({
+      title: "Rehydrate archived blob",
+      subtitle: `Blob · ${row.path}`,
+      confirmLabel: "Rehydrate",
+      options: [
+        { value: "hot", label: "Hot", detail: "Rehydrate to the Hot tier for frequent access." },
+        { value: "cool", label: "Cool", detail: "Rehydrate to the Cool tier." },
+        { value: "cold", label: "Cold", detail: "Rehydrate to the Cold tier." },
+      ],
+      toggle: {
+        label: "High priority (faster, costs more — standard can take hours)",
+        default: false,
+      },
+    });
+    if (!choice) {
+      return;
+    }
+    const highPriority = choice.toggle;
+    setShellError(null);
+    try {
+      await rehydrateBlob(activeConnection.id, activeContainer, row.path, choice.value, highPriority);
+      updateTab(activeTab.id, (tab) => ({ ...tab, loaded: false }));
+      setShellError(
+        `Started ${highPriority ? "high-priority " : ""}rehydration of "${row.path}" to ${choice.value}.`,
+      );
+      await refreshActivities();
+    } catch (error) {
+      setShellError(getErrorMessage(error));
+    }
+  }
+
+  async function handleCreateContainer(connectionId: string) {
+    const name = await dialogs.prompt({
+      title: "New container",
+      label: "Container name",
+      placeholder: "my-container",
+      confirmLabel: "Create",
+      validate: validateContainerName,
+    });
+    if (!name) {
+      return;
+    }
+    const trimmed = name.trim();
+    if (!trimmed || validateContainerName(trimmed)) {
+      return;
+    }
+    setShellError(null);
+    try {
+      await createContainer(connectionId, trimmed);
+      setShellError(`Created container "${trimmed}".`);
+      await ensureContainersLoaded(connectionId, true);
+      await refreshActivities();
+    } catch (error) {
+      setShellError(getErrorMessage(error));
+    }
+  }
+
+  async function handleDeleteContainer(connectionId: string, containerName: string) {
+    const confirmed = await dialogs.confirm({
+      title: "Delete container",
+      message: `Delete container "${containerName}" and every blob inside it? This cannot be undone.`,
+      confirmLabel: "Delete container",
+      danger: true,
+    });
+    if (!confirmed) {
+      return;
+    }
+    setShellError(null);
+    try {
+      await deleteContainer(connectionId, containerName);
+      // Close any open tab for this container.
+      setBrowserTabs((current) =>
+        current.filter(
+          (tab) => !(tab.connectionId === connectionId && tab.containerName === containerName),
+        ),
+      );
+      setShellError(`Deleted container "${containerName}".`);
+      await ensureContainersLoaded(connectionId, true);
+      await refreshActivities();
+    } catch (error) {
+      setShellError(getErrorMessage(error));
+    }
+  }
+
+  async function handleGenerateContainerSas(connectionId: string, containerName: string) {
+    const sas = await dialogs.generateSas({
+      title: "Generate SAS",
+      subtitle: `Container · ${containerName}`,
+    });
+    if (!sas) {
+      return;
+    }
+    setShellError(null);
+    try {
+      const url = await generateBlobSas(connectionId, containerName, null, sas.permissions, sas.hours);
+      await copyText(url);
+      setShellError(`Container SAS URL for "${containerName}" copied to clipboard (expires in ${sas.hours}h).`);
+      await refreshActivities();
+    } catch (error) {
+      setShellError(getErrorMessage(error));
+    }
+  }
+
+  async function handleSetContainerAccess(
+    connectionId: string,
+    containerName: string,
+    current?: string | null,
+  ) {
+    const level = normalizePublicAccess(current);
+    const choice = await dialogs.choose({
+      title: "Set Public Access Level",
+      subtitle: `Container · ${containerName}`,
+      options: PUBLIC_ACCESS_OPTIONS,
+      current: level,
+    });
+    if (!choice) {
+      return;
+    }
+    setShellError(null);
+    try {
+      await setContainerPublicAccess(connectionId, containerName, choice.value);
+      setShellError(`Set public access for "${containerName}" to ${choice.value}.`);
+      await ensureContainersLoaded(connectionId, true);
+      await refreshActivities();
+    } catch (error) {
+      setShellError(getErrorMessage(error));
+    }
+  }
+
+  function showContainerProperties(connectionId: string, container: BrowserContainer) {
+    const connection = connectionsRef.current.find((candidate) => candidate.id === connectionId);
+    const endpoint = connection
+      ? new URL(`${container.name}/`, connection.endpoint).toString()
+      : container.name;
+    setInfoModal({
+      title: container.name,
+      subtitle: "Container",
+      rows: [
+        { label: "Name", value: container.name },
+        { label: "Public access", value: container.public_access ?? "private" },
+        { label: "Lease", value: container.lease ?? "available" },
+        {
+          label: "Blob count",
+          value: container.blob_count != null ? String(container.blob_count) : "—",
+        },
+        { label: "Endpoint", value: endpoint },
+      ],
+    });
+  }
+
+  function showAccountProperties(account: BrowserStorageAccount) {
+    setInfoModal({
+      title: account.name,
+      subtitle: "Storage account",
+      rows: [
+        { label: "Name", value: account.name },
+        { label: "Kind", value: account.kind },
+        { label: "Region", value: account.region },
+        { label: "Replication", value: account.replication },
+        { label: "Tier", value: account.tier },
+        { label: "Hierarchical namespace", value: account.hns ? "Enabled (ADLS Gen2)" : "Disabled" },
+        { label: "Endpoint", value: account.endpoint },
+      ],
+    });
+  }
+
   async function handleDeletePrefix(row: BlobRow) {
     if (!activeConnection || !activeContainer || !activeTab || !row.path || row.kind !== "dir") {
       return;
     }
 
-    const confirmed = window.confirm(`Delete all blobs under "${row.path}" from "${activeContainer}"?`);
+    const confirmed = await dialogs.confirm({
+      title: "Delete folder",
+      message: `Delete all blobs under "${row.path}" from "${activeContainer}"? Every blob with this prefix is removed. This cannot be undone unless soft-delete is enabled.`,
+      confirmLabel: "Delete all",
+      danger: true,
+    });
     if (!confirmed) {
       return;
     }
@@ -1867,7 +2371,12 @@ function App() {
       selectedResourceRows.length === 1
         ? `"${selectedResourceRows[0].path ?? selectedResourceRows[0].name}"`
         : `${selectedResourceRows.length} items`;
-    const confirmed = window.confirm(`Delete ${label} from "${activeContainer}"?`);
+    const confirmed = await dialogs.confirm({
+      title: selectedResourceRows.length === 1 ? "Delete item" : "Delete items",
+      message: `Delete ${label} from "${activeContainer}"? This cannot be undone unless soft-delete is enabled.`,
+      confirmLabel: "Delete",
+      danger: true,
+    });
     if (!confirmed) {
       return;
     }
@@ -1995,6 +2504,112 @@ function App() {
     }
   }
 
+  // Resolve where a drag-drop should land. Container cards/listings are tagged
+  // with data-drop-* attributes; we hit-test the drop position against them and
+  // fall back to the active container tab.
+  function resolveDropTarget(physicalX: number, physicalY: number): DropTarget | null {
+    const dpr = window.devicePixelRatio || 1;
+    const element = document.elementFromPoint(physicalX / dpr, physicalY / dpr) as HTMLElement | null;
+    const zone = element?.closest("[data-drop-container]") as HTMLElement | null;
+    if (zone) {
+      const connectionId = zone.getAttribute("data-drop-connection") ?? "";
+      const container = zone.getAttribute("data-drop-container") ?? "";
+      const dropPrefix = zone.getAttribute("data-drop-prefix") ?? "";
+      if (connectionId && container) {
+        return {
+          connectionId,
+          container,
+          prefix: dropPrefix,
+          label: `${container}${dropPrefix ? `/${dropPrefix}` : ""}`,
+        };
+      }
+    }
+    if (activeConnection && activeContainer && activeTab) {
+      return {
+        connectionId: activeConnection.id,
+        container: activeContainer,
+        prefix,
+        label: `${activeContainer}${prefix ? `/${prefix}` : ""}`,
+      };
+    }
+    return null;
+  }
+
+  async function handleDropUpload(target: DropTarget, paths: string[]) {
+    setShellError(null);
+    let items: Awaited<ReturnType<typeof classifyPaths>>;
+    try {
+      items = await classifyPaths(paths);
+    } catch (error) {
+      setShellError(getErrorMessage(error));
+      return;
+    }
+    if (items.length === 0) {
+      setShellError("Nothing to upload — the dropped paths could not be read.");
+      return;
+    }
+
+    let files = 0;
+    let folders = 0;
+    let folderFiles = 0;
+    let failed = 0;
+    let firstError: string | null = null;
+    // Upload each item independently so a single failure (e.g. a name clash with
+    // overwrite=false) doesn't hide the items that already succeeded.
+    try {
+      for (const item of items) {
+        try {
+          if (item.is_dir) {
+            const result = await uploadFolder(
+              target.connectionId,
+              target.container,
+              item.path,
+              target.prefix || null,
+              false,
+            );
+            folders += 1;
+            folderFiles += result.item_count;
+          } else {
+            await uploadBlob(target.connectionId, target.container, item.path, target.prefix || null, false);
+            files += 1;
+          }
+        } catch (error) {
+          failed += 1;
+          if (!firstError) {
+            firstError = getErrorMessage(error);
+          }
+        }
+      }
+    } finally {
+      // Always refresh the affected tab so any blobs that did upload become visible.
+      setBrowserTabs((current) =>
+        current.map((tab) =>
+          tab.connectionId === target.connectionId && tab.containerName === target.container
+            ? { ...tab, loaded: false, selectedIndices: [] }
+            : tab,
+        ),
+      );
+      void refreshActivities();
+    }
+
+    const parts: string[] = [];
+    if (files) parts.push(`${files} file${files === 1 ? "" : "s"}`);
+    if (folders) {
+      parts.push(
+        `${folders} folder${folders === 1 ? "" : "s"} (${folderFiles} file${folderFiles === 1 ? "" : "s"})`,
+      );
+    }
+    if (failed === 0) {
+      setShellError(`Uploaded ${parts.join(" + ")} to ${target.label}.`);
+    } else if (parts.length === 0) {
+      setShellError(`Upload failed for ${failed} item${failed === 1 ? "" : "s"}${firstError ? `: ${firstError}` : ""}.`);
+    } else {
+      setShellError(
+        `Uploaded ${parts.join(" + ")} to ${target.label}; ${failed} item${failed === 1 ? "" : "s"} failed${firstError ? `: ${firstError}` : ""}.`,
+      );
+    }
+  }
+
   async function handleCreateFolder(
     connectionId = activeConnection?.id,
     containerName = activeContainer,
@@ -2004,7 +2619,15 @@ function App() {
       return;
     }
 
-    const folderName = window.prompt(`New folder name in ${containerName}${parent ? `/${parent}` : ""}`);
+    const folderName = await dialogs.prompt({
+      title: "New folder",
+      subtitle: `${containerName}${parent ? `/${parent}` : ""}`,
+      label: "Folder name",
+      placeholder: "my-folder",
+      confirmLabel: "Create",
+      validate: (value) =>
+        /[\\/]/.test(value) ? "No slashes — create nested folders one level at a time." : null,
+    });
     if (!folderName) {
       return;
     }
@@ -2039,7 +2662,15 @@ function App() {
       return;
     }
 
-    const nextName = window.prompt(`Rename ${row.kind === "dir" ? "folder" : "blob"}`, row.name);
+    const nextName = await dialogs.prompt({
+      title: `Rename ${row.kind === "dir" ? "folder" : "blob"}`,
+      subtitle: row.path,
+      label: "New name",
+      defaultValue: row.name,
+      confirmLabel: "Rename",
+      validate: (value) =>
+        /[\\/]/.test(value) ? "Rename only changes the item name — slashes are not allowed." : null,
+    });
     if (!nextName) {
       return;
     }
@@ -2237,7 +2868,7 @@ function App() {
   }
 
   function openContextMenu(
-    event: React.MouseEvent<HTMLDivElement>,
+    event: React.MouseEvent<HTMLElement>,
     items: ContextMenuItem[],
   ) {
     event.preventDefault();
@@ -2350,10 +2981,202 @@ function App() {
       setActiveTabId(browserTabs[0]?.id ?? null);
       return;
     }
-    if (!activeTabId && browserTabs.length > 0) {
+    // Auto-select a tab only when nothing else is in focus. When an account is
+    // selected (activeConnectionId set, no active tab) we intentionally keep the
+    // tab cleared so the container overview renders.
+    if (!activeTabId && !activeConnectionId && browserTabs.length > 0) {
       setActiveTabId(browserTabs[0].id);
     }
-  }, [activeTabId, browserTabs]);
+  }, [activeTabId, activeConnectionId, browserTabs]);
+
+  // Keep the drag-drop resolver/uploader pointing at the latest render's state,
+  // so the once-registered Tauri listener never sees stale closures.
+  dropResolveRef.current = resolveDropTarget;
+  dropUploadRef.current = (target, paths) => void handleDropUpload(target, paths);
+
+  // Native OS drag-and-drop upload. Tauri intercepts file drops and delivers
+  // absolute paths via tauri://drag-drop, so we use the webview event (HTML5
+  // drop events never see the paths).
+  useEffect(() => {
+    if (!tauriAvailable.current) {
+      return;
+    }
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { getCurrentWebview } = await import("@tauri-apps/api/webview");
+        const fn = await getCurrentWebview().onDragDropEvent((event) => {
+          const payload = event.payload;
+          if (payload.type === "enter" || payload.type === "over") {
+            setDropActive(true);
+            setDropTarget(dropResolveRef.current(payload.position.x, payload.position.y));
+          } else if (payload.type === "drop") {
+            const target = dropResolveRef.current(payload.position.x, payload.position.y);
+            setDropActive(false);
+            setDropTarget(null);
+            if (target) {
+              dropUploadRef.current(target, payload.paths);
+            }
+          } else {
+            setDropActive(false);
+            setDropTarget(null);
+          }
+        });
+        if (cancelled) {
+          fn();
+        } else {
+          unlisten = fn;
+        }
+      } catch {
+        // Drag-drop unavailable (e.g. running outside Tauri) — ignore.
+      }
+    })();
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
+  // Keyboard shortcuts. Kept on a ref so the once-registered listener always
+  // calls the latest handlers/state without re-binding.
+  keymapRef.current = (event) => {
+    // A modal dialog owns the keyboard while open (it has its own Escape handler);
+    // never let global shortcuts steal focus or mutate the background behind it.
+    if (dialogs.isOpen) {
+      return;
+    }
+    const mod = event.ctrlKey || event.metaKey;
+
+    // Command palette toggle works from anywhere, including over the palette itself.
+    if (mod && (event.key === "k" || event.key === "K")) {
+      event.preventDefault();
+      setPaletteOpen((open) => !open);
+      return;
+    }
+    // While the palette is open it owns the keyboard (its input handles nav/run/esc).
+    if (paletteOpen) {
+      return;
+    }
+
+    const target = event.target as HTMLElement | null;
+    const typing =
+      target?.tagName === "INPUT" ||
+      target?.tagName === "TEXTAREA" ||
+      target?.isContentEditable === true;
+
+    // Navigation works even while a field is focused (matches file explorers).
+    if (event.altKey && event.key === "ArrowLeft") {
+      event.preventDefault();
+      handleGoBack();
+      return;
+    }
+    if (event.altKey && event.key === "ArrowRight") {
+      event.preventDefault();
+      handleGoForward();
+      return;
+    }
+    if (event.altKey && event.key === "ArrowUp") {
+      event.preventDefault();
+      handleGoUp();
+      return;
+    }
+    if (mod && (event.key === "f" || event.key === "F")) {
+      if (activeTab) {
+        event.preventDefault();
+        searchInputRef.current?.focus();
+      }
+      return;
+    }
+
+    if (typing) {
+      return;
+    }
+
+    if (event.key === "Backspace") {
+      if (activeTab && prefix) {
+        event.preventDefault();
+        handleGoUp();
+      }
+      return;
+    }
+    if (mod && (event.key === "a" || event.key === "A")) {
+      if (activeTab && activeVisibleRows.length > 0) {
+        event.preventDefault();
+        handleToggleSelectAll();
+      }
+      return;
+    }
+    if (event.key === "Delete") {
+      if (selectedResourceRows.length > 0) {
+        event.preventDefault();
+        void handleDeleteSelection();
+      }
+      return;
+    }
+    if (event.key === "F5") {
+      event.preventDefault();
+      void handleRefresh();
+      return;
+    }
+    if (event.key === "Escape") {
+      setContextMenu(null);
+    }
+  };
+
+  useEffect(() => {
+    const handler = (event: KeyboardEvent) => keymapRef.current(event);
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
+
+  // Live command-palette entries built from current state. Everything here runs
+  // a real handler — navigation, view toggles, connect, container actions, and
+  // "go to container" jumps drawn from the active account's live container list.
+  const paletteCommands: CommandItem[] = [];
+  paletteCommands.push(
+    { id: "nav.back", section: "Navigation", label: "Back", hint: "Alt+←", icon: <IconArrowLeft size={12} />, run: handleGoBack },
+    { id: "nav.forward", section: "Navigation", label: "Forward", hint: "Alt+→", icon: <IconArrowRight size={12} />, run: handleGoForward },
+    { id: "nav.up", section: "Navigation", label: "Up one level", hint: "Backspace", icon: <IconArrowUp size={12} />, run: handleGoUp },
+    { id: "nav.refresh", section: "Navigation", label: "Refresh", hint: "F5", icon: <IconRefresh size={12} />, run: () => void handleRefresh() },
+  );
+  paletteCommands.push(
+    { id: "acct.connect", section: "Account", label: "Connect…", keywords: "sign in attach add account", icon: <IconPlus size={12} />, run: () => openConnectDialog() },
+  );
+  if (activeConnection) {
+    paletteCommands.push({
+      id: "acct.newContainer",
+      section: "Account",
+      label: "New container…",
+      keywords: "create container",
+      icon: <IconPlus size={12} />,
+      run: () => void handleCreateContainer(activeConnection.id),
+    });
+  }
+  paletteCommands.push(
+    { id: "view.sidebar", section: "View", label: "Toggle sidebar", icon: <IconContainer size={12} />, run: () => setShowSidebar((value) => !value) },
+    { id: "view.details", section: "View", label: "Toggle details panel", icon: <IconInfo size={12} />, run: () => setShowDetails((value) => !value) },
+    { id: "view.activities", section: "View", label: "Toggle activities", icon: <IconTerminal size={12} />, run: () => setShowActivities((value) => !value) },
+  );
+  if (activeConnection && activeContainer) {
+    paletteCommands.push(
+      { id: "blob.upload", section: "Storage", label: "Upload files…", icon: <IconUpload size={12} />, run: () => void handleUploadFiles() },
+      { id: "blob.uploadFolder", section: "Storage", label: "Upload folder…", icon: <IconUpload size={12} />, run: () => void handleUploadFolders() },
+      { id: "blob.newFolder", section: "Storage", label: "New folder…", icon: <IconPlus size={12} />, run: () => void handleCreateFolder() },
+    );
+  }
+  if (activeConnectionId) {
+    for (const container of containerStatesByConnection[activeConnectionId]?.items ?? []) {
+      paletteCommands.push({
+        id: `goto:${container.id}`,
+        section: "Go to container",
+        label: container.name,
+        keywords: "open container",
+        icon: <IconContainer size={12} />,
+        run: () => handleSelectContainer(activeConnectionId, container.name),
+      });
+    }
+  }
 
   useEffect(() => {
     if (!activeTabId) {
@@ -2656,10 +3479,163 @@ function App() {
           ? shellError
           : "Attach a storage account";
 
+  menuActionRef.current = (id: string) => {
+    switch (id) {
+      case "file.connect":
+        openConnectDialog();
+        break;
+      case "account.sign-in":
+        openConnectDialog("entra-browser");
+        break;
+      case "file.refresh":
+      case "view.refresh":
+        void handleRefresh();
+        break;
+      case "file.close-tab": {
+        const tabId = activeTabId ?? browserTabs[0]?.id ?? null;
+        if (!tabId) {
+          break;
+        }
+        setBrowserTabs((current) => {
+          const index = current.findIndex((tab) => tab.id === tabId);
+          if (index < 0) {
+            return current;
+          }
+          const next = current.filter((tab) => tab.id !== tabId);
+          if (activeTabId === tabId) {
+            const fallback = next[index] ?? next[index - 1] ?? null;
+            setActiveTabId(fallback?.id ?? null);
+            if (fallback) {
+              setActiveConnectionId(fallback.connectionId);
+            }
+          }
+          return next;
+        });
+        break;
+      }
+      case "account.manage": {
+        const signInId = manageSignInId ?? signIns[0]?.id ?? null;
+        if (signInId) {
+          openManageDialog(signInId);
+        }
+        break;
+      }
+      case "account.discover":
+        void refreshDiscoveryTree(signIns[0]?.id ?? null);
+        break;
+      case "account.sign-out":
+        if (activeConnectionId) {
+          void handleDisconnect();
+        }
+        break;
+      case "view.toggle-sidebar":
+        setShowSidebar((current) => !current);
+        break;
+      case "view.toggle-details":
+        setShowDetails((current) => !current);
+        break;
+      case "view.toggle-activities":
+        setShowActivities((current) => !current);
+        break;
+      case "edit.copy":
+        if (selectedRow) {
+          handleCopyRow(selectedRow);
+        }
+        break;
+      case "edit.paste":
+        if (
+          blobClipboard &&
+          blobClipboard.connectionId === activeConnection?.id &&
+          blobClipboard.containerName === activeContainer
+        ) {
+          void handlePasteClipboard();
+        }
+        break;
+      case "edit.delete":
+        if (selectedResourceRows.length > 1) {
+          void handleDeleteSelection();
+        } else if (selectedRow) {
+          if (selectedRow.kind === "dir") {
+            void handleDeletePrefix(selectedRow);
+          } else {
+            void handleDeleteBlob(selectedRow);
+          }
+        }
+        break;
+      case "edit.select-all":
+        handleToggleSelectAll();
+        break;
+      case "help.docs":
+        window.open("https://github.com", "_blank", "noopener,noreferrer");
+        break;
+      case "help.shortcuts":
+        setInfoModal({
+          title: "Keyboard shortcuts",
+          subtitle: "Arkived",
+          rows: [
+            { label: "Refresh", value: "Menu · View › Refresh" },
+            { label: "Toggle sidebar", value: "Menu · View › Toggle Sidebar" },
+            { label: "Toggle details", value: "Menu · View › Toggle Details" },
+            { label: "Toggle activities", value: "Menu · View › Toggle Activities" },
+            { label: "Copy / Paste blob", value: "Menu · Edit › Copy / Paste" },
+            { label: "Delete selection", value: "Menu · Edit › Delete" },
+            { label: "Select all", value: "Menu · Edit › Select All" },
+            { label: "Close tab", value: "Menu · File › Close Tab" },
+          ],
+        });
+        break;
+      case "help.about":
+        setInfoModal({
+          title: "Arkived",
+          subtitle: `Version ${APP_VERSION}`,
+          rows: [
+            { label: "App", value: "Arkived" },
+            { label: "Version", value: APP_VERSION },
+            { label: "Runtime", value: tauriAvailable.current ? "Tauri desktop shell" : "Browser (Vite dev)" },
+            { label: "Description", value: "Azure Blob Storage explorer" },
+          ],
+        });
+        break;
+      default:
+        break;
+    }
+  };
+
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+    void import("@tauri-apps/api/event")
+      .then(({ listen }) =>
+        listen<string>("menu-action", (event) => {
+          try {
+            menuActionRef.current(event.payload);
+          } catch {
+            // Never let a menu event throw if state isn't ready.
+          }
+        }),
+      )
+      .then((fn) => {
+        if (cancelled) {
+          fn();
+        } else {
+          unlisten = fn;
+        }
+      })
+      .catch(() => {
+        // Tauri event API unavailable (e.g. plain Vite dev); ignore.
+      });
+    return () => {
+      cancelled = true;
+      if (unlisten) {
+        unlisten();
+      }
+    };
+  }, []);
+
   return (
     <div style={styles.appRoot}>
       <TitleBar
-        onOpenPalette={() => openConnectDialog()}
+        onOpenPalette={() => setPaletteOpen(true)}
         activeConnection={titleConnection}
         connectionDetail={connectionDetail}
         connected={Boolean(activeConnection || signIns.length > 0) && !runtimeUnavailable}
@@ -2670,6 +3646,7 @@ function App() {
       />
 
       <div style={styles.shell}>
+        {showSidebar && (
         <aside style={{ ...styles.sidebar, width: sidebarWidth }}>
           <div style={styles.sidebarHeader}>
             <div>
@@ -2709,7 +3686,7 @@ function App() {
             {signIns.length === 0 && !signInsBusy && (
               <EmptySidebarState
                 title="No Azure account signed in"
-                detail="Use Azure sign-in to discover subscriptions and storage accounts the way Storage Explorer does."
+                detail="Sign in or attach a storage account to load resources."
                 actionLabel="Sign in with Azure"
                 onAction={() => openConnectDialog("entra-browser")}
               />
@@ -2887,9 +3864,9 @@ function App() {
                                     menuSeparator(),
                                     {
                                       label: "Properties",
-                                      disabled: true,
-                                      hint: "soon",
-                                      action: () => undefined,
+                                      action: () => {
+                                        showAccountProperties(account);
+                                      },
                                     },
                                   ])
                                 }
@@ -2992,7 +3969,9 @@ function App() {
           />
           {renderSidebarDetailsPanel()}
         </aside>
+        )}
 
+        {showSidebar && (
         <div
           role="separator"
           aria-orientation="vertical"
@@ -3001,18 +3980,14 @@ function App() {
           style={styles.shellVerticalResizeHandle}
           onMouseDown={handleSidebarResizeStart}
         />
+        )}
 
         <main style={styles.main}>
           <div style={styles.toolbar}>
             <ToolbarButton
-              label="Sign in"
-              icon={<IconUser size={12} />}
-              onClick={() => openConnectDialog("entra-browser")}
-            />
-            <ToolbarButton
-              label="Attach"
+              label="Connect"
               icon={<IconPlus size={12} />}
-              onClick={() => openConnectDialog("connection-string")}
+              onClick={() => openConnectDialog("entra-browser")}
             />
             <ToolbarButton
               label="Refresh"
@@ -3023,7 +3998,22 @@ function App() {
               disabled={!tauriAvailable.current || connectionsBusy || signInsBusy || anyContainersBusy || anyRowsBusy}
             />
             <ToolbarButton
+              label="Back"
+              title="Back (Alt+←)"
+              icon={<IconArrowLeft size={12} />}
+              onClick={handleGoBack}
+              disabled={!canGoBack}
+            />
+            <ToolbarButton
+              label="Forward"
+              title="Forward (Alt+→)"
+              icon={<IconArrowRight size={12} />}
+              onClick={handleGoForward}
+              disabled={!canGoForward}
+            />
+            <ToolbarButton
               label="Up"
+              title="Up one level (Alt+↑ / Backspace)"
               icon={<IconArrowUp size={12} />}
               onClick={handleGoUp}
               disabled={!activeTab || !prefix}
@@ -3053,7 +4043,7 @@ function App() {
               title="Sign in to Azure"
               body={
                 tauriAvailable.current
-                  ? "Use browser-based Azure sign-in to discover subscriptions and storage accounts, or attach directly with a connection string, shared key, SAS, or Azurite."
+                  ? "Sign in to discover subscriptions, or attach a storage account directly."
                   : "The frontend is running outside Tauri, so the live Azure IPC layer is unavailable in this window."
               }
               primaryLabel="Open sign-in"
@@ -3083,7 +4073,7 @@ function App() {
                 icon: <IconContainer size={11} />,
                 dirty: tab.busy,
               }))}
-              active={activeTabId ?? browserTabs[0].id}
+              active={activeTabId ?? ""}
               onSelect={(tabId) => {
                 setActiveTabId(tabId);
               }}
@@ -3125,12 +4115,8 @@ function App() {
             />
           )}
 
-          {activeConnection && !activeContainer && !anyContainersBusy && !containerStatesByConnection[activeConnectionId ?? ""]?.error && (
-            <MainEmptyState
-              title="No container selected"
-              body="Choose a container from the left explorer tree. Each container opens as its own tab, so you can keep multiple storage accounts expanded and switch between live listings without losing your place."
-            />
-          )}
+          {activeConnection && !activeContainer && !anyContainersBusy && !containerStatesByConnection[activeConnectionId ?? ""]?.error &&
+            renderContainerOverview()}
 
           {activeConnection && activeContainer && activeTab && (
             <>
@@ -3138,18 +4124,8 @@ function App() {
                 <div style={styles.pathTrail}>
                   <button
                     type="button"
-                    style={styles.pathButtonActive}
-                    onClick={() => {
-                      updateTab(activeTab.id, (tab) => ({
-                        ...tab,
-                        prefix: "",
-                        filter: "",
-                        loaded: false,
-                        error: null,
-                        continuation: null,
-                        selectedIndices: [],
-                      }));
-                    }}
+                    style={prefix === "" ? styles.pathButtonActive : styles.pathButton}
+                    onClick={() => navigateTab(activeTab.id, "")}
                   >
                     {activeContainer}
                   </button>
@@ -3160,17 +4136,7 @@ function App() {
                       <button
                         type="button"
                         style={segment.value === prefix ? styles.pathButtonActive : styles.pathButton}
-                        onClick={() => {
-                          updateTab(activeTab.id, (tab) => ({
-                            ...tab,
-                            prefix: segment.value,
-                            filter: "",
-                            loaded: false,
-                            error: null,
-                            continuation: null,
-                            selectedIndices: [],
-                          }));
-                        }}
+                        onClick={() => navigateTab(activeTab.id, segment.value)}
                       >
                         {segment.label}
                       </button>
@@ -3198,6 +4164,7 @@ function App() {
                     }}
                   />
                   <input
+                    ref={searchInputRef}
                     type="search"
                     aria-label="Advanced blob search"
                     placeholder='Search: ext:parquet size>10MiB -archive "device twins"'
@@ -3319,7 +4286,9 @@ function App() {
                   ref={browserPaneRef}
                   style={{
                     ...styles.browserPane,
-                    gridTemplateColumns: `minmax(0, 1fr) ${PANE_RESIZE_HANDLE_WIDTH}px ${detailPaneWidth}px`,
+                    gridTemplateColumns: showDetails
+                      ? `minmax(0, 1fr) ${PANE_RESIZE_HANDLE_WIDTH}px ${detailPaneWidth}px`
+                      : "minmax(0, 1fr)",
                   }}
                 >
                   <div style={styles.tablePane}>
@@ -3348,6 +4317,15 @@ function App() {
                           sortKey={activeTab.sortKey ?? DEFAULT_BLOB_SORT_KEY}
                           sortDirection={activeTab.sortDirection ?? DEFAULT_BLOB_SORT_DIRECTION}
                           onSortChange={handleBlobSortChange}
+                          dropConnection={activeConnection.id}
+                          dropContainer={activeContainer}
+                          dropPrefix={
+                            dropActive &&
+                            dropTarget?.connectionId === activeConnection.id &&
+                            dropTarget?.container === activeContainer
+                              ? dropTarget.prefix
+                              : null
+                          }
                           onContextMenuRow={(index, row, event) => {
                           if (!selectedRows.has(index)) {
                             updateTab(activeTab.id, (tab) => ({
@@ -3413,10 +4391,17 @@ function App() {
                               },
                             },
                             {
-                              label: "Set access tier…",
-                              disabled: contextRows.length !== 1 || row.kind === "dir",
+                              label:
+                                contextBlobRows.length > 1
+                                  ? `Set access tier (${contextBlobRows.length})…`
+                                  : "Set access tier…",
+                              disabled: contextBlobRows.length === 0,
                               action: () => {
-                                void handleSetTier(row);
+                                if (contextBlobRows.length > 1) {
+                                  void handleSetTierSelection(contextBlobRows);
+                                } else {
+                                  void handleSetTier(contextBlobRows[0] ?? row);
+                                }
                               },
                             },
                             menuSeparator(),
@@ -3439,6 +4424,7 @@ function App() {
                             {
                               label: "Clone…",
                               disabled: true,
+                              hint: "soon",
                               action: () => undefined,
                             },
                             menuSeparator(),
@@ -3457,9 +4443,10 @@ function App() {
                             },
                             {
                               label: "Undelete",
-                              disabled: true,
-                              hint: "›",
-                              action: () => undefined,
+                              disabled: contextRows.length !== 1 || row.kind === "dir",
+                              action: () => {
+                                void handleUndeleteBlob(row);
+                              },
                             },
                             menuSeparator(),
                             {
@@ -3489,40 +4476,52 @@ function App() {
                             menuSeparator(),
                             {
                               label: "Clone and Rehydrate…",
-                              disabled: true,
-                              action: () => undefined,
+                              disabled: contextRows.length !== 1 || row.kind === "dir",
+                              action: () => {
+                                void handleChangeTierOrRehydrate(row);
+                              },
                             },
                             {
                               label: "Change Access Tier…",
-                              disabled: true,
-                              action: () => undefined,
+                              disabled: contextRows.length !== 1 || row.kind === "dir",
+                              action: () => {
+                                void handleChangeTierOrRehydrate(row);
+                              },
                             },
                             menuSeparator(),
                             {
                               label: "Get Shared Access Signature…",
-                              disabled: true,
-                              action: () => undefined,
+                              disabled: contextRows.length !== 1 || row.kind === "dir",
+                              action: () => {
+                                void handleGenerateSas(row);
+                              },
                             },
                             {
                               label: "Acquire Lease",
-                              disabled: true,
-                              action: () => undefined,
+                              disabled: contextRows.length !== 1 || row.kind === "dir",
+                              action: () => {
+                                void handleAcquireLease(row);
+                              },
                             },
                             {
                               label: "Break Lease",
-                              disabled: true,
-                              action: () => undefined,
+                              disabled: contextRows.length !== 1 || row.kind === "dir",
+                              action: () => {
+                                void handleBreakLease(row);
+                              },
                             },
                             menuSeparator(),
                             {
                               label: "Create Snapshot",
-                              disabled: true,
-                              action: () => undefined,
+                              disabled: contextRows.length !== 1 || row.kind === "dir",
+                              action: () => {
+                                void handleCreateSnapshot(row);
+                              },
                             },
                             {
                               label: "Manage History",
                               disabled: true,
-                              hint: "›",
+                              hint: "no versioning API",
                               action: () => undefined,
                             },
                             {
@@ -3536,8 +4535,10 @@ function App() {
                             menuSeparator(),
                             {
                               label: "Edit Tags…",
-                              disabled: true,
-                              action: () => undefined,
+                              disabled: contextRows.length !== 1 || row.kind === "dir",
+                              action: () => {
+                                void handleEditTags(row);
+                              },
                             },
                             {
                               label: "Properties…",
@@ -3608,6 +4609,7 @@ function App() {
                     )}
                   </div>
 
+                  {showDetails && (
                   <div
                     role="separator"
                     aria-orientation="vertical"
@@ -3616,8 +4618,9 @@ function App() {
                     style={styles.previewResizeHandle}
                     onMouseDown={handleDetailPaneResizeStart}
                   />
+                  )}
 
-                  {previewDialog ? (
+                  {showDetails && (previewDialog ? (
                       <BlobPreviewPane
                         state={previewDialog}
                         onClose={() => setPreviewDialog(null)}
@@ -3660,11 +4663,12 @@ function App() {
                         </div>
                       )}
                     </aside>
-                  )}
+                  ))}
                 </div>
               )}
             </>
           )}
+          {showActivities && (
           <ActivityBar
             expanded={activityExpanded}
             onToggle={() => setActivityExpanded((current) => !current)}
@@ -3681,6 +4685,7 @@ function App() {
               void handleClearActivities("successful");
             }}
           />
+          )}
         </main>
       </div>
 
@@ -3758,10 +4763,10 @@ function App() {
             top: Math.min(contextMenu.y, window.innerHeight - 240),
             minWidth: 220,
             padding: 6,
-            borderRadius: 10,
-            background: "rgba(10, 12, 18, 0.98)",
+            borderRadius: 4,
+            background: "var(--bg-1)",
             border: "1px solid var(--border-1)",
-            boxShadow: "0 18px 40px rgba(0, 0, 0, 0.45)",
+            boxShadow: "0 8px 24px rgba(0, 0, 0, 0.34)",
             zIndex: 60,
           }}
           onClick={(event) => event.stopPropagation()}
@@ -3788,7 +4793,7 @@ function App() {
                   justifyContent: "space-between",
                   gap: 12,
                   padding: "8px 10px",
-                  borderRadius: 8,
+                  borderRadius: 3,
                   color: item.disabled ? "var(--fg-4)" : item.danger ? "var(--red)" : "var(--fg-1)",
                   fontFamily: "var(--sans)",
                   fontSize: 12,
@@ -3811,6 +4816,78 @@ function App() {
           )}
         </div>
       )}
+
+      {infoModal && (
+        <div style={styles.overlay} onClick={() => setInfoModal(null)}>
+          <div
+            style={{
+              width: "min(520px, 100%)",
+              borderRadius: 6,
+              overflow: "hidden",
+              border: "1px solid var(--border-1)",
+              background: "var(--bg-1)",
+              boxShadow: "0 12px 36px rgba(0,0,0,0.4)",
+            }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div style={styles.dialogHeader}>
+              <div>
+                {infoModal.subtitle && (
+                  <div style={styles.dialogEyebrow}>{infoModal.subtitle}</div>
+                )}
+                <h2 style={{ ...styles.dialogTitle, fontSize: 22 }}>{infoModal.title}</h2>
+              </div>
+              <button type="button" style={styles.closeButton} onClick={() => setInfoModal(null)}>
+                Close
+              </button>
+            </div>
+            <div style={{ padding: 24, display: "flex", flexDirection: "column", gap: 12 }}>
+              {infoModal.rows.map((entry) => (
+                <div
+                  key={entry.label}
+                  style={{ display: "flex", gap: 16, alignItems: "baseline" }}
+                >
+                  <div
+                    style={{
+                      width: 150,
+                      flexShrink: 0,
+                      fontFamily: "var(--mono)",
+                      fontSize: 11,
+                      textTransform: "uppercase",
+                      letterSpacing: "0.06em",
+                      color: "var(--fg-3)",
+                    }}
+                  >
+                    {entry.label}
+                  </div>
+                  <div style={{ color: "var(--fg-1)", fontSize: 13, wordBreak: "break-all" }}>
+                    {entry.value}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {dropActive && dropTarget && (
+        <div style={styles.dropOverlay}>
+          <div style={styles.dropBanner}>
+            <IconUpload size={14} />
+            <span>
+              Drop to upload to <strong style={{ color: "var(--fg-0)" }}>{dropTarget.label}</strong>
+            </span>
+          </div>
+        </div>
+      )}
+
+      <CommandPalette
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+        commands={paletteCommands}
+      />
+
+      {dialogs.element}
     </div>
   );
 
@@ -4006,83 +5083,236 @@ function App() {
         }
         onClick={() => handleSelectContainer(connectionId, container.name)}
         onContextMenu={(event) =>
-          openContextMenu(event, [
-            {
-              label: "Open",
-              action: () => {
-                handleSelectContainer(connectionId, container.name);
-              },
-            },
-            {
-              label: "Open in new tab",
-              hint: "tab",
-              action: () => {
-                handleSelectContainer(connectionId, container.name);
-              },
-            },
-            {
-              label: "New folder…",
-              action: () => {
-                handleSelectContainer(connectionId, container.name);
-                void handleCreateFolder(connectionId, container.name, "");
-              },
-            },
-            menuSeparator(),
-            {
-              label: "Refresh account containers",
-              action: () => {
-                void ensureContainersLoaded(connectionId, true);
-              },
-            },
-            menuSeparator(),
-            {
-              label: "Copy container name",
-              action: () => {
-                void copyText(container.name);
-              },
-            },
-            {
-              label: "Copy container URL",
-              action: () => {
-                const connection = connectionsRef.current.find(
-                  (candidate) => candidate.id === connectionId,
-                );
-                if (connection) {
-                  void copyText(new URL(`${container.name}/`, connection.endpoint).toString());
-                }
-              },
-            },
-            menuSeparator(),
-            {
-              label: "Properties",
-              disabled: true,
-              hint: "soon",
-              action: () => undefined,
-            },
-            {
-              label: "Manage Stored Access Policies…",
-              disabled: true,
-              action: () => undefined,
-            },
-            {
-              label: "Get Shared Access Signature…",
-              disabled: true,
-              action: () => undefined,
-            },
-            {
-              label: "Set Public Access Level…",
-              disabled: true,
-              action: () => undefined,
-            },
-            {
-              label: "Pin to Quick Access",
-              disabled: true,
-              action: () => undefined,
-            },
-          ])
+          openContextMenu(event, containerMenuItems(connectionId, container))
+        }
+        dropContainer={container.name}
+        dropConnection={connectionId}
+        dropPrefix=""
+        dropHighlighted={
+          dropActive &&
+          dropTarget?.connectionId === connectionId &&
+          dropTarget?.container === container.name &&
+          dropTarget?.prefix === ""
         }
       />
     ));
+  }
+
+  function containerMenuItems(
+    connectionId: string,
+    container: BrowserContainer,
+  ): ContextMenuItem[] {
+    return [
+      {
+        label: "Open",
+        action: () => {
+          handleSelectContainer(connectionId, container.name);
+        },
+      },
+      {
+        label: "Open in new tab",
+        hint: "tab",
+        action: () => {
+          handleSelectContainer(connectionId, container.name);
+        },
+      },
+      {
+        label: "New folder…",
+        action: () => {
+          handleSelectContainer(connectionId, container.name);
+          void handleCreateFolder(connectionId, container.name, "");
+        },
+      },
+      menuSeparator(),
+      {
+        label: "Refresh account containers",
+        action: () => {
+          void ensureContainersLoaded(connectionId, true);
+        },
+      },
+      menuSeparator(),
+      {
+        label: "Copy container name",
+        action: () => {
+          void copyText(container.name);
+        },
+      },
+      {
+        label: "Copy container URL",
+        action: () => {
+          const connection = connectionsRef.current.find(
+            (candidate) => candidate.id === connectionId,
+          );
+          if (connection) {
+            void copyText(new URL(`${container.name}/`, connection.endpoint).toString());
+          }
+        },
+      },
+      menuSeparator(),
+      {
+        label: "Properties",
+        action: () => {
+          showContainerProperties(connectionId, container);
+        },
+      },
+      {
+        label: "Manage Stored Access Policies…",
+        disabled: true,
+        hint: "no API",
+        action: () => undefined,
+      },
+      {
+        label: "Get Shared Access Signature…",
+        action: () => {
+          void handleGenerateContainerSas(connectionId, container.name);
+        },
+      },
+      {
+        label: "Set Public Access Level…",
+        action: () => {
+          void handleSetContainerAccess(connectionId, container.name, container.public_access);
+        },
+      },
+      {
+        label: "Pin to Quick Access",
+        disabled: true,
+        hint: "soon",
+        action: () => undefined,
+      },
+      menuSeparator(),
+      {
+        label: "Delete container…",
+        danger: true,
+        action: () => {
+          void handleDeleteContainer(connectionId, container.name);
+        },
+      },
+    ];
+  }
+
+  function renderContainerOverview() {
+    if (!activeConnection || !activeConnectionId) {
+      return null;
+    }
+    const connectionId = activeConnectionId;
+    const connection = activeConnection;
+    const containers = containerStatesByConnection[connectionId]?.items ?? [];
+    const host = (() => {
+      try {
+        return new URL(connection.endpoint).host;
+      } catch {
+        return connection.endpoint;
+      }
+    })();
+
+    return (
+      <div style={styles.overviewWrap}>
+        <div style={styles.overviewHeader}>
+          <div style={{ minWidth: 0 }}>
+            <div style={styles.overviewEyebrow}>Storage account</div>
+            <h2 style={styles.overviewTitle}>{connection.display_name}</h2>
+            <div style={styles.overviewSub}>{host}</div>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={styles.overviewCount}>
+              {containers.length} container{containers.length === 1 ? "" : "s"}
+            </span>
+            <button
+              type="button"
+              style={styles.secondaryButton}
+              onClick={() => void ensureContainersLoaded(connectionId, true)}
+            >
+              <IconRefresh size={12} />
+              <span>Refresh</span>
+            </button>
+            <button
+              type="button"
+              style={styles.primaryButton}
+              onClick={() => void handleCreateContainer(connectionId)}
+            >
+              <IconPlus size={12} />
+              <span>New container</span>
+            </button>
+          </div>
+        </div>
+
+        {containers.length === 0 ? (
+          <div style={styles.overviewEmpty}>
+            <IconContainer size={18} />
+            <div style={{ fontWeight: 600, color: "var(--fg-1)" }}>No containers</div>
+            <div style={{ color: "var(--fg-3)", fontSize: 12 }}>
+              This storage account has no blob containers yet.
+            </div>
+            <button
+              type="button"
+              style={{ ...styles.primaryButton, marginTop: 6 }}
+              onClick={() => void handleCreateContainer(connectionId)}
+            >
+              <IconPlus size={12} />
+              <span>New container</span>
+            </button>
+          </div>
+        ) : (
+          <div style={styles.overviewGrid}>
+            {containers.map((container) => {
+              const isDropTarget =
+                dropActive &&
+                dropTarget?.connectionId === connectionId &&
+                dropTarget?.container === container.name;
+              return (
+              <button
+                key={container.id}
+                type="button"
+                data-drop-container={container.name}
+                data-drop-connection={connectionId}
+                data-drop-prefix=""
+                style={{
+                  ...styles.containerCard,
+                  ...(isDropTarget
+                    ? { borderColor: "var(--accent)", background: "var(--accent-ghost)" }
+                    : {}),
+                }}
+                onClick={() => handleSelectContainer(connectionId, container.name)}
+                onContextMenu={(event) =>
+                  openContextMenu(event, containerMenuItems(connectionId, container))
+                }
+                onMouseEnter={(event) => {
+                  if (isDropTarget) return;
+                  event.currentTarget.style.borderColor = "var(--accent-dim)";
+                  event.currentTarget.style.background = "var(--bg-2)";
+                }}
+                onMouseLeave={(event) => {
+                  if (isDropTarget) return;
+                  event.currentTarget.style.borderColor = "var(--border-1)";
+                  event.currentTarget.style.background = "var(--bg-1)";
+                }}
+              >
+                <div style={styles.containerCardTop}>
+                  <span style={styles.containerCardIcon}>
+                    <IconContainer size={15} />
+                  </span>
+                  <span style={styles.containerCardName}>{container.name}</span>
+                </div>
+                <div style={styles.containerCardMeta}>
+                  <span style={styles.containerBadge}>
+                    {container.public_access ? `public: ${container.public_access}` : "private"}
+                  </span>
+                  {container.lease && container.lease !== "available" && (
+                    <span style={styles.containerBadge}>lease: {container.lease}</span>
+                  )}
+                  {container.blob_count != null && (
+                    <span style={styles.containerCardCount}>
+                      {container.blob_count} blob{container.blob_count === 1 ? "" : "s"}
+                    </span>
+                  )}
+                </div>
+              </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
   }
 }
 
@@ -4254,7 +5484,7 @@ function ConnectDialog({
                     <div style={styles.infoCard}>
                       <div style={styles.infoTitle}>
                         <IconAzure size={14} />
-                        <span>{method === "entra-browser" ? "Storage Explorer-style sign-in" : "Device-code fallback"}</span>
+                        <span>{method === "entra-browser" ? "Azure sign-in" : "Device-code sign-in"}</span>
                       </div>
                       <div style={styles.infoText}>
                         {method === "entra-browser"
@@ -4299,7 +5529,7 @@ function ConnectDialog({
                               onClick={() => onFormChange("tenantMode", "organizations")}
                             >
                               <span style={styles.tenantModeLabel}>Organizations</span>
-                              <span style={styles.tenantModeText}>Match Azure Storage Explorer’s work and school tenant sign-in path.</span>
+                              <span style={styles.tenantModeText}>Use Azure work and school account discovery.</span>
                             </button>
                             <button
                               type="button"
@@ -4750,12 +5980,14 @@ interface ToolbarButtonProps {
   onClick: () => void;
   disabled?: boolean;
   tone?: "default" | "danger";
+  title?: string;
 }
 
-function ToolbarButton({ label, icon, onClick, disabled = false, tone = "default" }: ToolbarButtonProps) {
+function ToolbarButton({ label, icon, onClick, disabled = false, tone = "default", title }: ToolbarButtonProps) {
   return (
     <button
       type="button"
+      title={title}
       style={{
         ...styles.toolbarButton,
         ...(tone === "danger" ? styles.toolbarButtonDanger : {}),
@@ -4806,9 +6038,6 @@ function MainEmptyState({ title, body, primaryLabel, onPrimary, secondaryLabel }
   return (
     <div style={styles.mainEmptyWrap}>
       <div style={styles.mainEmptyCard}>
-        <div style={styles.mainEmptyIcon}>
-          <IconFolderOpen size={18} />
-        </div>
         <h2 style={styles.mainEmptyTitle}>{title}</h2>
         <p style={styles.mainEmptyBody}>{body}</p>
         {primaryLabel && onPrimary && (
@@ -6240,15 +7469,14 @@ const styles: Record<string, CSSProperties> = {
     display: "flex",
     flexDirection: "column",
     height: "100vh",
-    background: "linear-gradient(180deg, #08090c 0%, #050507 100%)",
+    background: "var(--bg-0)",
   },
   shell: {
     flex: 1,
     minHeight: 0,
     display: "flex",
-    padding: 8,
-    background:
-      "radial-gradient(circle at 82% 4%, rgba(63,157,246,0.10), transparent 34%), linear-gradient(180deg, rgba(12,13,17,0.98) 0%, rgba(6,7,10,1) 100%)",
+    padding: 0,
+    background: "var(--bg-0)",
   },
   sidebar: {
     minWidth: 0,
@@ -6256,31 +7484,27 @@ const styles: Record<string, CSSProperties> = {
     display: "flex",
     flexDirection: "column",
     border: "1px solid var(--border-1)",
-    borderRadius: 14,
+    borderRadius: 0,
     overflow: "hidden",
-    background:
-      "linear-gradient(180deg, rgba(17,18,23,0.98) 0%, rgba(10,11,15,0.98) 100%)",
-    boxShadow: "0 18px 48px rgba(0,0,0,0.28)",
+    background: "var(--bg-1)",
   },
   shellVerticalResizeHandle: {
     width: PANE_RESIZE_HANDLE_WIDTH,
     flexShrink: 0,
     cursor: "col-resize",
-    background:
-      "linear-gradient(90deg, transparent 0, transparent 2px, rgba(63,157,246,0.18) 3px, transparent 5px)",
+    background: "var(--border-0)",
   },
   horizontalPaneResizeHandle: {
     height: PANE_RESIZE_HANDLE_WIDTH,
     flexShrink: 0,
     cursor: "row-resize",
-    background:
-      "linear-gradient(180deg, transparent 0, transparent 2px, rgba(63,157,246,0.16) 3px, transparent 5px)",
+    background: "var(--border-0)",
   },
   sidebarHeader: {
     display: "flex",
     alignItems: "flex-start",
     justifyContent: "space-between",
-    padding: "14px 14px 10px",
+    padding: "10px 12px 8px",
     borderBottom: "1px solid var(--border-0)",
   },
   sidebarEyebrow: {
@@ -6291,7 +7515,7 @@ const styles: Record<string, CSSProperties> = {
     color: "var(--fg-3)",
   },
   sidebarTitle: {
-    fontSize: 18,
+    fontSize: 14,
     fontWeight: 600,
     color: "var(--fg-0)",
     marginTop: 2,
@@ -6326,7 +7550,7 @@ const styles: Record<string, CSSProperties> = {
   },
   sidebarDetailsPanel: {
     borderTop: "1px solid var(--border-0)",
-    background: "rgba(12, 12, 15, 0.94)",
+    background: "var(--bg-1)",
     display: "flex",
     flexDirection: "column",
     flexShrink: 0,
@@ -6395,10 +7619,10 @@ const styles: Record<string, CSSProperties> = {
   },
   sidebarEmptyCard: {
     margin: "8px 12px 0",
-    padding: 12,
-    borderRadius: 10,
+    padding: 10,
+    borderRadius: 4,
     border: "1px solid var(--border-1)",
-    background: "rgba(63, 157, 246, 0.05)",
+    background: "var(--bg-2)",
     display: "flex",
     flexDirection: "column",
     gap: 8,
@@ -6414,10 +7638,10 @@ const styles: Record<string, CSSProperties> = {
   },
   sidebarEmptyAction: {
     alignSelf: "flex-start",
-    padding: "6px 10px",
-    borderRadius: 6,
-    background: "var(--accent)",
-    color: "#08111c",
+    padding: "5px 9px",
+    borderRadius: 3,
+    background: "var(--bg-3)",
+    color: "var(--fg-1)",
     fontWeight: 600,
   },
   discoveryGroup: {
@@ -6433,7 +7657,7 @@ const styles: Record<string, CSSProperties> = {
   inlineEmptyBlock: {
     margin: "8px 12px 0",
     padding: 10,
-    borderRadius: 8,
+    borderRadius: 3,
     background: "var(--bg-2)",
     border: "1px solid var(--border-0)",
     fontSize: 11,
@@ -6447,11 +7671,9 @@ const styles: Record<string, CSSProperties> = {
     display: "flex",
     flexDirection: "column",
     border: "1px solid var(--border-1)",
-    borderRadius: 14,
+    borderRadius: 0,
     overflow: "hidden",
-    background:
-      "radial-gradient(circle at top right, rgba(63, 157, 246, 0.08), transparent 30%), linear-gradient(180deg, rgba(15,16,21,0.98), rgba(10,11,15,0.98))",
-    boxShadow: "0 18px 48px rgba(0,0,0,0.28)",
+    background: "var(--bg-1)",
   },
   toolbar: {
     height: 46,
@@ -6489,7 +7711,7 @@ const styles: Record<string, CSSProperties> = {
     gap: 6,
     padding: "0 10px",
     height: 28,
-    borderRadius: 999,
+    borderRadius: 3,
     background: "var(--bg-2)",
     border: "1px solid var(--border-1)",
     fontSize: 11,
@@ -6528,7 +7750,7 @@ const styles: Record<string, CSSProperties> = {
   pathButtonActive: {
     padding: "4px 8px",
     borderRadius: 4,
-    background: "var(--accent-ghost)",
+    background: "var(--bg-3)",
     color: "var(--fg-0)",
     whiteSpace: "nowrap",
   },
@@ -6581,8 +7803,8 @@ const styles: Record<string, CSSProperties> = {
   },
   pathToggleButtonActive: {
     borderColor: "var(--accent-dim)",
-    background: "var(--accent-ghost)",
-    color: "var(--accent)",
+    background: "var(--bg-3)",
+    color: "var(--fg-0)",
   },
   pathStatus: {
     display: "inline-flex",
@@ -6601,10 +7823,8 @@ const styles: Record<string, CSSProperties> = {
     flexShrink: 0,
     margin: "0 10px 8px",
     border: "1px solid var(--border-1)",
-    borderRadius: 12,
-    background:
-      "linear-gradient(180deg, rgba(20,22,28,0.96), rgba(13,14,18,0.98))",
-    boxShadow: "0 14px 36px rgba(0,0,0,0.24)",
+    borderRadius: 4,
+    background: "var(--bg-1)",
     overflow: "hidden",
   },
   filterPanelHeader: {
@@ -6677,10 +7897,10 @@ const styles: Record<string, CSSProperties> = {
     display: "inline-flex",
     alignItems: "center",
     padding: "0 8px",
-    borderRadius: 999,
-    border: "1px solid var(--accent-dim)",
-    background: "var(--accent-ghost)",
-    color: "var(--accent)",
+    borderRadius: 3,
+    border: "1px solid var(--border-1)",
+    background: "var(--bg-3)",
+    color: "var(--fg-1)",
     fontFamily: "var(--mono)",
     fontSize: 10,
   },
@@ -6774,45 +7994,37 @@ const styles: Record<string, CSSProperties> = {
   mainEmptyWrap: {
     flex: 1,
     display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    padding: 24,
+    alignItems: "flex-start",
+    justifyContent: "flex-start",
+    padding: 16,
   },
   mainEmptyCard: {
     width: "100%",
-    maxWidth: 560,
-    borderRadius: 18,
+    maxWidth: 520,
+    borderRadius: 4,
     border: "1px solid var(--border-1)",
-    background: "linear-gradient(180deg, rgba(28,28,34,0.94) 0%, rgba(16,16,19,0.98) 100%)",
-    padding: "28px 28px 26px",
+    background: "var(--bg-1)",
+    padding: "14px 16px",
     display: "flex",
     flexDirection: "column",
     alignItems: "flex-start",
-    gap: 12,
-    boxShadow: "0 18px 60px rgba(0,0,0,0.28)",
-    animation: "arkived-scale-in 160ms ease-out",
+    gap: 8,
   },
   mainEmptyIcon: {
-    width: 42,
-    height: 42,
-    borderRadius: 12,
-    background: "var(--accent-ghost)",
-    color: "var(--accent)",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
+    display: "none",
   },
   mainEmptyTitle: {
     margin: 0,
-    fontSize: 24,
-    lineHeight: 1.1,
-    fontWeight: 700,
+    fontSize: 13,
+    lineHeight: 1.25,
+    fontWeight: 600,
     color: "var(--fg-0)",
   },
   mainEmptyBody: {
     margin: 0,
     color: "var(--fg-2)",
-    lineHeight: 1.7,
+    fontSize: 12,
+    lineHeight: 1.5,
     maxWidth: 480,
   },
   mainEmptySecondary: {
@@ -6820,11 +8032,154 @@ const styles: Record<string, CSSProperties> = {
     fontSize: 11,
     fontFamily: "var(--mono)",
   },
+  overviewWrap: {
+    flex: 1,
+    minHeight: 0,
+    overflow: "auto",
+    padding: 24,
+    display: "flex",
+    flexDirection: "column",
+    gap: 18,
+  },
+  dropOverlay: {
+    position: "fixed",
+    inset: 0,
+    zIndex: 30,
+    pointerEvents: "none",
+    display: "flex",
+    alignItems: "flex-start",
+    justifyContent: "center",
+    paddingTop: 80,
+    border: "2px dashed var(--accent-dim)",
+    background: "var(--accent-ghost)",
+  },
+  dropBanner: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 8,
+    padding: "10px 16px",
+    borderRadius: 6,
+    border: "1px solid var(--accent-dim)",
+    background: "var(--bg-1)",
+    color: "var(--fg-2)",
+    fontSize: 13,
+    boxShadow: "0 12px 36px rgba(0,0,0,0.4)",
+  },
+  overviewHeader: {
+    display: "flex",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 16,
+    flexWrap: "wrap",
+  },
+  overviewEyebrow: {
+    fontSize: 10,
+    fontFamily: "var(--mono)",
+    textTransform: "uppercase",
+    letterSpacing: "0.08em",
+    color: "var(--fg-3)",
+    marginBottom: 4,
+  },
+  overviewTitle: {
+    margin: 0,
+    fontSize: 22,
+    lineHeight: 1.1,
+    fontWeight: 700,
+    color: "var(--fg-0)",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+  },
+  overviewSub: {
+    marginTop: 4,
+    fontSize: 12,
+    fontFamily: "var(--mono)",
+    color: "var(--fg-3)",
+  },
+  overviewCount: {
+    fontSize: 11,
+    fontFamily: "var(--mono)",
+    color: "var(--fg-2)",
+  },
+  overviewEmpty: {
+    flex: 1,
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    color: "var(--fg-2)",
+    padding: 48,
+  },
+  overviewGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))",
+    gap: 12,
+    alignContent: "start",
+  },
+  containerCard: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 10,
+    padding: "14px 16px",
+    borderRadius: 4,
+    border: "1px solid var(--border-1)",
+    background: "var(--bg-1)",
+    textAlign: "left",
+    cursor: "pointer",
+    transition: "border-color 120ms ease, background 120ms ease",
+  },
+  containerCardTop: {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    minWidth: 0,
+  },
+  containerCardIcon: {
+    width: 30,
+    height: 30,
+    flexShrink: 0,
+    borderRadius: 4,
+    background: "var(--bg-3)",
+    color: "var(--fg-1)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  containerCardName: {
+    fontSize: 13,
+    fontWeight: 600,
+    color: "var(--fg-0)",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  },
+  containerCardMeta: {
+    display: "flex",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 6,
+  },
+  containerBadge: {
+    fontSize: 9,
+    fontWeight: 600,
+    fontFamily: "var(--mono)",
+    letterSpacing: "0.04em",
+    padding: "2px 6px",
+    borderRadius: 5,
+    background: "var(--bg-3)",
+    color: "var(--fg-3)",
+    border: "1px solid var(--border-1)",
+  },
+  containerCardCount: {
+    marginLeft: "auto",
+    fontSize: 10,
+    fontFamily: "var(--mono)",
+    color: "var(--fg-3)",
+  },
   overlay: {
     position: "fixed",
     inset: 0,
-    background: "rgba(6,6,8,0.76)",
-    backdropFilter: "blur(10px)",
+    background: "rgba(0,0,0,0.55)",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
@@ -6836,16 +8191,15 @@ const styles: Record<string, CSSProperties> = {
     minHeight: 620,
     display: "grid",
     gridTemplateColumns: "320px minmax(0, 1fr)",
-    borderRadius: 20,
+    borderRadius: 6,
     overflow: "hidden",
     border: "1px solid var(--border-1)",
-    boxShadow: "0 28px 90px rgba(0,0,0,0.45)",
+    boxShadow: "0 12px 36px rgba(0,0,0,0.4)",
     background: "var(--bg-1)",
-    animation: "arkived-scale-in 160ms ease-out",
   },
   dialogSidebar: {
     borderRight: "1px solid var(--border-0)",
-    background: "linear-gradient(180deg, rgba(15,15,19,1) 0%, rgba(10,10,12,1) 100%)",
+    background: "var(--bg-1)",
     padding: 18,
     display: "flex",
     flexDirection: "column",
@@ -6883,7 +8237,7 @@ const styles: Record<string, CSSProperties> = {
     minWidth: 0,
     display: "flex",
     flexDirection: "column",
-    background: "radial-gradient(circle at top right, rgba(63,157,246,0.08), transparent 25%), var(--bg-1)",
+    background: "var(--bg-1)",
   },
   dialogHeader: {
     display: "flex",
@@ -6941,7 +8295,7 @@ const styles: Record<string, CSSProperties> = {
   },
   methodButton: {
     width: "100%",
-    borderRadius: 12,
+    borderRadius: 4,
     border: "1px solid var(--border-1)",
     background: "var(--bg-2)",
     padding: "12px 12px 12px 14px",
@@ -6952,7 +8306,7 @@ const styles: Record<string, CSSProperties> = {
   },
   methodButtonActive: {
     borderColor: "var(--accent-dim)",
-    background: "rgba(63, 157, 246, 0.1)",
+    background: "var(--bg-3)",
   },
   methodButtonLocked: {
     opacity: 0.85,
@@ -6977,9 +8331,9 @@ const styles: Record<string, CSSProperties> = {
     lineHeight: 1.5,
   },
   tenantCard: {
-    borderRadius: 16,
+    borderRadius: 4,
     border: "1px solid var(--border-1)",
-    background: "rgba(18,18,22,0.9)",
+    background: "var(--bg-1)",
     padding: 16,
     display: "flex",
     flexDirection: "column",
@@ -7014,7 +8368,7 @@ const styles: Record<string, CSSProperties> = {
     whiteSpace: "nowrap",
   },
   tenantCardError: {
-    borderRadius: 10,
+    borderRadius: 4,
     border: "1px solid rgba(224, 113, 110, 0.24)",
     background: "rgba(224, 113, 110, 0.12)",
     color: "var(--red)",
@@ -7057,7 +8411,7 @@ const styles: Record<string, CSSProperties> = {
     gap: 10,
   },
   tenantModeButton: {
-    borderRadius: 12,
+    borderRadius: 4,
     border: "1px solid var(--border-1)",
     background: "var(--bg-2)",
     padding: 12,
@@ -7070,7 +8424,7 @@ const styles: Record<string, CSSProperties> = {
   },
   tenantModeButtonActive: {
     borderColor: "var(--accent-dim)",
-    background: "rgba(63, 157, 246, 0.1)",
+    background: "var(--bg-3)",
   },
   tenantModeLabel: {
     color: "var(--fg-0)",
@@ -7097,7 +8451,7 @@ const styles: Record<string, CSSProperties> = {
     width: "100%",
     minHeight: 40,
     padding: "10px 12px",
-    borderRadius: 10,
+    borderRadius: 4,
     border: "1px solid var(--border-1)",
     background: "var(--bg-2)",
     color: "var(--fg-0)",
@@ -7108,9 +8462,9 @@ const styles: Record<string, CSSProperties> = {
     minHeight: 108,
   },
   infoCard: {
-    borderRadius: 14,
+    borderRadius: 4,
     border: "1px solid var(--border-1)",
-    background: "rgba(63, 157, 246, 0.06)",
+    background: "var(--bg-1)",
     padding: 16,
     display: "flex",
     flexDirection: "column",
@@ -7128,9 +8482,9 @@ const styles: Record<string, CSSProperties> = {
     lineHeight: 1.6,
   },
   promptCard: {
-    borderRadius: 16,
+    borderRadius: 4,
     border: "1px solid var(--border-1)",
-    background: "linear-gradient(180deg, rgba(22, 32, 44, 0.85), rgba(16, 16, 19, 0.95))",
+    background: "var(--bg-1)",
     padding: 20,
     display: "flex",
     flexDirection: "column",
@@ -7152,9 +8506,9 @@ const styles: Record<string, CSSProperties> = {
   },
   promptCode: {
     padding: "12px 16px",
-    borderRadius: 12,
-    background: "rgba(63, 157, 246, 0.12)",
-    border: "1px solid rgba(63, 157, 246, 0.28)",
+    borderRadius: 4,
+    background: "var(--bg-2)",
+    border: "1px solid var(--border-1)",
     color: "var(--fg-0)",
     fontSize: 24,
     fontWeight: 700,
@@ -7167,7 +8521,7 @@ const styles: Record<string, CSSProperties> = {
     gap: 12,
   },
   promptField: {
-    borderRadius: 12,
+    borderRadius: 4,
     border: "1px solid var(--border-1)",
     background: "rgba(0, 0, 0, 0.18)",
     padding: 12,
@@ -7189,7 +8543,7 @@ const styles: Record<string, CSSProperties> = {
     wordBreak: "break-word",
   },
   promptMessage: {
-    borderRadius: 12,
+    borderRadius: 4,
     border: "1px dashed var(--border-2)",
     padding: 14,
     color: "var(--fg-2)",
@@ -7202,9 +8556,9 @@ const styles: Record<string, CSSProperties> = {
     flexWrap: "wrap",
   },
   azuriteCard: {
-    borderRadius: 16,
+    borderRadius: 4,
     border: "1px solid var(--border-1)",
-    background: "linear-gradient(180deg, rgba(18, 25, 32, 0.85), rgba(16, 16, 19, 0.96))",
+    background: "var(--bg-1)",
     padding: 18,
     display: "flex",
     flexDirection: "column",
@@ -7575,9 +8929,9 @@ const styles: Record<string, CSSProperties> = {
   primaryButton: {
     height: 36,
     padding: "0 14px",
-    borderRadius: 10,
-    border: "1px solid rgba(63, 157, 246, 0.45)",
-    background: "linear-gradient(180deg, rgba(85, 170, 247, 1) 0%, rgba(63, 157, 246, 1) 100%)",
+    borderRadius: 4,
+    border: "1px solid var(--accent-dim)",
+    background: "var(--accent)",
     color: "#07111d",
     fontWeight: 700,
     display: "inline-flex",
@@ -7587,7 +8941,7 @@ const styles: Record<string, CSSProperties> = {
   secondaryButton: {
     height: 34,
     padding: "0 12px",
-    borderRadius: 9,
+    borderRadius: 4,
     border: "1px solid var(--border-1)",
     background: "var(--bg-2)",
     color: "var(--fg-1)",
