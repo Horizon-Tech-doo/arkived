@@ -321,6 +321,9 @@ interface BlobTableProps {
   sortKey: BlobSortKey;
   sortDirection: SortDirection;
   onSortChange: (key: BlobSortKey) => void;
+  dropConnection?: string;
+  dropContainer?: string;
+  dropPrefix?: string | null;
 }
 export function BlobTable({
   rows,
@@ -333,6 +336,9 @@ export function BlobTable({
   sortKey,
   sortDirection,
   onSortChange,
+  dropConnection,
+  dropContainer,
+  dropPrefix,
 }: BlobTableProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const [tableWidth, setTableWidth] = useState(0);
@@ -519,23 +525,31 @@ export function BlobTable({
 
       {rows.map(({ index, row: r }) => {
         const isSelected = selected.has(index);
+        const isFolderDropZone = r.kind === "dir" && !!dropContainer && !!r.path;
+        const isDropHighlighted = isFolderDropZone && dropPrefix != null && dropPrefix === r.path;
         return (
           <div
             key={`${index}:${r.path ?? r.name}`}
             onClick={(event) => onSelectRow(index, event)}
             onDoubleClick={() => onActivateRow?.(index)}
             onContextMenu={(event) => onContextMenuRow?.(index, r, event)}
+            data-drop-container={isFolderDropZone ? dropContainer : undefined}
+            data-drop-connection={isFolderDropZone ? dropConnection : undefined}
+            data-drop-prefix={isFolderDropZone ? r.path : undefined}
             style={{
               display: "grid",
               gridTemplateColumns: gridTemplate,
               height: 30,
               borderBottom: "1px solid var(--border-0)",
-              background: isSelected ? "var(--accent-ghost-strong)" : "transparent",
+              background: isDropHighlighted
+                ? "var(--accent-ghost)"
+                : isSelected ? "var(--accent-ghost-strong)" : "transparent",
+              boxShadow: isDropHighlighted ? "inset 0 0 0 1px var(--accent-dim)" : "none",
               cursor: "pointer",
               color: "var(--fg-1)",
             }}
-            onMouseEnter={(e) => { if (!isSelected) (e.currentTarget as HTMLDivElement).style.background = "var(--bg-2)"; }}
-            onMouseLeave={(e) => { if (!isSelected) (e.currentTarget as HTMLDivElement).style.background = "transparent"; }}
+            onMouseEnter={(e) => { if (!isSelected && !isDropHighlighted) (e.currentTarget as HTMLDivElement).style.background = "var(--bg-2)"; }}
+            onMouseLeave={(e) => { if (!isSelected && !isDropHighlighted) (e.currentTarget as HTMLDivElement).style.background = "transparent"; }}
           >
             <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
               <Checkbox checked={isSelected} onChange={() => onToggleSelect(index)} />

@@ -4056,6 +4056,15 @@ function App() {
                           sortKey={activeTab.sortKey ?? DEFAULT_BLOB_SORT_KEY}
                           sortDirection={activeTab.sortDirection ?? DEFAULT_BLOB_SORT_DIRECTION}
                           onSortChange={handleBlobSortChange}
+                          dropConnection={activeConnection.id}
+                          dropContainer={activeContainer}
+                          dropPrefix={
+                            dropActive &&
+                            dropTarget?.connectionId === activeConnection.id &&
+                            dropTarget?.container === activeContainer
+                              ? dropTarget.prefix
+                              : null
+                          }
                           onContextMenuRow={(index, row, event) => {
                           if (!selectedRows.has(index)) {
                             updateTab(activeTab.id, (tab) => ({
