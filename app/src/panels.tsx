@@ -10,53 +10,72 @@ import {
 import type { Activity } from "./data";
 import { Checkbox } from "./content";
 
+export interface CommandItem {
+  id: string;
+  label: string;
+  section?: string;
+  hint?: string;
+  keywords?: string;
+  icon?: React.ReactNode;
+  run: () => void;
+}
 interface CommandPaletteProps {
   open: boolean;
   onClose: () => void;
+  commands: CommandItem[];
 }
-export function CommandPalette({ open, onClose }: CommandPaletteProps) {
+export function CommandPalette({ open, onClose, commands }: CommandPaletteProps) {
   const [query, setQuery] = useState("");
+  const [selected, setSelected] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (open && inputRef.current) {
-      setTimeout(() => inputRef.current?.focus(), 10);
+    if (open) {
       setQuery("");
+      setSelected(0);
+      const handle = setTimeout(() => inputRef.current?.focus(), 10);
+      return () => clearTimeout(handle);
     }
   }, [open]);
 
-  interface PItem { icon: React.ReactNode; label: string; kbd?: string; }
-  interface PSection { section: string; items: PItem[]; }
+  const needle = query.trim().toLowerCase();
+  const filtered = needle
+    ? commands.filter((c) => `${c.label} ${c.section ?? ""} ${c.keywords ?? ""}`.toLowerCase().includes(needle))
+    : commands;
 
-  const all: PSection[] = [
-    { section: "Suggested", items: [
-      { icon: <IconTerminal size={12} />, label: "Open command palette", kbd: "cmd" },
-      { icon: <IconUpload size={12} />, label: "Upload files to device-twins-sync/…", kbd: "Ctrl U" },
-      { icon: <IconDownload size={12} />, label: "Download selection", kbd: "Ctrl Shift D" },
-    ]},
-    { section: "Navigate", items: [
-      { icon: <IconContainer size={12} />, label: "Go to container › raw-device-telemetry" },
-      { icon: <IconContainer size={12} />, label: "Go to container › pipeline-output" },
-      { icon: <IconQueue size={12} />, label: "Go to queue › ingress-q" },
-      { icon: <IconTable size={12} />, label: "Go to table › DeviceRegistry" },
-    ]},
-    { section: "Storage Actions", items: [
-      { icon: <IconKey size={12} />, label: "Generate SAS token…", kbd: "sas" },
-      { icon: <IconShield size={12} />, label: "Manage ACLs (ADLS Gen2)…", kbd: "acl" },
-      { icon: <IconTerminal size={12} />, label: "Copy AzCopy command for selection" },
-      { icon: <IconRefresh size={12} />, label: "Sync metadata cache" },
-    ]},
-    { section: "Sessions", items: [
-      { icon: <IconKey size={12} />, label: "Switch subscription › Horizon Tech — Prod" },
-      { icon: <IconLock size={12} />, label: "Re-authenticate with Azure AD" },
-    ]},
-  ];
-
-  const filtered = query
-    ? all.map((s) => ({ ...s, items: s.items.filter((i) => i.label.toLowerCase().includes(query.toLowerCase())) })).filter((s) => s.items.length)
-    : all;
+  // Keep the selection in range as the filtered list changes.
+  useEffect(() => {
+    setSelected((current) => (current >= filtered.length ? 0 : current));
+  }, [filtered.length]);
 
   if (!open) return null;
+
+  const runAt = (index: number) => {
+    const item = filtered[index];
+    if (item) {
+      onClose();
+      item.run();
+    }
+  };
+
+  const onKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setSelected((current) => (filtered.length ? (current + 1) % filtered.length : 0));
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setSelected((current) => (filtered.length ? (current - 1 + filtered.length) % filtered.length : 0));
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      runAt(selected);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      onClose();
+    }
+  };
+
+  // Render flat, inserting a section header whenever the section changes.
+  let lastSection: string | undefined;
 
   return (
     <div
@@ -67,7 +86,6 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
         backdropFilter: "none",
         display: "flex", alignItems: "flex-start", justifyContent: "center",
         paddingTop: 120,
-        animation: "arkived-fade-in 120ms ease-out",
       }}
     >
       <div
@@ -91,6 +109,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
             ref={inputRef}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={onKeyDown}
             placeholder="Search commands or resources"
             style={{
               flex: 1,
@@ -103,38 +122,39 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
         </div>
 
         <div style={{ maxHeight: 420, overflow: "auto", padding: "4px 0" }}>
-          {filtered.map((s, si) => (
-            <div key={si}>
-              <div style={{
-                padding: "8px 14px 4px",
-                fontSize: 9, fontWeight: 700, color: "var(--fg-3)",
-                fontFamily: "var(--mono)", textTransform: "uppercase", letterSpacing: "0.08em",
-              }}>{s.section}</div>
-              {s.items.map((it, ii) => {
-                const isFirst = si === 0 && ii === 0;
-                return (
-                  <div
-                    key={ii}
-                    style={{
-                      display: "flex", alignItems: "center", gap: 10,
-                      padding: "6px 14px",
-                      cursor: "pointer",
-                      background: isFirst ? "var(--accent-ghost)" : "transparent",
-                      borderLeft: isFirst ? "2px solid var(--accent)" : "2px solid transparent",
-                    }}
-                    onMouseEnter={(e) => { if (!isFirst) (e.currentTarget as HTMLDivElement).style.background = "var(--bg-2)"; }}
-                    onMouseLeave={(e) => { if (!isFirst) (e.currentTarget as HTMLDivElement).style.background = "transparent"; }}
-                  >
-                    <span style={{ color: isFirst ? "var(--accent)" : "var(--fg-2)", display: "flex" }}>
-                      {it.icon}
-                    </span>
-                    <span style={{ flex: 1, fontSize: 12, color: "var(--fg-0)" }}>{it.label}</span>
-                    {it.kbd && <span className="kbd">{it.kbd}</span>}
-                  </div>
-                );
-              })}
-            </div>
-          ))}
+          {filtered.map((item, index) => {
+            const header = item.section && item.section !== lastSection ? item.section : null;
+            lastSection = item.section;
+            const isActive = index === selected;
+            return (
+              <React.Fragment key={item.id}>
+                {header && (
+                  <div style={{
+                    padding: "8px 14px 4px",
+                    fontSize: 9, fontWeight: 700, color: "var(--fg-3)",
+                    fontFamily: "var(--mono)", textTransform: "uppercase", letterSpacing: "0.08em",
+                  }}>{header}</div>
+                )}
+                <div
+                  onClick={() => runAt(index)}
+                  onMouseMove={() => setSelected(index)}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 10,
+                    padding: "6px 14px",
+                    cursor: "pointer",
+                    background: isActive ? "var(--accent-ghost)" : "transparent",
+                    borderLeft: isActive ? "2px solid var(--accent)" : "2px solid transparent",
+                  }}
+                >
+                  <span style={{ color: isActive ? "var(--accent)" : "var(--fg-2)", display: "flex" }}>
+                    {item.icon ?? <IconTerminal size={12} />}
+                  </span>
+                  <span style={{ flex: 1, fontSize: 12, color: "var(--fg-0)" }}>{item.label}</span>
+                  {item.hint && <span className="kbd">{item.hint}</span>}
+                </div>
+              </React.Fragment>
+            );
+          })}
           {filtered.length === 0 && (
             <div style={{ padding: "30px 14px", textAlign: "center", color: "var(--fg-3)", fontSize: 12 }}>
               No matches.
@@ -150,10 +170,10 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
           fontSize: 10, fontFamily: "var(--mono)", color: "var(--fg-3)",
         }}>
           <span><span className="kbd">↑↓</span> navigate</span>
-          <span><span className="kbd">⏎</span> open</span>
-          <span><span className="kbd">Ctrl Enter</span> run command</span>
+          <span><span className="kbd">⏎</span> run</span>
+          <span><span className="kbd">esc</span> close</span>
           <span style={{ flex: 1 }} />
-          <span>18 MCP tools loaded</span>
+          <span>{filtered.length} command{filtered.length === 1 ? "" : "s"}</span>
         </div>
       </div>
     </div>

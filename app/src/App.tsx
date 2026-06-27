@@ -4,7 +4,8 @@ import { GroupHeader, TitleBar, TreeRow } from "./chrome";
 import { ActionBar, BlobPropertiesPane, BlobTable, Inspector, TabsBar } from "./content";
 import type { BlobSortKey, IndexedBlobRow, SortDirection } from "./content";
 import type { BlobPropertiesPaneState } from "./content";
-import { ActivityBar } from "./panels";
+import { ActivityBar, CommandPalette } from "./panels";
+import type { CommandItem } from "./panels";
 import { useDialogs } from "./dialogs";
 import type { Activity, BlobRow } from "./data";
 import {
@@ -441,6 +442,7 @@ function App() {
   const [showDetails, setShowDetails] = useState(true);
   const [showActivities, setShowActivities] = useState(true);
   const [infoModal, setInfoModal] = useState<InfoModalState | null>(null);
+  const [paletteOpen, setPaletteOpen] = useState(false);
   const [dropTarget, setDropTarget] = useState<DropTarget | null>(null);
   const [dropActive, setDropActive] = useState(false);
   const dropResolveRef = useRef<(x: number, y: number) => DropTarget | null>(() => null);
@@ -3044,12 +3046,24 @@ function App() {
     if (dialogs.isOpen) {
       return;
     }
+    const mod = event.ctrlKey || event.metaKey;
+
+    // Command palette toggle works from anywhere, including over the palette itself.
+    if (mod && (event.key === "k" || event.key === "K")) {
+      event.preventDefault();
+      setPaletteOpen((open) => !open);
+      return;
+    }
+    // While the palette is open it owns the keyboard (its input handles nav/run/esc).
+    if (paletteOpen) {
+      return;
+    }
+
     const target = event.target as HTMLElement | null;
     const typing =
       target?.tagName === "INPUT" ||
       target?.tagName === "TEXTAREA" ||
       target?.isContentEditable === true;
-    const mod = event.ctrlKey || event.metaKey;
 
     // Navigation works even while a field is focused (matches file explorers).
     if (event.altKey && event.key === "ArrowLeft") {
@@ -3115,6 +3129,54 @@ function App() {
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, []);
+
+  // Live command-palette entries built from current state. Everything here runs
+  // a real handler — navigation, view toggles, connect, container actions, and
+  // "go to container" jumps drawn from the active account's live container list.
+  const paletteCommands: CommandItem[] = [];
+  paletteCommands.push(
+    { id: "nav.back", section: "Navigation", label: "Back", hint: "Alt+←", icon: <IconArrowLeft size={12} />, run: handleGoBack },
+    { id: "nav.forward", section: "Navigation", label: "Forward", hint: "Alt+→", icon: <IconArrowRight size={12} />, run: handleGoForward },
+    { id: "nav.up", section: "Navigation", label: "Up one level", hint: "Backspace", icon: <IconArrowUp size={12} />, run: handleGoUp },
+    { id: "nav.refresh", section: "Navigation", label: "Refresh", hint: "F5", icon: <IconRefresh size={12} />, run: () => void handleRefresh() },
+  );
+  paletteCommands.push(
+    { id: "acct.connect", section: "Account", label: "Connect…", keywords: "sign in attach add account", icon: <IconPlus size={12} />, run: () => openConnectDialog() },
+  );
+  if (activeConnection) {
+    paletteCommands.push({
+      id: "acct.newContainer",
+      section: "Account",
+      label: "New container…",
+      keywords: "create container",
+      icon: <IconPlus size={12} />,
+      run: () => void handleCreateContainer(activeConnection.id),
+    });
+  }
+  paletteCommands.push(
+    { id: "view.sidebar", section: "View", label: "Toggle sidebar", icon: <IconContainer size={12} />, run: () => setShowSidebar((value) => !value) },
+    { id: "view.details", section: "View", label: "Toggle details panel", icon: <IconInfo size={12} />, run: () => setShowDetails((value) => !value) },
+    { id: "view.activities", section: "View", label: "Toggle activities", icon: <IconTerminal size={12} />, run: () => setShowActivities((value) => !value) },
+  );
+  if (activeConnection && activeContainer) {
+    paletteCommands.push(
+      { id: "blob.upload", section: "Storage", label: "Upload files…", icon: <IconUpload size={12} />, run: () => void handleUploadFiles() },
+      { id: "blob.uploadFolder", section: "Storage", label: "Upload folder…", icon: <IconUpload size={12} />, run: () => void handleUploadFolders() },
+      { id: "blob.newFolder", section: "Storage", label: "New folder…", icon: <IconPlus size={12} />, run: () => void handleCreateFolder() },
+    );
+  }
+  if (activeConnectionId) {
+    for (const container of containerStatesByConnection[activeConnectionId]?.items ?? []) {
+      paletteCommands.push({
+        id: `goto:${container.id}`,
+        section: "Go to container",
+        label: container.name,
+        keywords: "open container",
+        icon: <IconContainer size={12} />,
+        run: () => handleSelectContainer(activeConnectionId, container.name),
+      });
+    }
+  }
 
   useEffect(() => {
     if (!activeTabId) {
@@ -3573,7 +3635,7 @@ function App() {
   return (
     <div style={styles.appRoot}>
       <TitleBar
-        onOpenPalette={() => openConnectDialog()}
+        onOpenPalette={() => setPaletteOpen(true)}
         activeConnection={titleConnection}
         connectionDetail={connectionDetail}
         connected={Boolean(activeConnection || signIns.length > 0) && !runtimeUnavailable}
@@ -4818,6 +4880,12 @@ function App() {
           </div>
         </div>
       )}
+
+      <CommandPalette
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+        commands={paletteCommands}
+      />
 
       {dialogs.element}
     </div>
