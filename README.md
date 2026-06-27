@@ -26,11 +26,23 @@ The core library (`arkived-core`) is structured with a `StorageBackend` abstract
 
 ## Install
 
+### Desktop app
+
+Download the installer for your platform from the [**latest release**](https://github.com/Horizon-Tech-doo/arkived/releases/latest), run it, and Arkived installs itself.
+
+| Platform | Processors | Files |
+| --- | --- | --- |
+| **Windows** | x64, ARM64 | `*-setup.exe` (NSIS) or `*.msi` |
+| **macOS** | Intel + Apple Silicon | `*_universal.dmg` |
+| **Linux** | x86_64, aarch64 | `.AppImage`, `.deb`, or `.rpm` |
+
+Installers are produced for every OS and processor by the [Release workflow](./.github/workflows/release.yml) and attached to each GitHub Release.
+
+### CLI
+
 ```bash
 cargo install arkived
 ```
-
-Desktop app installers for macOS, Windows, and Linux will be published from [Releases](https://github.com/Horizon-Tech-doo/arkived/releases) once the GUI is available.
 
 ## Quick start
 
