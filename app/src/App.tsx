@@ -4802,6 +4802,15 @@ function App() {
         onContextMenu={(event) =>
           openContextMenu(event, containerMenuItems(connectionId, container))
         }
+        dropContainer={container.name}
+        dropConnection={connectionId}
+        dropPrefix=""
+        dropHighlighted={
+          dropActive &&
+          dropTarget?.connectionId === connectionId &&
+          dropTarget?.container === container.name &&
+          dropTarget?.prefix === ""
+        }
       />
     ));
   }

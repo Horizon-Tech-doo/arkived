@@ -163,6 +163,10 @@ interface TreeRowProps {
   action?: ReactNode;
   onAction?: () => void;
   onContextMenu?: (event: React.MouseEvent<HTMLDivElement>) => void;
+  dropContainer?: string;
+  dropConnection?: string;
+  dropPrefix?: string;
+  dropHighlighted?: boolean;
 }
 export function TreeRow({
   depth,
@@ -178,23 +182,33 @@ export function TreeRow({
   action,
   onAction,
   onContextMenu,
+  dropContainer,
+  dropConnection,
+  dropPrefix,
+  dropHighlighted,
 }: TreeRowProps) {
   return (
     <div
       onClick={onClick}
       onContextMenu={onContextMenu}
+      data-drop-container={dropContainer}
+      data-drop-connection={dropConnection}
+      data-drop-prefix={dropContainer ? dropPrefix ?? "" : undefined}
       style={{
         display: "flex", alignItems: "center", gap: 4,
         height: 22, padding: `0 8px 0 ${6 + depth * 12}px`,
         cursor: "pointer",
-        background: selected ? "var(--accent-ghost)" : "transparent",
-        borderLeft: selected ? "2px solid var(--accent)" : "2px solid transparent",
+        background: dropHighlighted ? "var(--accent-ghost)" : selected ? "var(--accent-ghost)" : "transparent",
+        borderLeft: dropHighlighted
+          ? "2px solid var(--accent)"
+          : selected ? "2px solid var(--accent)" : "2px solid transparent",
+        boxShadow: dropHighlighted ? "inset 0 0 0 1px var(--accent-dim)" : "none",
         fontSize: 11,
         fontFamily: "var(--mono)",
         color: dim ? "var(--fg-2)" : selected ? "var(--fg-0)" : "var(--fg-1)",
       }}
-      onMouseEnter={(e) => { if (!selected) (e.currentTarget as HTMLDivElement).style.background = "var(--bg-2)"; }}
-      onMouseLeave={(e) => { if (!selected) (e.currentTarget as HTMLDivElement).style.background = "transparent"; }}
+      onMouseEnter={(e) => { if (!selected && !dropHighlighted) (e.currentTarget as HTMLDivElement).style.background = "var(--bg-2)"; }}
+      onMouseLeave={(e) => { if (!selected && !dropHighlighted) (e.currentTarget as HTMLDivElement).style.background = "transparent"; }}
     >
       {onToggle ? (
         <button
