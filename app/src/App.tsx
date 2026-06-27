@@ -9,6 +9,8 @@ import { useDialogs } from "./dialogs";
 import type { Activity, BlobRow } from "./data";
 import {
   IconAlert,
+  IconArrowLeft,
+  IconArrowRight,
   IconArrowUp,
   IconAzure,
   IconChevronDown,
@@ -146,6 +148,8 @@ interface BrowserTabState {
   connectionId: string;
   containerName: string;
   prefix: string;
+  history: string[];
+  historyIndex: number;
   filter: string;
   search: string;
   advancedFilters: BlobAdvancedFilters;
@@ -457,6 +461,8 @@ function App() {
   const browsingConnectionId = activeTab?.connectionId ?? activeConnectionId;
   const activeConnection = connections.find((connection) => connection.id === browsingConnectionId) ?? null;
   const activeContainer = activeTab?.containerName ?? null;
+  const canGoBack = !!activeTab && activeTab.historyIndex > 0;
+  const canGoForward = !!activeTab && activeTab.historyIndex < activeTab.history.length - 1;
   const activeRows = activeTab?.rows ?? [];
   const deferredSearch = useDeferredValue(activeTab?.search ?? "");
   const deferredAdvancedFilters = useDeferredValue(activeTab?.advancedFilters ?? EMPTY_BLOB_FILTERS);
@@ -1200,6 +1206,8 @@ function App() {
           connectionId,
           containerName,
           prefix: "",
+          history: [""],
+          historyIndex: 0,
           filter: "",
           search: "",
           advancedFilters: emptyBlobFilters(),
@@ -1515,6 +1523,8 @@ function App() {
         connectionId: connection.id,
         containerName: persistedTab.containerName,
         prefix: persistedTab.prefix ?? "",
+        history: [persistedTab.prefix ?? ""],
+        historyIndex: 0,
         filter: persistedTab.filter ?? "",
         search: persistedTab.search ?? "",
         advancedFilters: sanitizeBlobFilters(persistedTab.advancedFilters),
@@ -1553,6 +1563,49 @@ function App() {
     setExpandedSubscriptions((current) => ({ ...current, [subscriptionId]: !current[subscriptionId] }));
   }
 
+  // Navigate a tab to a folder prefix, recording it in the tab's back/forward
+  // history. No-ops if the prefix is unchanged.
+  function navigateTab(tabId: string, nextPrefix: string) {
+    updateTab(tabId, (tab) => {
+      if (tab.prefix === nextPrefix) {
+        return tab;
+      }
+      const history = tab.history.slice(0, tab.historyIndex + 1);
+      history.push(nextPrefix);
+      return {
+        ...tab,
+        prefix: nextPrefix,
+        history,
+        historyIndex: history.length - 1,
+        filter: "",
+        loaded: false,
+        error: null,
+        continuation: null,
+        selectedIndices: [],
+      };
+    });
+  }
+
+  // Move within an existing history entry (back/forward) without rewriting it.
+  function travelHistory(tabId: string, delta: number) {
+    updateTab(tabId, (tab) => {
+      const index = tab.historyIndex + delta;
+      if (index < 0 || index >= tab.history.length) {
+        return tab;
+      }
+      return {
+        ...tab,
+        prefix: tab.history[index],
+        historyIndex: index,
+        filter: "",
+        loaded: false,
+        error: null,
+        continuation: null,
+        selectedIndices: [],
+      };
+    });
+  }
+
   function handleActivateRow(index: number) {
     if (!activeTab) {
       return;
@@ -1562,33 +1615,26 @@ function App() {
     if (!row || row.kind !== "dir" || !row.path) {
       return;
     }
-    const nextPrefix = ensureTrailingSlash(row.path);
-
-    updateTab(activeTab.id, (tab) => ({
-      ...tab,
-      prefix: nextPrefix,
-      filter: "",
-      loaded: false,
-      error: null,
-      continuation: null,
-      selectedIndices: [],
-    }));
+    navigateTab(activeTab.id, ensureTrailingSlash(row.path));
   }
 
   function handleGoUp() {
     if (!activeTab || !prefix) {
       return;
     }
+    navigateTab(activeTab.id, parentPrefix(activeTab.prefix));
+  }
 
-    updateTab(activeTab.id, (tab) => ({
-      ...tab,
-      prefix: parentPrefix(tab.prefix),
-      filter: "",
-      loaded: false,
-      error: null,
-      continuation: null,
-      selectedIndices: [],
-    }));
+  function handleGoBack() {
+    if (activeTab) {
+      travelHistory(activeTab.id, -1);
+    }
+  }
+
+  function handleGoForward() {
+    if (activeTab) {
+      travelHistory(activeTab.id, 1);
+    }
   }
 
   function handleToggleSelection(index: number) {
@@ -3733,6 +3779,18 @@ function App() {
               disabled={!tauriAvailable.current || connectionsBusy || signInsBusy || anyContainersBusy || anyRowsBusy}
             />
             <ToolbarButton
+              label="Back"
+              icon={<IconArrowLeft size={12} />}
+              onClick={handleGoBack}
+              disabled={!canGoBack}
+            />
+            <ToolbarButton
+              label="Forward"
+              icon={<IconArrowRight size={12} />}
+              onClick={handleGoForward}
+              disabled={!canGoForward}
+            />
+            <ToolbarButton
               label="Up"
               icon={<IconArrowUp size={12} />}
               onClick={handleGoUp}
@@ -3844,18 +3902,8 @@ function App() {
                 <div style={styles.pathTrail}>
                   <button
                     type="button"
-                    style={styles.pathButtonActive}
-                    onClick={() => {
-                      updateTab(activeTab.id, (tab) => ({
-                        ...tab,
-                        prefix: "",
-                        filter: "",
-                        loaded: false,
-                        error: null,
-                        continuation: null,
-                        selectedIndices: [],
-                      }));
-                    }}
+                    style={prefix === "" ? styles.pathButtonActive : styles.pathButton}
+                    onClick={() => navigateTab(activeTab.id, "")}
                   >
                     {activeContainer}
                   </button>
@@ -3866,17 +3914,7 @@ function App() {
                       <button
                         type="button"
                         style={segment.value === prefix ? styles.pathButtonActive : styles.pathButton}
-                        onClick={() => {
-                          updateTab(activeTab.id, (tab) => ({
-                            ...tab,
-                            prefix: segment.value,
-                            filter: "",
-                            loaded: false,
-                            error: null,
-                            continuation: null,
-                            selectedIndices: [],
-                          }));
-                        }}
+                        onClick={() => navigateTab(activeTab.id, segment.value)}
                       >
                         {segment.label}
                       </button>
