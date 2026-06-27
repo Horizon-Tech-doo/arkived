@@ -445,6 +445,8 @@ function App() {
   const [dropActive, setDropActive] = useState(false);
   const dropResolveRef = useRef<(x: number, y: number) => DropTarget | null>(() => null);
   const dropUploadRef = useRef<(target: DropTarget, paths: string[]) => void>(() => undefined);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const keymapRef = useRef<(event: KeyboardEvent) => void>(() => undefined);
   const dialogs = useDialogs();
 
   const containerRequestIds = useRef<Record<string, number>>({});
@@ -3004,6 +3006,81 @@ function App() {
     };
   }, []);
 
+  // Keyboard shortcuts. Kept on a ref so the once-registered listener always
+  // calls the latest handlers/state without re-binding.
+  keymapRef.current = (event) => {
+    const target = event.target as HTMLElement | null;
+    const typing =
+      target?.tagName === "INPUT" ||
+      target?.tagName === "TEXTAREA" ||
+      target?.isContentEditable === true;
+    const mod = event.ctrlKey || event.metaKey;
+
+    // Navigation works even while a field is focused (matches file explorers).
+    if (event.altKey && event.key === "ArrowLeft") {
+      event.preventDefault();
+      handleGoBack();
+      return;
+    }
+    if (event.altKey && event.key === "ArrowRight") {
+      event.preventDefault();
+      handleGoForward();
+      return;
+    }
+    if (event.altKey && event.key === "ArrowUp") {
+      event.preventDefault();
+      handleGoUp();
+      return;
+    }
+    if (mod && (event.key === "f" || event.key === "F")) {
+      if (activeTab) {
+        event.preventDefault();
+        searchInputRef.current?.focus();
+      }
+      return;
+    }
+
+    if (typing) {
+      return;
+    }
+
+    if (event.key === "Backspace") {
+      if (activeTab && prefix) {
+        event.preventDefault();
+        handleGoUp();
+      }
+      return;
+    }
+    if (mod && (event.key === "a" || event.key === "A")) {
+      if (activeTab && activeVisibleRows.length > 0) {
+        event.preventDefault();
+        handleToggleSelectAll();
+      }
+      return;
+    }
+    if (event.key === "Delete") {
+      if (selectedResourceRows.length > 0) {
+        event.preventDefault();
+        void handleDeleteSelection();
+      }
+      return;
+    }
+    if (event.key === "F5") {
+      event.preventDefault();
+      void handleRefresh();
+      return;
+    }
+    if (event.key === "Escape") {
+      setContextMenu(null);
+    }
+  };
+
+  useEffect(() => {
+    const handler = (event: KeyboardEvent) => keymapRef.current(event);
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
+
   useEffect(() => {
     if (!activeTabId) {
       return;
@@ -3825,18 +3902,21 @@ function App() {
             />
             <ToolbarButton
               label="Back"
+              title="Back (Alt+←)"
               icon={<IconArrowLeft size={12} />}
               onClick={handleGoBack}
               disabled={!canGoBack}
             />
             <ToolbarButton
               label="Forward"
+              title="Forward (Alt+→)"
               icon={<IconArrowRight size={12} />}
               onClick={handleGoForward}
               disabled={!canGoForward}
             />
             <ToolbarButton
               label="Up"
+              title="Up one level (Alt+↑ / Backspace)"
               icon={<IconArrowUp size={12} />}
               onClick={handleGoUp}
               disabled={!activeTab || !prefix}
@@ -3987,6 +4067,7 @@ function App() {
                     }}
                   />
                   <input
+                    ref={searchInputRef}
                     type="search"
                     aria-label="Advanced blob search"
                     placeholder='Search: ext:parquet size>10MiB -archive "device twins"'
@@ -5796,12 +5877,14 @@ interface ToolbarButtonProps {
   onClick: () => void;
   disabled?: boolean;
   tone?: "default" | "danger";
+  title?: string;
 }
 
-function ToolbarButton({ label, icon, onClick, disabled = false, tone = "default" }: ToolbarButtonProps) {
+function ToolbarButton({ label, icon, onClick, disabled = false, tone = "default", title }: ToolbarButtonProps) {
   return (
     <button
       type="button"
+      title={title}
       style={{
         ...styles.toolbarButton,
         ...(tone === "danger" ? styles.toolbarButtonDanger : {}),
