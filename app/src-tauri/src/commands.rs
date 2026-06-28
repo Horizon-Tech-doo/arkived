@@ -191,6 +191,8 @@ struct DiscoveredStorageAccount {
     hns: bool,
     endpoint: String,
     resource_id: Option<String>,
+    #[serde(default)]
+    access_tier: Option<String>,
 }
 
 #[derive(Clone)]
@@ -459,6 +461,8 @@ struct ArmStorageAccountProperties {
     is_hns_enabled: Option<bool>,
     #[serde(rename = "primaryEndpoints", default)]
     primary_endpoints: Option<ArmPrimaryEndpoints>,
+    #[serde(rename = "accessTier", default)]
+    access_tier: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -5856,6 +5860,11 @@ async fn discover_storage_accounts(
                 .unwrap_or(false),
             endpoint,
             resource_id: account.id,
+            access_tier: account
+                .properties
+                .as_ref()
+                .and_then(|properties| properties.access_tier.clone())
+                .filter(|value| !value.trim().is_empty()),
         });
     }
 
@@ -6335,6 +6344,219 @@ async fn request_storage_account_key(
             "ARM `listKeys` succeeded, but Azure did not return a usable storage account key."
                 .to_string()
         })
+}
+
+/// Full storage-account properties for the Properties panel, including the
+/// account keys + primary connection string (returned only when the signed-in
+/// user is allowed to list keys).
+#[derive(Serialize)]
+pub struct AccountProperties {
+    name: String,
+    kind: String,
+    region: String,
+    replication: String,
+    tier: String,
+    access_tier: Option<String>,
+    hns: bool,
+    resource_group: Option<String>,
+    subscription_id: String,
+    blob_endpoint: String,
+    queue_endpoint: String,
+    table_endpoint: String,
+    file_endpoint: String,
+    primary_key: Option<String>,
+    secondary_key: Option<String>,
+    primary_connection_string: Option<String>,
+    keys_error: Option<String>,
+}
+
+fn resource_group_from_id(resource_id: &str) -> Option<String> {
+    let lower = resource_id.to_ascii_lowercase();
+    let marker = "/resourcegroups/";
+    let start = lower.find(marker)? + marker.len();
+    let rest = &resource_id[start..];
+    let end = rest.find('/').unwrap_or(rest.len());
+    let group = rest[..end].trim();
+    if group.is_empty() {
+        None
+    } else {
+        Some(group.to_string())
+    }
+}
+
+/// Derive a sibling service endpoint (queue/table/file) from the blob endpoint
+/// by swapping the service token in the host, falling back to the standard
+/// `{account}.{service}.core.windows.net` form.
+fn derive_service_endpoint(blob_endpoint: &str, account_name: &str, service: &str) -> String {
+    if blob_endpoint.contains(".blob.") {
+        blob_endpoint.replacen(".blob.", &format!(".{service}."), 1)
+    } else {
+        format!("https://{account_name}.{service}.core.windows.net/")
+    }
+}
+
+/// ARM `listKeys` returning both the primary and (when present) secondary key.
+async fn request_storage_account_keys(
+    bundle: &TokenBundle,
+    resource_id: &str,
+) -> Result<(String, Option<String>), String> {
+    let refresh_context = bundle.refresh_context.as_ref().ok_or_else(|| {
+        "this sign-in no longer has HTTP context for Azure Resource Manager key requests"
+            .to_string()
+    })?;
+    let url = format!(
+        "https://management.azure.com{resource_id}/listKeys?api-version={ARM_STORAGE_ACCOUNTS_API_VERSION}"
+    );
+    let response = refresh_context
+        .client
+        .post(&url)
+        .bearer_auth(&bundle.access_token)
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .map_err(|error| format!("ARM `listKeys` request failed: {error}"))?;
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .map_err(|error| format!("ARM `listKeys` response could not be read: {error}"))?;
+    if !status.is_success() {
+        return Err(compact_arm_list_keys_error(status.as_u16(), &body));
+    }
+    let parsed = serde_json::from_str::<ArmListKeysResponse>(&body)
+        .map_err(|error| format!("ARM `listKeys` response could not be parsed: {error}"))?;
+    let mut values = parsed.keys.into_iter().filter_map(|key| {
+        let value = key.value?.trim().to_string();
+        if value.is_empty() {
+            None
+        } else {
+            Some(value)
+        }
+    });
+    let primary = values.next().ok_or_else(|| {
+        "ARM `listKeys` succeeded, but Azure did not return a usable storage account key."
+            .to_string()
+    })?;
+    Ok((primary, values.next()))
+}
+
+/// Obtain both account keys, trying the same ARM token sources as the
+/// activation path (cached tenant token, initial login token, fresh mint).
+async fn try_fetch_storage_account_keys(
+    sign_in: &SignInSession,
+    tenant_id: &str,
+    account: &DiscoveredStorageAccount,
+) -> Result<(String, Option<String>), String> {
+    let resource_id = account
+        .resource_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            "Azure Resource Manager did not return a resource ID for this storage account, so Arkived could not request account keys.".to_string()
+        })?;
+
+    let mut attempts = Vec::new();
+    if let Some(bundle) = sign_in.tenant_bundles.get(tenant_id) {
+        attempts.push(bundle.clone());
+    }
+    if sign_in
+        .arm_bundle
+        .refresh_context
+        .as_ref()
+        .map(|ctx| ctx.tenant.eq_ignore_ascii_case(tenant_id))
+        .unwrap_or(false)
+    {
+        attempts.push(sign_in.arm_bundle.clone());
+    }
+
+    let mut last_error = None;
+    for bundle in attempts {
+        match request_storage_account_keys(&bundle, resource_id).await {
+            Ok(keys) => return Ok(keys),
+            Err(error) => last_error = Some(error),
+        }
+    }
+
+    let arm_scope = scope_with_refresh(ARM_SCOPE);
+    match mint_sign_in_scoped_bundle(sign_in, tenant_id, &arm_scope).await {
+        Ok(bundle) => request_storage_account_keys(&bundle, resource_id).await,
+        Err(error) => Err(last_error.unwrap_or_else(|| compact_arm_token_error(&error))),
+    }
+}
+
+/// Full Properties for a discovered storage account, including keys + the
+/// primary connection string (best-effort; metadata is still returned if the
+/// user lacks permission to list keys).
+#[tauri::command]
+pub async fn get_account_properties(
+    state: State<'_, AppState>,
+    sign_in_id: String,
+    subscription_id: String,
+    account_name: String,
+) -> Result<AccountProperties, String> {
+    let sign_in = get_sign_in(&state, &sign_in_id)?;
+    let (target_tenant_id, account) = sign_in
+        .tenants
+        .iter()
+        .find_map(|tenant| {
+            tenant
+                .subscriptions
+                .iter()
+                .find(|subscription| subscription.id == subscription_id)
+                .and_then(|subscription| {
+                    subscription
+                        .storage_accounts
+                        .iter()
+                        .find(|account| account.name == account_name)
+                        .cloned()
+                        .map(|account| (tenant.id.clone(), account))
+                })
+        })
+        .ok_or_else(|| {
+            format!("unknown storage account `{account_name}` in subscription `{subscription_id}`")
+        })?;
+
+    let blob_endpoint = account.endpoint.clone();
+    let queue_endpoint = derive_service_endpoint(&blob_endpoint, &account.name, "queue");
+    let table_endpoint = derive_service_endpoint(&blob_endpoint, &account.name, "table");
+    let file_endpoint = derive_service_endpoint(&blob_endpoint, &account.name, "file");
+    let resource_group = account
+        .resource_id
+        .as_deref()
+        .and_then(resource_group_from_id);
+
+    let (primary_key, secondary_key, primary_connection_string, keys_error) =
+        match try_fetch_storage_account_keys(&sign_in, &target_tenant_id, &account).await {
+            Ok((primary, secondary)) => {
+                let connection_string = format!(
+                    "DefaultEndpointsProtocol=https;AccountName={};AccountKey={};EndpointSuffix=core.windows.net",
+                    account.name, primary
+                );
+                (Some(primary), secondary, Some(connection_string), None)
+            }
+            Err(error) => (None, None, None, Some(error)),
+        };
+
+    Ok(AccountProperties {
+        name: account.name.clone(),
+        kind: account.kind.clone(),
+        region: account.region.clone(),
+        replication: account.replication.clone(),
+        tier: account.tier.clone(),
+        access_tier: account.access_tier.clone(),
+        hns: account.hns,
+        resource_group,
+        subscription_id,
+        blob_endpoint,
+        queue_endpoint,
+        table_endpoint,
+        file_endpoint,
+        primary_key,
+        secondary_key,
+        primary_connection_string,
+        keys_error,
+    })
 }
 
 fn compact_arm_list_keys_error(status: u16, body: &str) -> String {

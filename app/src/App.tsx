@@ -81,6 +81,7 @@ import {
   listConnections,
   listContainers,
   listDiscoveredStorageAccounts,
+  getAccountProperties,
   listSignIns,
   listSignInTenants,
   pollEntraBrowserLogin,
@@ -188,10 +189,18 @@ interface ContextMenuState {
   items: ContextMenuItem[];
 }
 
+interface InfoModalRow {
+  label: string;
+  value: string;
+  secret?: boolean;
+  copyable?: boolean;
+}
+
 interface InfoModalState {
   title: string;
   subtitle?: string;
-  rows: { label: string; value: string }[];
+  rows: InfoModalRow[];
+  loading?: boolean;
 }
 
 interface DropTarget {
@@ -446,6 +455,7 @@ function App() {
   const [showDetails, setShowDetails] = useState(true);
   const [showActivities, setShowActivities] = useState(true);
   const [infoModal, setInfoModal] = useState<InfoModalState | null>(null);
+  const [revealedSecrets, setRevealedSecrets] = useState<Set<string>>(new Set());
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [dropTarget, setDropTarget] = useState<DropTarget | null>(null);
   const [dropActive, setDropActive] = useState(false);
@@ -2311,20 +2321,84 @@ function App() {
     });
   }
 
-  function showAccountProperties(account: BrowserStorageAccount) {
+  async function showAccountProperties(account: BrowserStorageAccount) {
+    setRevealedSecrets(new Set());
+    // Metadata we already have; shown immediately while keys/connection string load.
+    const baseRows: InfoModalRow[] = [
+      { label: "Account name", value: account.name, copyable: true },
+      { label: "Kind", value: account.kind },
+      { label: "Location", value: account.region },
+      { label: "Replication", value: account.replication },
+      { label: "SKU tier", value: account.tier },
+      {
+        label: "Hierarchical namespace",
+        value: account.hns ? "Enabled (ADLS Gen2)" : "Disabled",
+      },
+      { label: "Blob endpoint", value: account.endpoint, copyable: true },
+    ];
     setInfoModal({
       title: account.name,
       subtitle: "Storage account",
-      rows: [
-        { label: "Name", value: account.name },
-        { label: "Kind", value: account.kind },
-        { label: "Region", value: account.region },
-        { label: "Replication", value: account.replication },
-        { label: "Tier", value: account.tier },
-        { label: "Hierarchical namespace", value: account.hns ? "Enabled (ADLS Gen2)" : "Disabled" },
-        { label: "Endpoint", value: account.endpoint },
-      ],
+      rows: baseRows,
+      loading: tauriAvailable.current,
     });
+    if (!tauriAvailable.current) {
+      return;
+    }
+    try {
+      const props = await getAccountProperties(
+        account.sign_in_id,
+        account.subscription_id,
+        account.name,
+      );
+      const rows: InfoModalRow[] = [
+        { label: "Account name", value: props.name, copyable: true },
+        { label: "Subscription", value: props.subscription_id, copyable: true },
+        { label: "Resource group", value: props.resource_group ?? "—", copyable: !!props.resource_group },
+        { label: "Location", value: props.region },
+        { label: "Account kind", value: props.kind },
+        { label: "SKU tier", value: props.tier },
+        { label: "Replication", value: props.replication },
+        { label: "Default access tier", value: props.access_tier ?? "—" },
+        { label: "Hierarchical namespace", value: props.hns ? "Enabled (ADLS Gen2)" : "Disabled" },
+        { label: "Blob endpoint", value: props.blob_endpoint, copyable: true },
+        { label: "Queue endpoint", value: props.queue_endpoint, copyable: true },
+        { label: "Table endpoint", value: props.table_endpoint, copyable: true },
+        { label: "File endpoint", value: props.file_endpoint, copyable: true },
+      ];
+      if (props.primary_key) {
+        rows.push({ label: "Primary key", value: props.primary_key, secret: true, copyable: true });
+      }
+      if (props.secondary_key) {
+        rows.push({ label: "Secondary key", value: props.secondary_key, secret: true, copyable: true });
+      }
+      if (props.primary_connection_string) {
+        rows.push({
+          label: "Primary connection string",
+          value: props.primary_connection_string,
+          secret: true,
+          copyable: true,
+        });
+      }
+      if (props.keys_error) {
+        rows.push({ label: "Keys", value: `Unavailable — ${props.keys_error}` });
+      }
+      setInfoModal((current) =>
+        current && current.title === account.name
+          ? { ...current, rows, loading: false }
+          : current,
+      );
+    } catch (error) {
+      setInfoModal((current) =>
+        current && current.title === account.name
+          ? {
+              ...current,
+              loading: false,
+              rows: [...baseRows, { label: "Details", value: `Unavailable — ${getErrorMessage(error)}` }],
+            }
+          : current,
+      );
+    }
   }
 
   async function handleDeletePrefix(row: BlobRow) {
@@ -3948,7 +4022,7 @@ function App() {
                                     {
                                       label: "Properties",
                                       action: () => {
-                                        showAccountProperties(account);
+                                        void showAccountProperties(account);
                                       },
                                     },
                                   ])
@@ -4904,7 +4978,7 @@ function App() {
         <div style={styles.overlay} onClick={() => setInfoModal(null)}>
           <div
             style={{
-              width: "min(520px, 100%)",
+              width: "min(620px, 100%)",
               borderRadius: 6,
               overflow: "hidden",
               border: "1px solid var(--border-1)",
@@ -4924,30 +4998,77 @@ function App() {
                 Close
               </button>
             </div>
-            <div style={{ padding: 24, display: "flex", flexDirection: "column", gap: 12 }}>
-              {infoModal.rows.map((entry) => (
-                <div
-                  key={entry.label}
-                  style={{ display: "flex", gap: 16, alignItems: "baseline" }}
-                >
+            <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 8, maxHeight: "60vh", overflow: "auto" }}>
+              {infoModal.rows.map((entry) => {
+                const revealed = revealedSecrets.has(entry.label);
+                const display = entry.secret && !revealed ? "•".repeat(16) : entry.value;
+                return (
                   <div
-                    style={{
-                      width: 150,
-                      flexShrink: 0,
-                      fontFamily: "var(--mono)",
-                      fontSize: 11,
-                      textTransform: "uppercase",
-                      letterSpacing: "0.06em",
-                      color: "var(--fg-3)",
-                    }}
+                    key={entry.label}
+                    style={{ display: "flex", gap: 14, alignItems: "baseline" }}
                   >
-                    {entry.label}
+                    <div
+                      style={{
+                        width: 168,
+                        flexShrink: 0,
+                        fontFamily: "var(--mono)",
+                        fontSize: 11,
+                        textTransform: "uppercase",
+                        letterSpacing: "0.06em",
+                        color: "var(--fg-3)",
+                      }}
+                    >
+                      {entry.label}
+                    </div>
+                    <div
+                      style={{
+                        flex: 1,
+                        minWidth: 0,
+                        color: "var(--fg-1)",
+                        fontSize: 13,
+                        fontFamily: entry.secret ? "var(--mono)" : undefined,
+                        wordBreak: "break-all",
+                      }}
+                    >
+                      {display}
+                    </div>
+                    {entry.secret && (
+                      <button
+                        type="button"
+                        style={styles.propsRowButton}
+                        onClick={() =>
+                          setRevealedSecrets((current) => {
+                            const next = new Set(current);
+                            if (next.has(entry.label)) {
+                              next.delete(entry.label);
+                            } else {
+                              next.add(entry.label);
+                            }
+                            return next;
+                          })
+                        }
+                      >
+                        {revealed ? "Hide" : "Show"}
+                      </button>
+                    )}
+                    {entry.copyable && (
+                      <button
+                        type="button"
+                        style={styles.propsRowButton}
+                        onClick={() => void copyText(entry.value)}
+                      >
+                        Copy
+                      </button>
+                    )}
                   </div>
-                  <div style={{ color: "var(--fg-1)", fontSize: 13, wordBreak: "break-all" }}>
-                    {entry.value}
-                  </div>
+                );
+              })}
+              {infoModal.loading && (
+                <div style={{ display: "flex", alignItems: "center", gap: 8, color: "var(--fg-3)", fontSize: 12, paddingTop: 4 }}>
+                  <IconLoader size={12} />
+                  <span>Loading keys and endpoints…</span>
                 </div>
-              ))}
+              )}
             </div>
           </div>
         </div>
@@ -8413,6 +8534,18 @@ const styles: Record<string, CSSProperties> = {
     color: "var(--fg-1)",
     fontFamily: "var(--mono)",
     fontSize: 11,
+  },
+  propsRowButton: {
+    flexShrink: 0,
+    height: 24,
+    padding: "0 8px",
+    borderRadius: 4,
+    border: "1px solid var(--border-1)",
+    background: "var(--bg-2)",
+    color: "var(--fg-2)",
+    fontFamily: "var(--mono)",
+    fontSize: 10,
+    cursor: "pointer",
   },
   dialogContent: {
     flex: 1,
