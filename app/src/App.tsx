@@ -309,7 +309,9 @@ interface PersistedShellSnapshot {
 }
 
 const SHELL_STATE_STORAGE_KEY = "arkived.shell.v1";
-const APP_VERSION = "0.0.1";
+// Fallback only (browser/dev). The desktop app overrides this at runtime with
+// the real version from Tauri's getVersion(), so it never goes stale on release.
+const APP_VERSION = "0.0.2";
 const SIDEBAR_DEFAULT_WIDTH = 340;
 const SIDEBAR_MIN_WIDTH = 260;
 const SIDEBAR_MAX_WIDTH = 640;
@@ -465,6 +467,7 @@ function App() {
   const previewRequestId = useRef(0);
   const blobSelectionAnchors = useRef<Record<string, number>>({});
   const menuActionRef = useRef<(id: string) => void>(() => undefined);
+  const [appVersion, setAppVersion] = useState(APP_VERSION);
   const [pendingUpdate, setPendingUpdate] = useState<{ version: string; notes: string } | null>(null);
   const [updateBusy, setUpdateBusy] = useState(false);
   const [updateProgress, setUpdateProgress] = useState<number | null>(null);
@@ -3509,7 +3512,7 @@ function App() {
         updateHandleRef.current = null;
         setPendingUpdate(null);
         if (manual) {
-          setShellError(`You're on the latest version (v${APP_VERSION}).`);
+          setShellError(`You're on the latest version (v${appVersion}).`);
         }
       }
     } catch (error) {
@@ -3648,10 +3651,10 @@ function App() {
       case "help.about":
         setInfoModal({
           title: "Arkived",
-          subtitle: `Version ${APP_VERSION}`,
+          subtitle: `Version ${appVersion}`,
           rows: [
             { label: "App", value: "Arkived" },
-            { label: "Version", value: APP_VERSION },
+            { label: "Version", value: appVersion },
             { label: "Runtime", value: tauriAvailable.current ? "Tauri desktop shell" : "Browser (Vite dev)" },
             { label: "Description", value: "Azure Blob Storage explorer" },
           ],
@@ -3693,6 +3696,18 @@ function App() {
     };
   }, []);
 
+  // Read the real app version from Tauri so version labels never go stale.
+  useEffect(() => {
+    void (async () => {
+      try {
+        const { getVersion } = await import("@tauri-apps/api/app");
+        setAppVersion(await getVersion());
+      } catch {
+        // Not running under Tauri (e.g. plain Vite dev); keep the fallback.
+      }
+    })();
+  }, []);
+
   // Silent auto-update check on launch; surfaces a banner if a newer build exists.
   useEffect(() => {
     void handleCheckForUpdates(false);
@@ -3707,6 +3722,7 @@ function App() {
         connectionDetail={connectionDetail}
         connected={Boolean(activeConnection || signIns.length > 0) && !runtimeUnavailable}
         statusText={statusText}
+        version={appVersion}
         onRefresh={() => {
           void handleRefresh();
         }}
@@ -4960,7 +4976,7 @@ function App() {
                 ? updateProgress == null
                   ? "Downloading update…"
                   : `Downloading update… ${updateProgress}%`
-                : `You're on v${APP_VERSION}`}
+                : `You're on v${appVersion}`}
             </span>
           </div>
           <div style={{ flex: 1 }} />
