@@ -83,7 +83,7 @@ dependencies = [
 
 [[package]]
 name = "arkived-app"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "arkived-core",
  "base64 0.22.1",

@@ -6,7 +6,7 @@
 
 [package]
 name = "arkived-app"
-version = "0.0.2"
+version = "0.0.3"
 description = "Arkived desktop app (Tauri)"
 authors = [
     "Hamza Abdagić <hamza.abdagic@horizon-tech.io>",
