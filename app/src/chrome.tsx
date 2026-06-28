@@ -17,6 +17,7 @@ interface TitleBarProps {
   connectionDetail?: string;
   connected?: boolean;
   statusText?: string;
+  version?: string;
   onRefresh?: () => void;
   onOpenSettings?: () => void;
 }
@@ -28,6 +29,7 @@ export function TitleBar({
   connectionDetail = "No endpoint selected",
   connected = true,
   statusText = "connected",
+  version,
   onRefresh,
   onOpenSettings,
 }: TitleBarProps) {
@@ -37,7 +39,7 @@ export function TitleBar({
         <div style={titlebarStyles.brandBlock}>
           <IconLogo size={14} color="var(--accent)" />
           <span style={titlebarStyles.brandName}>arkived</span>
-          <span style={titlebarStyles.version}>v0.3.1</span>
+          {version && <span style={titlebarStyles.version}>v{version}</span>}
         </div>
 
         <div style={titlebarStyles.sep} />

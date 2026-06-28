@@ -118,6 +118,7 @@ pub fn run() {
             commands::update_sign_in_filter,
             commands::list_subscriptions,
             commands::list_discovered_storage_accounts,
+            commands::get_account_properties,
             commands::connect_connection_string,
             commands::connect_account_key,
             commands::connect_sas,

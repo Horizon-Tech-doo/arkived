@@ -58,6 +58,38 @@ export interface BrowserStorageAccount {
   endpoint: string;
 }
 
+export interface AccountProperties {
+  name: string;
+  kind: string;
+  region: string;
+  replication: string;
+  tier: string;
+  access_tier?: string | null;
+  hns: boolean;
+  resource_group?: string | null;
+  subscription_id: string;
+  blob_endpoint: string;
+  queue_endpoint: string;
+  table_endpoint: string;
+  file_endpoint: string;
+  primary_key?: string | null;
+  secondary_key?: string | null;
+  primary_connection_string?: string | null;
+  keys_error?: string | null;
+}
+
+export async function getAccountProperties(
+  signInId: string,
+  subscriptionId: string,
+  accountName: string,
+): Promise<AccountProperties> {
+  return callTauri<AccountProperties>("get_account_properties", {
+    signInId,
+    subscriptionId,
+    accountName,
+  });
+}
+
 export interface BrowserContainer {
   id: string;
   name: string;
