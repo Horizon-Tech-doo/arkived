@@ -7,6 +7,8 @@ import type { BlobPropertiesPaneState } from "./content";
 import { ActivityBar, CommandPalette } from "./panels";
 import type { CommandItem } from "./panels";
 import { useDialogs } from "./dialogs";
+import { checkForUpdate, installUpdate } from "./lib/updater";
+import type { Update } from "@tauri-apps/plugin-updater";
 import type { Activity, BlobRow } from "./data";
 import {
   IconAlert,
@@ -463,6 +465,10 @@ function App() {
   const previewRequestId = useRef(0);
   const blobSelectionAnchors = useRef<Record<string, number>>({});
   const menuActionRef = useRef<(id: string) => void>(() => undefined);
+  const [pendingUpdate, setPendingUpdate] = useState<{ version: string; notes: string } | null>(null);
+  const [updateBusy, setUpdateBusy] = useState(false);
+  const [updateProgress, setUpdateProgress] = useState<number | null>(null);
+  const updateHandleRef = useRef<Update | null>(null);
 
   browserTabsRef.current = browserTabs;
   connectionsRef.current = connections;
@@ -3158,6 +3164,14 @@ function App() {
     { id: "view.details", section: "View", label: "Toggle details panel", icon: <IconInfo size={12} />, run: () => setShowDetails((value) => !value) },
     { id: "view.activities", section: "View", label: "Toggle activities", icon: <IconTerminal size={12} />, run: () => setShowActivities((value) => !value) },
   );
+  paletteCommands.push({
+    id: "app.check-updates",
+    section: "Help",
+    label: "Check for updates",
+    keywords: "update upgrade version",
+    icon: <IconRefresh size={12} />,
+    run: () => void handleCheckForUpdates(true),
+  });
   if (activeConnection && activeContainer) {
     paletteCommands.push(
       { id: "blob.upload", section: "Storage", label: "Upload files…", icon: <IconUpload size={12} />, run: () => void handleUploadFiles() },
@@ -3479,6 +3493,50 @@ function App() {
           ? shellError
           : "Attach a storage account";
 
+  async function handleCheckForUpdates(manual = false) {
+    if (!tauriAvailable.current) {
+      if (manual) {
+        setShellError("Auto-update is only available in the desktop app.");
+      }
+      return;
+    }
+    try {
+      const update = await checkForUpdate();
+      if (update) {
+        updateHandleRef.current = update;
+        setPendingUpdate({ version: update.version, notes: update.body ?? "" });
+      } else {
+        updateHandleRef.current = null;
+        setPendingUpdate(null);
+        if (manual) {
+          setShellError(`You're on the latest version (v${APP_VERSION}).`);
+        }
+      }
+    } catch (error) {
+      if (manual) {
+        setShellError(`Update check failed: ${getErrorMessage(error)}`);
+      }
+    }
+  }
+
+  async function handleInstallUpdate() {
+    const update = updateHandleRef.current;
+    if (!update || updateBusy) {
+      return;
+    }
+    setUpdateBusy(true);
+    setUpdateProgress(0);
+    setShellError(null);
+    try {
+      // On success the app relaunches into the new version inside installUpdate.
+      await installUpdate(update, (percent) => setUpdateProgress(percent));
+    } catch (error) {
+      setShellError(`Update failed: ${getErrorMessage(error)}`);
+      setUpdateBusy(false);
+      setUpdateProgress(null);
+    }
+  }
+
   menuActionRef.current = (id: string) => {
     switch (id) {
       case "file.connect":
@@ -3565,6 +3623,9 @@ function App() {
       case "edit.select-all":
         handleToggleSelectAll();
         break;
+      case "help.check-updates":
+        void handleCheckForUpdates(true);
+        break;
       case "help.docs":
         window.open("https://github.com", "_blank", "noopener,noreferrer");
         break;
@@ -3630,6 +3691,12 @@ function App() {
         unlisten();
       }
     };
+  }, []);
+
+  // Silent auto-update check on launch; surfaces a banner if a newer build exists.
+  useEffect(() => {
+    void handleCheckForUpdates(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (
@@ -4878,6 +4945,44 @@ function App() {
               Drop to upload to <strong style={{ color: "var(--fg-0)" }}>{dropTarget.label}</strong>
             </span>
           </div>
+        </div>
+      )}
+
+      {pendingUpdate && (
+        <div style={styles.updateBanner}>
+          <IconRefresh size={14} style={{ color: "var(--accent)", flexShrink: 0 }} />
+          <div style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0 }}>
+            <span style={{ color: "var(--fg-0)", fontWeight: 600 }}>
+              Arkived v{pendingUpdate.version} is available
+            </span>
+            <span style={{ color: "var(--fg-3)", fontSize: 11 }}>
+              {updateBusy
+                ? updateProgress == null
+                  ? "Downloading update…"
+                  : `Downloading update… ${updateProgress}%`
+                : `You're on v${APP_VERSION}`}
+            </span>
+          </div>
+          <div style={{ flex: 1 }} />
+          {!updateBusy && (
+            <>
+              <button
+                type="button"
+                style={styles.secondaryButton}
+                onClick={() => setPendingUpdate(null)}
+              >
+                Later
+              </button>
+              <button
+                type="button"
+                style={styles.primaryButton}
+                onClick={() => void handleInstallUpdate()}
+              >
+                <IconDownload size={12} />
+                <span>Update &amp; restart</span>
+              </button>
+            </>
+          )}
         </div>
       )}
 
@@ -8064,6 +8169,22 @@ const styles: Record<string, CSSProperties> = {
     color: "var(--fg-2)",
     fontSize: 13,
     boxShadow: "0 12px 36px rgba(0,0,0,0.4)",
+  },
+  updateBanner: {
+    position: "fixed",
+    right: 16,
+    bottom: 16,
+    zIndex: 40,
+    display: "flex",
+    alignItems: "center",
+    gap: 12,
+    width: "min(440px, calc(100% - 32px))",
+    padding: "12px 14px",
+    borderRadius: 8,
+    border: "1px solid var(--accent-dim)",
+    background: "var(--bg-1)",
+    fontSize: 13,
+    boxShadow: "0 16px 44px rgba(0,0,0,0.45)",
   },
   overviewHeader: {
     display: "flex",

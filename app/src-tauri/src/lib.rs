@@ -16,6 +16,8 @@ use tauri::{Emitter, Manager};
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
             let app_data_dir = app
                 .path()
@@ -82,6 +84,8 @@ pub fn run() {
             let help_menu = SubmenuBuilder::new(app, "Help")
                 .text("help.docs", "Documentation")
                 .text("help.shortcuts", "Keyboard Shortcuts")
+                .text("help.check-updates", "Check for Updates…")
+                .separator()
                 .text("help.about", "About arkived")
                 .build()?;
 

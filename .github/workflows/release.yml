@@ -86,6 +86,8 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: ./app
           tagName: app-v__VERSION__
@@ -100,5 +102,5 @@ jobs:
             - **Linux aarch64** — `*_aarch64.AppImage`, `*_arm64.deb`, or `*.aarch64.rpm`
           releaseDraft: true
           prerelease: false
-          includeUpdaterJson: false
+          includeUpdaterJson: true
           args: ${{ matrix.args }}
