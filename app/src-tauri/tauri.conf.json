@@ -29,6 +29,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -51,6 +52,14 @@
       "deb": {
         "depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0"]
       }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/Horizon-Tech-doo/arkived/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDI2Q0I3RThBNzRGM0NDOUYKUldTZnpQTjBpbjdMSnVZU2tBdWtJMUcrSy9JT3Zna0U3eUpPQXljSWVpcnN0QjJBci8yWENkM0IK"
     }
   }
 }
