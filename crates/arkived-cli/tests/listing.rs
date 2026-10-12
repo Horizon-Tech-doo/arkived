@@ -4,8 +4,15 @@ use serde_json::{json, Value};
 
 async fn run(server: &mockito::ServerGuard, args: &[&str]) -> std::process::Output {
     let config = tempfile::tempdir().unwrap();
-    tokio::process::Command::new(env!("CARGO_BIN_EXE_arkived"))
-        .env_clear()
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_arkived"));
+    command.env_clear();
+    // Windows networking needs SystemRoot even with an isolated environment.
+    #[cfg(windows)]
+    command.env(
+        "SystemRoot",
+        std::env::var_os("SystemRoot").expect("Windows must define SystemRoot"),
+    );
+    command
         .env("ARKIVED_CONFIG_DIR", config.path())
         .current_dir(config.path())
         .args([

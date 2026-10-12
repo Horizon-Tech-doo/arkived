@@ -28,3 +28,5 @@ response parsing, pagination and output serialization against controlled
 responses. They do not establish real Azure authentication, service behavior,
 Azurite interoperability, performance or every output format. They do not
 close the original feature issue or represent maintainer acceptance.
+
+On Windows, the child process retains only the system `SystemRoot` variable in addition to its temporary Arkived configuration. Clearing that operating-system variable breaks networking; cloud credentials and saved account settings are still excluded.
