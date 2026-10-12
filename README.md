@@ -91,7 +91,7 @@ To report a security vulnerability, please see [`SECURITY.md`](./SECURITY.md). *
 
 ## Authors
 
-Arkived is developed by [Horizon Tech d.o.o.](https://horizon-tech.io), an IT consulting and software development company based in Sarajevo, Bosnia and Herzegovina.
+Arkived is developed by [Horizon Tech d.o.o.](https://horizon-tech.io), a technology company based in Sarajevo, Bosnia and Herzegovina, building cloud infrastructure, AI systems and software.
 
 Lead maintainer: [Hamza Abdagić](https://github.com/ghostrider0470), CEO & Founder.
 
