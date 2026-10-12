@@ -116,6 +116,7 @@ dependencies = [
  "bytes",
  "clap",
  "futures",
+ "mockito",
  "secrecy",
  "serde",
  "serde_json",
