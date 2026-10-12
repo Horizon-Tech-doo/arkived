@@ -30,3 +30,5 @@ Azurite interoperability, performance or every output format. They do not
 close the original feature issue or represent maintainer acceptance.
 
 On Windows, the child process retains only the system `SystemRoot` variable in addition to its temporary Arkived configuration. Clearing that operating-system variable breaks networking; cloud credentials and saved account settings are still excluded.
+
+CLI fixture invocations have a 20-second deadline and kill the child when the output future is dropped. The deadline regression explicitly starts a test-only child, observes its start marker, applies a one-second deadline and checks that its delayed completion marker is never written. The child helper is ignored in ordinary test runs and launched explicitly by the regression. This verifies direct-child cancellation locally; it does not establish descendant process cleanup or every operating system’s behavior.

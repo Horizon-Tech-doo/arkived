@@ -24,11 +24,52 @@ async fn run(server: &mockito::ServerGuard, args: &[&str]) -> std::process::Outp
             "json",
             "ls",
         ])
-        .args(args)
-        .output()
+        .args(args);
+    bounded_output(&mut command, std::time::Duration::from_secs(20))
         .await
+        .expect("fixture CLI exceeded its 20-second deadline")
         .unwrap()
 }
+
+async fn bounded_output(
+    command: &mut tokio::process::Command,
+    deadline: std::time::Duration,
+) -> Result<std::io::Result<std::process::Output>, tokio::time::error::Elapsed> {
+    command.kill_on_drop(true);
+    tokio::time::timeout(deadline, command.output()).await
+}
+
+// Only launched explicitly by the deadline regression below.
+#[test]
+#[ignore]
+fn deadline_fixture_child() {
+    let directory = std::env::var_os("ARKIVED_DEADLINE_FIXTURE").unwrap();
+    let directory = std::path::PathBuf::from(directory);
+    std::fs::write(directory.join("started"), b"started").unwrap();
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    std::fs::write(directory.join("finished"), b"unexpected completion").unwrap();
+}
+
+#[tokio::test]
+async fn deadline_stops_a_started_fixture_child() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+    command
+        .args(["--exact", "deadline_fixture_child", "--ignored"])
+        .env("ARKIVED_DEADLINE_FIXTURE", directory.path());
+    let result = bounded_output(&mut command, std::time::Duration::from_secs(1)).await;
+    assert!(result.is_err(), "stalled child must exceed its deadline");
+    assert!(
+        directory.path().join("started").exists(),
+        "child must have started"
+    );
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    assert!(
+        !directory.path().join("finished").exists(),
+        "cancelled child must not finish"
+    );
+}
+
 fn json_output(output: std::process::Output) -> Value {
     assert!(
         output.status.success(),
